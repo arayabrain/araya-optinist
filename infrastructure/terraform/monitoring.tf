@@ -278,7 +278,12 @@ resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
     public = {
       tg_arn_suffix = aws_lb_target_group.public.arn_suffix
       threshold     = "5"
-      description   = "Public TG p95 response time exceeded 5s for 25 of 30 min — sustained SPA shell or public-dataview latency degradation."
+      description   = "Public TG p95 response time exceeded 5s for 25 of 30 min — sustained SPA shell or sign-in latency degradation."
+    }
+    "public-dataview" = {
+      tg_arn_suffix = aws_lb_target_group.public_dataview.arn_suffix
+      threshold     = "5"
+      description   = "Public DataView TG p95 response time exceeded 5s for 25 of 30 min — sustained public-dataview latency degradation."
     }
   }
 
@@ -311,7 +316,11 @@ resource "aws_cloudwatch_metric_alarm" "tg_unhealthy_hosts" {
     }
     public = {
       tg_arn_suffix = aws_lb_target_group.public.arn_suffix
-      description   = "Public TG has unhealthy targets — SPA delivery or public-dataview API at risk."
+      description   = "Public TG has unhealthy targets — SPA delivery or sign-in at risk."
+    }
+    "public-dataview" = {
+      tg_arn_suffix = aws_lb_target_group.public_dataview.arn_suffix
+      description   = "Public DataView TG has unhealthy targets — public-dataview reads at risk."
     }
   }
 

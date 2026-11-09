@@ -141,6 +141,65 @@ resource "aws_autoscaling_group" "public" {
   }
 }
 
+locals {
+  # Shared with the public DataView task definition. Many of these vars are
+  # duplicated in compute.tf and background_service.tf; a shared value must
+  # be changed there too.
+  public_task_environment = [
+    { name = "ENV_PREFIX", value = var.environment },
+    { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+    { name = "ANNOUNCEMENT_SSM_PARAMETER", value = aws_ssm_parameter.announcement.name },
+    { name = "CLOUDWATCH_LOG_GROUP", value = aws_cloudwatch_log_group.public_optinist.name },
+    { name = "PYTHONPATH", value = "/app/" },
+    { name = "TZ", value = "Asia/Tokyo" },
+
+    { name = "INSTANCE_MODE", value = "public" },
+
+    # Blast-radius cap for the internet-facing tier on the shared RDS Proxy.
+    { name = "SQLALCHEMY_POOL_SIZE", value = "8" },
+    { name = "SQLALCHEMY_MAX_OVERFLOW", value = "8" },
+
+    { name = "UVICORN_ACCESS_LOG", value = "1" },
+
+    { name = "DISABLE_BACKGROUND_SCHEDULER", value = "1" },
+
+    { name = "DB_HOST", value = aws_db_proxy.main.endpoint },
+    { name = "DB_PORT", value = "3306" },
+    { name = "DB_USER", value = var.mysql_user },
+    { name = "DB_NAME", value = var.mysql_database },
+    { name = "DB_PASSWORD", value = var.mysql_password },
+    { name = "MYSQL_SSL_MODE", value = "REQUIRED" },
+
+    { name = "BACKEND_HOST", value = "0.0.0.0" },
+    { name = "BACKEND_PORT", value = "8000" },
+
+    { name = "FRONTEND_SERVER_HOST", value = local.effective_frontend_domain },
+    { name = "FRONTEND_SERVER_PORT", value = local.effective_frontend_port },
+    { name = "FRONTEND_SERVER_PROTO", value = var.frontend_protocol },
+
+    { name = "INITIAL_FIREBASE_UID", value = var.optinist_admin_uid },
+    { name = "INITIAL_USER_NAME", value = var.optinist_admin_name },
+    { name = "INITIAL_USER_EMAIL", value = var.optinist_admin_email },
+    { name = "ADMIN_STORAGE_QUOTA_BYTES", value = "107374182400" },
+    { name = "SECRET_KEY", value = var.optinist_secret_key },
+
+    { name = "S3_DEFAULT_BUCKET_NAME", value = aws_s3_bucket.app_storage.id },
+    { name = "S3_USER_BUCKET_PREFIX", value = var.s3_user_bucket_prefix },
+    { name = "REMOTE_STORAGE_TYPE", value = "2" },
+
+    { name = "LOG_LEVEL", value = "INFO" },
+    { name = "CORS_ORIGINS", value = "*" },
+    { name = "PYTHONUNBUFFERED", value = "1" },
+    { name = "OPTINIST_DIR", value = "/app/studio_data" },
+
+    # Stripe vars omitted: subscriptions router is gated out on public.
+    { name = "ROUTING_SECRET_KEY", value = var.routing_secret_key },
+
+    { name = "INTERNAL_API_SECRET", value = random_password.internal_api_secret.result },
+    { name = "UVICORN_WORKERS", value = "1" },
+  ]
+}
+
 resource "aws_ecs_task_definition" "public" {
   family                   = "${var.environment}-public-optinist-cloud-taskdef"
   requires_compatibilities = ["EC2"]
@@ -173,61 +232,7 @@ resource "aws_ecs_task_definition" "public" {
         }
       ]
 
-      # Many of these vars are duplicated in compute.tf and background_service.tf;
-      # a shared value must be changed in all three task definitions.
-      environment = [
-        { name = "ENV_PREFIX", value = var.environment },
-        { name = "AWS_DEFAULT_REGION", value = var.aws_region },
-        { name = "ANNOUNCEMENT_SSM_PARAMETER", value = aws_ssm_parameter.announcement.name },
-        { name = "CLOUDWATCH_LOG_GROUP", value = aws_cloudwatch_log_group.public_optinist.name },
-        { name = "PYTHONPATH", value = "/app/" },
-        { name = "TZ", value = "Asia/Tokyo" },
-
-        { name = "INSTANCE_MODE", value = "public" },
-
-        # Blast-radius cap for the internet-facing tier on the shared RDS Proxy.
-        { name = "SQLALCHEMY_POOL_SIZE", value = "8" },
-        { name = "SQLALCHEMY_MAX_OVERFLOW", value = "8" },
-
-        { name = "UVICORN_ACCESS_LOG", value = "1" },
-
-        { name = "DISABLE_BACKGROUND_SCHEDULER", value = "1" },
-
-        { name = "DB_HOST", value = aws_db_proxy.main.endpoint },
-        { name = "DB_PORT", value = "3306" },
-        { name = "DB_USER", value = var.mysql_user },
-        { name = "DB_NAME", value = var.mysql_database },
-        { name = "DB_PASSWORD", value = var.mysql_password },
-        { name = "MYSQL_SSL_MODE", value = "REQUIRED" },
-
-        { name = "BACKEND_HOST", value = "0.0.0.0" },
-        { name = "BACKEND_PORT", value = "8000" },
-
-        { name = "FRONTEND_SERVER_HOST", value = local.effective_frontend_domain },
-        { name = "FRONTEND_SERVER_PORT", value = local.effective_frontend_port },
-        { name = "FRONTEND_SERVER_PROTO", value = var.frontend_protocol },
-
-        { name = "INITIAL_FIREBASE_UID", value = var.optinist_admin_uid },
-        { name = "INITIAL_USER_NAME", value = var.optinist_admin_name },
-        { name = "INITIAL_USER_EMAIL", value = var.optinist_admin_email },
-        { name = "ADMIN_STORAGE_QUOTA_BYTES", value = "107374182400" },
-        { name = "SECRET_KEY", value = var.optinist_secret_key },
-
-        { name = "S3_DEFAULT_BUCKET_NAME", value = aws_s3_bucket.app_storage.id },
-        { name = "S3_USER_BUCKET_PREFIX", value = var.s3_user_bucket_prefix },
-        { name = "REMOTE_STORAGE_TYPE", value = "2" },
-
-        { name = "LOG_LEVEL", value = "INFO" },
-        { name = "CORS_ORIGINS", value = "*" },
-        { name = "PYTHONUNBUFFERED", value = "1" },
-        { name = "OPTINIST_DIR", value = "/app/studio_data" },
-
-        # Stripe vars omitted: subscriptions router is gated out on public.
-        { name = "ROUTING_SECRET_KEY", value = var.routing_secret_key },
-
-        { name = "INTERNAL_API_SECRET", value = random_password.internal_api_secret.result },
-        { name = "UVICORN_WORKERS", value = "1" },
-      ]
+      environment = local.public_task_environment
 
 
       mountPoints = [

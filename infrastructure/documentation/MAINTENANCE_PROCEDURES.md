@@ -509,9 +509,11 @@ There is no scale-down alarm. The free-manager Lambda removes capacity by user c
 |---|---|---|
 | `subscr-optinist-alb-5xx-errors` | >= 20 5XX errors in 5 min | **HIGH PRIORITY.** A sustained error storm. Check ECS task health, recent deployments, application logs. |
 | `subscr-optinist-free-tg-response-time-high` | p95 > 10s for 25 of 30 min | Persistent (not transient) latency. Check RDS, ECS utilization, heavy workloads. |
-| `subscr-optinist-public-tg-response-time-high` | p95 > 5s for 25 of 30 min | Sustained SPA/public-dataview latency. Check public instance health and cold-cache reads. |
+| `subscr-optinist-public-tg-response-time-high` | p95 > 5s for 25 of 30 min | Sustained SPA/sign-in latency. Check public instance health. |
+| `subscr-optinist-public-dataview-tg-response-time-high` | p95 > 5s for 25 of 30 min | Sustained public-dataview latency. Check public DataView instance health and cold-cache reads. |
 | `subscr-optinist-free-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Free workflow instance failing health checks. Check ECS task and EBS I/O. |
-| `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | SPA delivery / public-dataview at risk. Check public ASG instances. |
+| `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | SPA delivery / sign-in at risk. Check public ASG instances. |
+| `subscr-optinist-public-dataview-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Public-dataview reads at risk (sign-in unaffected). Check the public DataView ASG instance. |
 
 ### Background Service Alarms
 
@@ -556,8 +558,10 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 | `subscr-optinist-alb-5xx-errors` | `monitoring.tf` | Sustained 5XX storm — users seeing server errors |
 | `subscr-optinist-free-tg-response-time-high` | `monitoring.tf` | Persistent high latency on the free tier |
 | `subscr-optinist-public-tg-response-time-high` | `monitoring.tf` | Persistent high latency on the public tier |
+| `subscr-optinist-public-dataview-tg-response-time-high` | `monitoring.tf` | Persistent high latency on the public DataView tier |
 | `subscr-optinist-free-tg-unhealthy-hosts` | `monitoring.tf` | Free workflow instance down |
-| `subscr-optinist-public-tg-unhealthy-hosts` | `monitoring.tf` | SPA delivery / public-dataview at risk |
+| `subscr-optinist-public-tg-unhealthy-hosts` | `monitoring.tf` | SPA delivery / sign-in at risk |
+| `subscr-optinist-public-dataview-tg-unhealthy-hosts` | `monitoring.tf` | Public-dataview reads at risk |
 | `subscr-optinist-ebs-queue-length-high` | `monitoring.tf` | Disk saturation can fail health checks and evict the instance |
 | `subscr-optinist-load-average-high` | `monitoring.tf` | EC2 hosts saturated, all services degrade |
 | `subscr-monthly-cost-high` | `monitoring.tf` | Unexpected cost spike |
@@ -634,8 +638,9 @@ and once at 100 % the SSM agent and cloud-init could not write either, so the ho
 Two layers keep that from happening again:
 
 - **Host side.** The SSM association `<env>-docker-hygiene` (`deployment.tf`) runs
-  `infrastructure/scripts/docker_hygiene.sh` on every host launched from one of the four launch
-  templates (free, premium, background, public), every 6 hours and once after each deploy
+  `infrastructure/scripts/docker_hygiene.sh` on every host launched from one of the five launch
+  templates (free, premium, background, public, public DataView), every 6 hours and once after each
+  deploy
   (`null_resource.deploy_to_ecs` and `ecr_build_push.sh --deploy` call `start-associations-once`).
   It prunes stopped containers created more than 10 minutes ago, then, only when the ECS agent
   reports at least one RUNNING task and none mid-start, every image no container uses. The log is

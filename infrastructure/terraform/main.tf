@@ -418,6 +418,30 @@ variable "public_asg_desired_capacity" {
   default     = 2
 }
 
+variable "public_dataview_instance_type" {
+  description = "EC2 instance type for the public DataView ASG (serves anonymous public dataview reads)"
+  type        = string
+  default     = "t3.small"
+}
+
+variable "public_dataview_asg_min_size" {
+  description = "Minimum size of the public DataView ASG. With 1, public DataView is down while its one instance is replaced (a cold boot) and on each deployment (the target group's deregistration delay, then the new task's start); sign-in is unaffected."
+  type        = number
+  default     = 1
+}
+
+variable "public_dataview_asg_max_size" {
+  description = "Maximum size of the public DataView ASG."
+  type        = number
+  default     = 2
+}
+
+variable "public_dataview_asg_desired_capacity" {
+  description = "Desired capacity of the public DataView ASG (also used for ECS service desired_count)."
+  type        = number
+  default     = 1
+}
+
 # Frontend domain configuration
 variable "frontend_domain" {
   description = "Custom domain name for the frontend application"

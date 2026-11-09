@@ -1742,7 +1742,7 @@ function anonymousApi(): Promise<APIRequestContext> {
 }
 
 // The setup the three rows below share: a real finished run in a fresh
-// workspace, and the dataview record the sync job and the public tier will
+// workspace, and the dataview record the sync job and the public tiers will
 // act on. Publishing is left to the caller - each row publishes at a different
 // moment relative to the job's 5-minute tick.
 async function stageFinishedRun(

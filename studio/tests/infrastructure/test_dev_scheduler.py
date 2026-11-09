@@ -38,6 +38,11 @@ SCHEDULER_ENV = {
     "PUBLIC_ASG_MAX_SIZE": "4",
     "PUBLIC_ASG_DESIRED_CAPACITY": "2",
     "PUBLIC_ECS_SERVICE_NAME": "svc-public",
+    "PUBLIC_DATAVIEW_ASG_NAME": "test-public-dataview-asg",
+    "PUBLIC_DATAVIEW_ASG_MIN_SIZE": "1",
+    "PUBLIC_DATAVIEW_ASG_MAX_SIZE": "3",
+    "PUBLIC_DATAVIEW_ASG_DESIRED_CAPACITY": "1",
+    "PUBLIC_DATAVIEW_ECS_SERVICE_NAME": "svc-public-dataview",
     "SCHEDULE_RULE_NAMES": json.dumps(["rule-a"]),
     "DELAYED_RULE_NAMES": json.dumps(["delayed-a"]),
     "ALARM_PREFIX": "test-",
@@ -992,17 +997,41 @@ class TestStartEnvironment:
         # clear_override still runs on the way out (try/finally).
         helpers["clear_override"].assert_called_once()
 
-    def test_start_skips_public_when_unset(self, patched, monkeypatch):
-        """Back-compat: with the public env vars absent, start touches neither
-        a public ASG nor a public service — only the free ASG and 3-service
-        restore run."""
+    def test_start_scales_public_dataview_to_its_own_size(self, patched):
+        """The public DataView tier scales by its own size variables, not the
+        public tier's, and its result is keyed apart from public's."""
         module, _, helpers = patched
-        monkeypatch.delenv("PUBLIC_ASG_NAME", raising=False)
-        monkeypatch.delenv("PUBLIC_ECS_SERVICE_NAME", raising=False)
+        result = module.start_environment()
+        helpers["scale_asg"].assert_any_call(
+            "test-public-dataview-asg", min_size=1, desired=1, max_size=3
+        )
+        helpers["update_ecs_services"].assert_any_call(
+            "test-cluster", ["svc-public-dataview"], desired_count=1
+        )
+        assert {"public_asg", "public_dataview_asg"} <= set(result["results"])
+
+    def test_start_skips_public_when_unset(self, patched, monkeypatch):
+        """Back-compat: with the public tiers' env vars absent, start touches
+        no public ASG or service — only the free ASG and 3-service restore
+        run."""
+        module, _, helpers = patched
+        _unset_public_tiers(monkeypatch, "PUBLIC", "PUBLIC_DATAVIEW")
         result = module.start_environment()
         assert result["statusCode"] == 200
         assert helpers["scale_asg"].call_count == 1
         assert helpers["update_ecs_services"].call_count == 1
+
+    def test_start_skips_only_the_public_tier_left_unset(self, patched, monkeypatch):
+        """Each tier is gated on its own names: an environment without the
+        public DataView tier still scales the public tier."""
+        module, _, helpers = patched
+        _unset_public_tiers(monkeypatch, "PUBLIC_DATAVIEW")
+        module.start_environment()
+        scaled = [c.args[0] for c in helpers["scale_asg"].call_args_list]
+        assert scaled == ["test-asg", "test-public-asg"]
+        services = [c.args[1] for c in helpers["update_ecs_services"].call_args_list]
+        assert ["svc-public-dataview"] not in services
+        assert ["svc-public"] in services
 
 
 # ===========================================================================
@@ -1204,15 +1233,80 @@ class TestStopEnvironment:
         )
         helpers["scale_asg"].assert_any_call("test-public-asg", min_size=0, desired=0)
 
-    def test_stop_skips_public_when_unset(self, patched, monkeypatch):
-        """Back-compat: with the public env vars absent, stop scales only the
-        free ASG and the 3-service set."""
+    def test_stop_scales_public_dataview_asg_and_service_to_zero(self, patched):
+        """The public DataView tier stops with the rest: left running, its
+        instance would bill through every night."""
         module, _, helpers = patched
-        monkeypatch.delenv("PUBLIC_ASG_NAME", raising=False)
-        monkeypatch.delenv("PUBLIC_ECS_SERVICE_NAME", raising=False)
+        result = module.stop_environment(stop_mode="stop")
+        helpers["update_ecs_services"].assert_any_call(
+            "test-cluster", ["svc-public-dataview"], desired_count=0
+        )
+        helpers["scale_asg"].assert_any_call(
+            "test-public-dataview-asg", min_size=0, desired=0
+        )
+        assert {"public_asg", "public_dataview_asg"} <= set(result["results"])
+
+    def test_stop_skips_public_when_unset(self, patched, monkeypatch):
+        """Back-compat: with the public tiers' env vars absent, stop scales
+        only the free ASG and the 3-service set."""
+        module, _, helpers = patched
+        _unset_public_tiers(monkeypatch, "PUBLIC", "PUBLIC_DATAVIEW")
         module.stop_environment(stop_mode="stop")
         assert helpers["scale_asg"].call_count == 1
         assert helpers["update_ecs_services"].call_count == 1
+
+
+def _unset_public_tiers(monkeypatch, *prefixes):
+    """Remove the names that gate each public tier in the scheduler."""
+    for prefix in prefixes:
+        monkeypatch.delenv(f"{prefix}_ASG_NAME", raising=False)
+        monkeypatch.delenv(f"{prefix}_ECS_SERVICE_NAME", raising=False)
+
+
+class TestPublicTiersAreScheduled:
+    """Terraform hands the scheduler every public tier it scales by prefix.
+
+    The scheduler skips a tier whose names are unset, so a tier missing from the
+    Lambda's environment is never stopped, and one missing from its IAM policy
+    fails the stop; either leaves the tier running overnight.
+    """
+
+    TIERS = {"PUBLIC": "public", "PUBLIC_DATAVIEW": "public_dataview"}
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        tf = read(TERRAFORM_DIR / "dev_schedule.tf")
+        self.lambda_fn = resource_block(tf, "aws_lambda_function", "dev_scheduler")
+        self.policy = resource_block(
+            tf, "aws_iam_role_policy", "dev_scheduler_permissions"
+        )
+
+    def test_the_scheduler_scales_exactly_these_tiers(self, ds):
+        module, _ = ds
+        assert set(module.PUBLIC_TIER_ENV_PREFIXES) == set(self.TIERS)
+
+    @pytest.mark.parametrize("prefix", sorted(TIERS))
+    def test_the_lambda_environment_names_the_tier(self, prefix):
+        resource = self.TIERS[prefix]
+        expected = {
+            "ASG_NAME": f"aws_autoscaling_group.{resource}.name",
+            "ECS_SERVICE_NAME": f"aws_ecs_service.{resource}.name",
+            "ASG_MIN_SIZE": f"tostring(var.{resource}_asg_min_size)",
+            "ASG_MAX_SIZE": f"tostring(var.{resource}_asg_max_size)",
+            "ASG_DESIRED_CAPACITY": f"tostring(var.{resource}_asg_desired_capacity)",
+        }
+        for suffix, value in expected.items():
+            assert re.search(
+                r"^\s*%s_%s\s*=\s*%s\s*$" % (prefix, suffix, re.escape(value)),
+                self.lambda_fn,
+                re.M,
+            ), f"{prefix}_{suffix} is not {value}"
+
+    @pytest.mark.parametrize("prefix", sorted(TIERS))
+    def test_the_policy_lets_the_lambda_scale_the_tier(self, prefix):
+        resource = self.TIERS[prefix]
+        assert f"aws_autoscaling_group.{resource}.arn," in self.policy
+        assert f"aws_ecs_service.{resource}.id," in self.policy
 
 
 # ===========================================================================
