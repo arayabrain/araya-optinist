@@ -2,6 +2,9 @@
 Middleware modules for the Studio application
 """
 
+from studio.app.common.core.middleware.compression_middleware import (
+    CompressionMiddleware,
+)
 from studio.app.common.core.middleware.logging_middleware import (
     ClientIdLoggingMiddleware,
 )
@@ -20,6 +23,7 @@ from studio.app.common.core.middleware.user_activity_middleware import (
 
 __all__ = [
     "ClientIdLoggingMiddleware",
+    "CompressionMiddleware",
     "FreeUserActivityMiddleware",  # Backwards compatibility alias
     "SecureRoutingMiddleware",
     "SPARoutingMiddleware",
