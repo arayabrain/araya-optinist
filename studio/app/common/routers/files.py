@@ -61,7 +61,12 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
-from studio.app.common.db.database import get_db, release_request_session, session_scope
+from studio.app.common.db.database import (
+    get_db,
+    release_request_session,
+    run_db_lookup,
+    session_scope,
+)
 from studio.app.common.schemas.files import (
     DownloadFileRequest,
     DownloadStatus,
@@ -815,8 +820,8 @@ async def _check_storage_quota(user_id: Optional[int]) -> None:
     if user_id is None:
         return
     current_usage = await get_current_user_storage_usage(user_id, force_live=False)
-    storage_info = get_user_storage_usage(user_id)
-    quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
+    storage_info = await run_db_lookup(get_user_storage_usage, user_id)
+    quota_limit = await run_db_lookup(get_effective_quota_bytes, user_id, storage_info)
     if quota_limit <= 0:
         return
     storage_usage_percent = (current_usage / quota_limit) * 100

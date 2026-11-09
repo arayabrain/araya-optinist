@@ -114,12 +114,15 @@ async def get_current_user_with_dataview_outputs_check(
 ) -> User:
     """
     Authentication process specialized for outputs requests from the dataview screen
+
+    - The public-record check runs in a worker thread (run_db_lookup), as the
+      user lookup does.
     """
 
     # Checks whether public outputs are accessed from a dataview
     if DataviewService.is_dataview_public_outputs_request(req):
-        is_allowed_access = DataviewService.validate_dataview_public_outputs_request(
-            req, db
+        is_allowed_access = await run_db_lookup(
+            DataviewService.validate_dataview_public_outputs_request, req, db
         )
         # Return the pooled connection now; the route then streams a file and a
         # slow output download must not keep a DB connection checked out.
@@ -399,13 +402,15 @@ async def get_outputs_remote_bucket_name(
     (owner, shared user, or published data) before returning the owner's bucket.
 
     Uses request-scoped caching to avoid redundant database queries within
-    the same request.
+    the same request. The lookup runs in a worker thread (run_db_lookup).
     """
     # Check for cached bucket name in request state (request-scoped cache)
     if hasattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY):
         return getattr(req.state, _REQUEST_OUTPUTS_BUCKET_CACHE_KEY)
 
-    bucket_name = await _resolve_outputs_remote_bucket_name(req, current_user, db)
+    bucket_name = await run_db_lookup(
+        _resolve_outputs_remote_bucket_name, req, current_user, db
+    )
     # Return the pooled connection before download.
     db.close()
 
@@ -415,7 +420,7 @@ async def get_outputs_remote_bucket_name(
     return bucket_name
 
 
-async def _resolve_outputs_remote_bucket_name(
+def _resolve_outputs_remote_bucket_name(
     req: Request,
     current_user: Optional[User],
     db: Session,

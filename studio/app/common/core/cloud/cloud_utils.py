@@ -23,8 +23,11 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionStatus,
     SubscriptionType,
 )
-from studio.app.common.core.subscription.subscription_service import SubscriptionService
-from studio.app.common.db.database import session_scope
+from studio.app.common.core.subscription.subscription_service import (
+    SubscriptionLifecycle,
+    SubscriptionService,
+)
+from studio.app.common.db.database import run_db_lookup, session_scope
 from studio.app.common.models import SubscriptionPlans
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserStorageUsage, UserSubscription
@@ -219,8 +222,7 @@ def get_effective_quota_bytes(
     # Fail open to the raw quota on any lookup error: a transient DB issue must
     # not turn a run/upload into a 500 (this runs on the request hot path).
     try:
-        with session_scope() as db:
-            lifecycle = SubscriptionService.determine_lifecycle(db, user_id)
+        lifecycle = _determine_lifecycle(user_id)
     except Exception as e:
         logger.warning(
             f"Failed to determine subscription lifecycle for user {user_id}: {e}; "
@@ -238,6 +240,11 @@ def get_effective_quota_bytes(
     return _effective_quota_bytes(lifecycle.status, raw_quota_bytes)
 
 
+def _determine_lifecycle(user_id: int) -> Optional[SubscriptionLifecycle]:
+    with session_scope() as db:
+        return SubscriptionService.determine_lifecycle(db, user_id)
+
+
 async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
     """
     Calculate limit warning based on subscription and storage status.
@@ -251,191 +258,189 @@ async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:
     3. Premium user, storage limit exceeded → Storage warning
     4. Premium user, subscription expiring only → Subscription warning
     5. Premium user, storage exceeded + subscription expiring → Combined warning
+
+    The database lookups run in a worker thread (run_db_lookup): a wait for a
+    pooled connection must not block the event loop.
     """
     try:
         FREE_PLAN_LIMIT_BYTES = StorageQuota.FREE * StorageSize.GB
 
         logger.info(f"Calculating limit warning for user {user_id}")
 
-        with session_scope() as db:
-            # Get user's current storage usage - prioritize fresh data at startup
+        # Get user's current storage usage - prioritize fresh data at startup
 
-            # First check if we have cached data (within 20 minutes)
-            storage_info = get_user_storage_usage(user_id)
-            if storage_info and _is_storage_data_fresh(
-                storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
-            ):
-                current_usage_bytes = storage_info.get("storage_usage_bytes", 0)
-                logger.info(
-                    f"LimitWarning: Using fresh cached storage data "
-                    f"for user {user_id}: {current_usage_bytes}"
-                )
-            else:
-                # Get fresh storage data using async call
-                current_usage_bytes = await get_current_user_storage_usage(
-                    user_id, force_live=True
-                )
-                logger.info(
-                    f"LimitWarning: Calculated fresh storage data "
-                    f"for user {user_id}: {current_usage_bytes}"
-                )
-
-            # Use quota from already retrieved storage_info to avoid redundant DB call
-            storage_quota_bytes = (
-                storage_info.get("storage_quota_bytes", FREE_PLAN_LIMIT_BYTES)
-                if storage_info
-                else FREE_PLAN_LIMIT_BYTES
+        # First check if we have cached data (within 20 minutes)
+        storage_info = await run_db_lookup(get_user_storage_usage, user_id)
+        if storage_info and _is_storage_data_fresh(
+            storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
+        ):
+            current_usage_bytes = storage_info.get("storage_usage_bytes", 0)
+            logger.info(
+                f"LimitWarning: Using fresh cached storage data "
+                f"for user {user_id}: {current_usage_bytes}"
             )
-            storage_quota_gb = storage_quota_bytes / StorageSize.GB
-
-            # Step 1: Determine subscription status.
-            # A malformed premium row (None returned) means no warning.
-            lifecycle = SubscriptionService.determine_lifecycle(db, user_id)
-            if lifecycle is None:
-                return None
-            subscription_status = lifecycle.status
-            subscription_end = lifecycle.subscription_end
-            grace_end = lifecycle.grace_end
-            deletion_date = lifecycle.deletion_date
-            days_remaining = lifecycle.days_remaining
-
-            # Step 2: Determine storage status against the effective quota
-            # (grace/warning/overdue are held to the free-tier limit), using the
-            # same mapping the enforcement gates apply.
-            effective_quota_bytes = _effective_quota_bytes(
-                subscription_status, storage_quota_bytes
+        else:
+            # Get fresh storage data using async call
+            current_usage_bytes = await get_current_user_storage_usage(
+                user_id, force_live=True
             )
-            effective_quota_gb = effective_quota_bytes / StorageSize.GB
-
-            storage_exceeded = current_usage_bytes > effective_quota_bytes
-            excess_bytes = max(0, current_usage_bytes - effective_quota_bytes)
-            excess_gb = excess_bytes / StorageSize.GB
-            current_usage_gb = current_usage_bytes / StorageSize.GB
-
-            # Step 3: Apply the 5 cases
-            logger.debug(f"User {user_id} warning analysis:")
-            logger.debug(f"Subscription status: {subscription_status}")
-            logger.debug(f"Storage exceeded: {storage_exceeded}")
-            logger.debug(
-                f"Current usage: {current_usage_gb:.2f}GB / {effective_quota_gb:.1f}GB "
-                f"(effective quota for {subscription_status})"
+            logger.info(
+                f"LimitWarning: Calculated fresh storage data "
+                f"for user {user_id}: {current_usage_bytes}"
             )
 
-            # Case 1: Free user, no storage limit exceeded → No warning
-            if (
-                subscription_status == SubscriptionLifecycleStatus.FREE
-                and not storage_exceeded
-            ):
-                logger.debug(
-                    f"User {user_id}: No warning needed (free plan, within limits)"
-                )
-                return None
+        # Use quota from already retrieved storage_info to avoid redundant DB call
+        storage_quota_bytes = (
+            storage_info.get("storage_quota_bytes", FREE_PLAN_LIMIT_BYTES)
+            if storage_info
+            else FREE_PLAN_LIMIT_BYTES
+        )
+        storage_quota_gb = storage_quota_bytes / StorageSize.GB
 
-            # Case 2: Free user, storage limit exceeded → Storage warning
-            if (
-                subscription_status == SubscriptionLifecycleStatus.FREE
-                and storage_exceeded
-            ):
-                return LimitWarning(
-                    has_alert=True,
-                    alert_type=AlertType.STORAGE.value,
-                    days_remaining=SubscriptionPeriods.STORAGE_WARNING_DAYS,
-                    excess_data_bytes=excess_bytes,
-                    excess_data_gb=round(excess_gb, 2),
-                    storage_usage_bytes=current_usage_bytes,
-                    storage_usage_gb=round(current_usage_gb, 2),
-                    storage_quota_bytes=storage_quota_bytes,
-                    storage_quota_gb=storage_quota_gb,
-                    deletion_date=(
-                        SubscriptionService.get_current_datetime()
-                        + timedelta(days=SubscriptionPeriods.STORAGE_WARNING_DAYS)
-                    ).isoformat(),
-                    message=(
-                        f"Your data usage ({round(current_usage_gb, 1)} GB) "
-                        f"exceeds the free plan limit ({storage_quota_gb:.1f} GB). "
-                        f"Please upgrade or remove {round(excess_gb, 1)} GB of data "
-                        f"within {SubscriptionPeriods.STORAGE_WARNING_DAYS} days."
-                    ),
-                )
-
-            # Case 3: Premium user active, storage limit exceeded → Storage warning only
-            if (
-                subscription_status == SubscriptionLifecycleStatus.ACTIVE
-                and storage_exceeded
-            ):
-                return LimitWarning(
-                    has_alert=True,
-                    alert_type=AlertType.STORAGE.value,
-                    days_remaining=SubscriptionPeriods.STORAGE_WARNING_DAYS,
-                    excess_data_bytes=excess_bytes,
-                    excess_data_gb=round(excess_gb, 2),
-                    storage_usage_bytes=current_usage_bytes,
-                    storage_usage_gb=round(current_usage_gb, 2),
-                    storage_quota_bytes=storage_quota_bytes,
-                    storage_quota_gb=storage_quota_gb,
-                    message=(
-                        f"Your storage usage ({round(current_usage_gb, 1)} GB) is over "
-                        f"the limit for your plan. You will be unable to run workflows."
-                        f" Consider cleaning up unused data."
-                    ),
-                )
-
-            # Case 4: Expired premium user over the free limit. Under the limit
-            # nothing is deleted, so there is nothing to warn about.
-            match subscription_status:
-                case (
-                    SubscriptionLifecycleStatus.GRACE
-                    | SubscriptionLifecycleStatus.OVERDUE
-                ) if storage_exceeded:
-                    logger.debug(
-                        f"User {user_id}: Creating limit warning "
-                        f"(status: {subscription_status}, "
-                        f"storage_exceeded: {storage_exceeded})"
-                    )
-
-                    # Determine alert type using AlertType enum
-                    match subscription_status:
-                        case SubscriptionLifecycleStatus.GRACE:
-                            alert_type = AlertType.GRACE
-                        case SubscriptionLifecycleStatus.OVERDUE:
-                            alert_type = AlertType.OVERDUE
-                        case _:
-                            alert_type = AlertType.GRACE  # Fallback
-
-                    message = _generate_subscription_warning_message(
-                        subscription_status=subscription_status,
-                        subscription_end=subscription_end,
-                        current_usage_gb=current_usage_gb,
-                        effective_quota_gb=effective_quota_gb,
-                        excess_gb=excess_gb,
-                        days_remaining=days_remaining,
-                    )
-
-                    return LimitWarning(
-                        has_alert=True,
-                        alert_type=alert_type.value,
-                        days_remaining=days_remaining or 0,
-                        excess_data_bytes=excess_bytes,
-                        excess_data_gb=round(excess_gb, 2),
-                        storage_usage_bytes=current_usage_bytes,
-                        storage_usage_gb=round(current_usage_gb, 2),
-                        storage_quota_bytes=effective_quota_bytes,
-                        storage_quota_gb=effective_quota_gb,
-                        subscription_end_date=(
-                            subscription_end.isoformat() if subscription_end else None
-                        ),
-                        grace_end_date=(grace_end.isoformat() if grace_end else None),
-                        deletion_date=(
-                            deletion_date.isoformat() if deletion_date else None
-                        ),
-                        message=message,
-                    )
-                case _:
-                    pass
-
-            # All other cases: No warning needed
-            logger.info(f"User {user_id}: No warning needed")
+        # Step 1: Determine subscription status.
+        # A malformed premium row (None returned) means no warning.
+        lifecycle = await run_db_lookup(_determine_lifecycle, user_id)
+        if lifecycle is None:
             return None
+        subscription_status = lifecycle.status
+        subscription_end = lifecycle.subscription_end
+        grace_end = lifecycle.grace_end
+        deletion_date = lifecycle.deletion_date
+        days_remaining = lifecycle.days_remaining
+
+        # Step 2: Determine storage status against the effective quota
+        # (grace/warning/overdue are held to the free-tier limit), using the
+        # same mapping the enforcement gates apply.
+        effective_quota_bytes = _effective_quota_bytes(
+            subscription_status, storage_quota_bytes
+        )
+        effective_quota_gb = effective_quota_bytes / StorageSize.GB
+
+        storage_exceeded = current_usage_bytes > effective_quota_bytes
+        excess_bytes = max(0, current_usage_bytes - effective_quota_bytes)
+        excess_gb = excess_bytes / StorageSize.GB
+        current_usage_gb = current_usage_bytes / StorageSize.GB
+
+        # Step 3: Apply the 5 cases
+        logger.debug(f"User {user_id} warning analysis:")
+        logger.debug(f"Subscription status: {subscription_status}")
+        logger.debug(f"Storage exceeded: {storage_exceeded}")
+        logger.debug(
+            f"Current usage: {current_usage_gb:.2f}GB / {effective_quota_gb:.1f}GB "
+            f"(effective quota for {subscription_status})"
+        )
+
+        # Case 1: Free user, no storage limit exceeded → No warning
+        if (
+            subscription_status == SubscriptionLifecycleStatus.FREE
+            and not storage_exceeded
+        ):
+            logger.debug(
+                f"User {user_id}: No warning needed (free plan, within limits)"
+            )
+            return None
+
+        # Case 2: Free user, storage limit exceeded → Storage warning
+        if subscription_status == SubscriptionLifecycleStatus.FREE and storage_exceeded:
+            return LimitWarning(
+                has_alert=True,
+                alert_type=AlertType.STORAGE.value,
+                days_remaining=SubscriptionPeriods.STORAGE_WARNING_DAYS,
+                excess_data_bytes=excess_bytes,
+                excess_data_gb=round(excess_gb, 2),
+                storage_usage_bytes=current_usage_bytes,
+                storage_usage_gb=round(current_usage_gb, 2),
+                storage_quota_bytes=storage_quota_bytes,
+                storage_quota_gb=storage_quota_gb,
+                deletion_date=(
+                    SubscriptionService.get_current_datetime()
+                    + timedelta(days=SubscriptionPeriods.STORAGE_WARNING_DAYS)
+                ).isoformat(),
+                message=(
+                    f"Your data usage ({round(current_usage_gb, 1)} GB) "
+                    f"exceeds the free plan limit ({storage_quota_gb:.1f} GB). "
+                    f"Please upgrade or remove {round(excess_gb, 1)} GB of data "
+                    f"within {SubscriptionPeriods.STORAGE_WARNING_DAYS} days."
+                ),
+            )
+
+        # Case 3: Premium user active, storage limit exceeded → Storage warning only
+        if (
+            subscription_status == SubscriptionLifecycleStatus.ACTIVE
+            and storage_exceeded
+        ):
+            return LimitWarning(
+                has_alert=True,
+                alert_type=AlertType.STORAGE.value,
+                days_remaining=SubscriptionPeriods.STORAGE_WARNING_DAYS,
+                excess_data_bytes=excess_bytes,
+                excess_data_gb=round(excess_gb, 2),
+                storage_usage_bytes=current_usage_bytes,
+                storage_usage_gb=round(current_usage_gb, 2),
+                storage_quota_bytes=storage_quota_bytes,
+                storage_quota_gb=storage_quota_gb,
+                message=(
+                    f"Your storage usage ({round(current_usage_gb, 1)} GB) is over "
+                    f"the limit for your plan. You will be unable to run workflows."
+                    f" Consider cleaning up unused data."
+                ),
+            )
+
+        # Case 4: Expired premium user over the free limit. Under the limit
+        # nothing is deleted, so there is nothing to warn about.
+        match subscription_status:
+            case (
+                SubscriptionLifecycleStatus.GRACE | SubscriptionLifecycleStatus.OVERDUE
+            ) if storage_exceeded:
+                logger.debug(
+                    f"User {user_id}: Creating limit warning "
+                    f"(status: {subscription_status}, "
+                    f"storage_exceeded: {storage_exceeded})"
+                )
+
+                # Determine alert type using AlertType enum
+                match subscription_status:
+                    case SubscriptionLifecycleStatus.GRACE:
+                        alert_type = AlertType.GRACE
+                    case SubscriptionLifecycleStatus.OVERDUE:
+                        alert_type = AlertType.OVERDUE
+                    case _:
+                        alert_type = AlertType.GRACE  # Fallback
+
+                message = _generate_subscription_warning_message(
+                    subscription_status=subscription_status,
+                    subscription_end=subscription_end,
+                    current_usage_gb=current_usage_gb,
+                    effective_quota_gb=effective_quota_gb,
+                    excess_gb=excess_gb,
+                    days_remaining=days_remaining,
+                )
+
+                return LimitWarning(
+                    has_alert=True,
+                    alert_type=alert_type.value,
+                    days_remaining=days_remaining or 0,
+                    excess_data_bytes=excess_bytes,
+                    excess_data_gb=round(excess_gb, 2),
+                    storage_usage_bytes=current_usage_bytes,
+                    storage_usage_gb=round(current_usage_gb, 2),
+                    storage_quota_bytes=effective_quota_bytes,
+                    storage_quota_gb=effective_quota_gb,
+                    subscription_end_date=(
+                        subscription_end.isoformat() if subscription_end else None
+                    ),
+                    grace_end_date=(grace_end.isoformat() if grace_end else None),
+                    deletion_date=(
+                        deletion_date.isoformat() if deletion_date else None
+                    ),
+                    message=message,
+                )
+            case _:
+                pass
+
+        # All other cases: No warning needed
+        logger.info(f"User {user_id}: No warning needed")
+        return None
 
     except Exception as e:
         logger.error(f"Failed to calculate limit warning for user {user_id}: {e}")

@@ -183,6 +183,11 @@ async def get_user_with_context(db: Session, user_id: int) -> User:
     of calculating SUM(Workspace.input_data_usage) + SUM(ExperimentRecord.data_usage)
     via expensive subqueries. storage_usage_bytes is already tracked incrementally.
     """
+    return get_user_with_context_sync(db, user_id)
+
+
+def get_user_with_context_sync(db: Session, user_id: int) -> User:
+    """Blocking body of get_user_with_context, for callers in a worker thread."""
     try:
         query_result = db.execute(
             select(

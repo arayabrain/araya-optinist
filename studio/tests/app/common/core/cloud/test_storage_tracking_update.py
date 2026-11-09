@@ -110,7 +110,7 @@ async def test_scan_leaves_the_row_alone_when_no_active_user_owns_it():
     # GET_LOCK returns 1 so the scan proceeds past the advisory lock
     db.execute.return_value.scalar.return_value = 1
 
-    async def not_found(*_args, **_kwargs):
+    def not_found(*_args, **_kwargs):
         raise HTTPException(status_code=404, detail="User not found")
 
     with patch(f"{MODULE}.session_scope", _session_scope(db)):
@@ -119,7 +119,7 @@ async def test_scan_leaves_the_row_alone_when_no_active_user_owns_it():
             "RemoteStorageType.get_activated_type"
         ) as activated:
             with patch(
-                "studio.app.common.core.users.crud_users.get_user_with_context",
+                "studio.app.common.core.users.crud_users.get_user_with_context_sync",
                 not_found,
             ):
                 from studio.app.common.core.storage.remote_storage_controller import (
