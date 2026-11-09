@@ -3,6 +3,7 @@ import * as http from "http"
 import { AddressInfo } from "net"
 import * as os from "os"
 import * as path from "path"
+import * as zlib from "zlib"
 
 import { expect, test } from "@playwright/test"
 
@@ -15,7 +16,7 @@ import {
   readConfig,
   targetProblems,
 } from "./config"
-import { send, setCookie, userAgent } from "./http"
+import { header, send, setCookie, userAgent } from "./http"
 import {
   cutoffAt,
   decideStep,
@@ -116,6 +117,7 @@ test.describe("load lane: figures", () => {
         status: 200,
         dur: 1.2,
         bytes: 5,
+        encoding: "gzip",
       },
       {
         vu: 1,
@@ -175,6 +177,7 @@ test.describe("load lane: figures", () => {
       p95: 1.2,
       max: 1.2,
       bytes_total: 8,
+      encoded: 1,
     })
     expect(s.free_served_by).toEqual(["h1", "h2"])
     expect(s.vu_done).toBe(1)
@@ -669,6 +672,8 @@ test.describe("load lane: HTTP", () => {
   let open = 0
   let peak = 0
   const held: http.ServerResponse[] = []
+  let acceptEncoding: string | undefined
+  const json = Buffer.from(JSON.stringify({ items: "x".repeat(4_000) }))
 
   test.beforeAll(async () => {
     server = http.createServer((req, res) => {
@@ -677,6 +682,16 @@ test.describe("load lane: HTTP", () => {
       res.on("close", () => open--)
       if (req.url === "/hold") {
         held.push(res)
+        return
+      }
+      if (req.url === "/json") {
+        // As the API answers: gzip only for a client that accepts it
+        acceptEncoding = req.headers["accept-encoding"]
+        const gz = /\bgzip\b/.test(acceptEncoding ?? "")
+        const body = gz ? zlib.gzipSync(json) : json
+        if (gz) res.setHeader("Content-Encoding", "gzip")
+        res.setHeader("Content-Length", String(body.length))
+        res.end(body)
         return
       }
       res.setHeader("Set-Cookie", [
@@ -706,6 +721,22 @@ test.describe("load lane: HTTP", () => {
     expect(setCookie(res, "AWSALB")).toBe("pin-value")
     const full = await send(agent, base, "GET", "/", { timeoutMs: 5_000 })
     expect(full.body?.toString()).toBe("hello world")
+    agent.destroy()
+  })
+
+  test("a user accepts gzip as a browser does, reads the body decoded and counts the bytes as sent", async () => {
+    const agent = userAgent()
+    const full = await send(agent, base, "GET", "/json", { timeoutMs: 5_000 })
+    expect(acceptEncoding).toBe("gzip, deflate")
+    expect(header(full, "content-encoding")).toBe("gzip")
+    expect(full.body?.equals(json)).toBe(true)
+    expect(full.bytes).toBe(zlib.gzipSync(json).length)
+    expect(full.bytes).toBeLessThan(json.length / 10)
+    const ttfb = await send(agent, base, "GET", "/json", {
+      ttfb: true,
+      timeoutMs: 5_000,
+    })
+    expect(ttfb.bytes).toBe(full.bytes)
     agent.destroy()
   })
 
@@ -856,6 +887,61 @@ test.describe("load lane: report", () => {
     expect(notes).not.toContain("fixture differs")
     expect(notes).toContain(
       "no longer `image:suite2p_registration/meanImg.json`",
+    )
+  })
+
+  test("items compressed in only one run are not read as another record, and the bytes are said to compare the transfer", () => {
+    const req = (bytes: number, encoded = 0) => ({
+      count: 1,
+      ok: 1,
+      non_200: [],
+      p50: 1,
+      p95: 1,
+      max: 1,
+      bytes_total: bytes,
+      encoded,
+    })
+    const before = [
+      dialog(1, {
+        requests: {
+          reproduce: req(10),
+          "image:suite2p_roi/Vcorr.json": req(15_000_000),
+          "timeseries:suite2p_roi/fluorescence": req(2_000_000),
+        },
+      }),
+    ]
+    const after = [
+      dialog(1, {
+        requests: {
+          reproduce: req(10),
+          "image:suite2p_roi/Vcorr.json": req(5_800_000, 1),
+          "timeseries:suite2p_roi/fluorescence": req(2_000_000),
+        },
+      }),
+    ]
+    const notes = differences(before, after).join("\n")
+    expect(notes).not.toContain("fixture differs")
+    expect(notes).toContain(
+      "OutputsView from Dataview, owner: 1 of the record's items came compressed in only one of the runs",
+    )
+    expect(notes).toContain("(17.00 MB → 7.80 MB) compare the transfer")
+    expect(notes).toContain(
+      "the fixture check reads the items sent the same way",
+    )
+    // An item sent the same way in both still tells another record
+    after[0].requests["timeseries:suite2p_roi/fluorescence"] = req(3_000_000)
+    expect(differences(before, after).join("\n")).toContain("fixture differs")
+    // Every item compressed in only one run: nothing left to check by bytes
+    const compressed = [
+      dialog(1, {
+        requests: {
+          reproduce: req(5, 1),
+          "image:suite2p_roi/Vcorr.json": req(5_800_000, 1),
+        },
+      }),
+    ]
+    expect(differences(before, compressed).join("\n")).toContain(
+      "the fixture is not checked by bytes",
     )
   })
 

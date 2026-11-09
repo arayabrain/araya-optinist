@@ -148,6 +148,8 @@ async function call(
     rec.dur = elapsed(t)
     rec.bytes = res.bytes
     rec.served_by = header(res, "x-served-by-instance")
+    const encoding = header(res, "content-encoding")
+    if (encoding) rec.encoding = encoding
   } catch (e) {
     rec.dur = elapsed(t)
     rec.error = !vu.stopped

@@ -1,10 +1,15 @@
 import * as http from "http"
+import * as zlib from "zlib"
 
 // One HTTP/1.1 client per virtual user. Six sockets is what a browser opens
 // per host on this plain-HTTP listener, so a user's parallel requests queue
 // the way a real tab's do. The global fetch would share one pool across every
 // user instead.
 export const BROWSER_SOCKETS_PER_HOST = 6
+
+// What a browser accepts on a plain-HTTP origin; br and zstd it offers over
+// HTTPS only. The server compresses only for a client that says so.
+export const BROWSER_ACCEPT_ENCODING = "gzip, deflate"
 
 export function userAgent(): http.Agent {
   return new http.Agent({
@@ -16,8 +21,9 @@ export function userAgent(): http.Agent {
 export type HttpResult = {
   status: number
   headers: http.IncomingHttpHeaders
-  // Only when the body was read
+  // Only when the body was read; decoded
   body?: Buffer
+  // As they crossed the wire, still encoded
   bytes: number
 }
 
@@ -52,7 +58,10 @@ export function send(
 ): Promise<HttpResult> {
   const payload =
     opts.json === undefined ? undefined : Buffer.from(JSON.stringify(opts.json))
-  const headers: Record<string, string> = { ...opts.headers }
+  const headers: Record<string, string> = {
+    "Accept-Encoding": BROWSER_ACCEPT_ENCODING,
+    ...opts.headers,
+  }
   if (payload) headers["Content-Type"] = "application/json"
   // An explicit length: Node would otherwise send a bodiless POST chunked
   if (payload || method !== "GET") {
@@ -96,12 +105,28 @@ export function send(
       res.on("aborted", () => fail(new Error("aborted")))
       res.on("end", () => {
         settle()
-        const body = Buffer.concat(chunks)
-        resolve({ status, headers: res.headers, body, bytes: body.length })
+        const raw = Buffer.concat(chunks)
+        let body: Buffer
+        try {
+          body = decode(raw, res.headers["content-encoding"])
+        } catch (e) {
+          reject(e)
+          return
+        }
+        resolve({ status, headers: res.headers, body, bytes: raw.length })
       })
     })
     req.end(payload)
   })
+}
+
+// The body as the server built it, from the encodings a browser accepts
+function decode(raw: Buffer, encoding: string | undefined): Buffer {
+  const coding = (encoding || "identity").trim().toLowerCase()
+  if (coding === "identity") return raw
+  if (coding === "gzip") return zlib.gunzipSync(raw)
+  if (coding === "deflate") return zlib.inflateSync(raw)
+  throw new Error(`Content-Encoding ${encoding} was not accepted`)
 }
 
 export function header(res: HttpResult, name: string): string | null {

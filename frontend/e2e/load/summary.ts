@@ -15,6 +15,8 @@ export type RequestRecord = {
   status: number | null
   dur: number
   bytes?: number
+  // The answer's Content-Encoding, when it had one
+  encoding?: string
   served_by?: string | null
   error?: string
 }
@@ -51,7 +53,10 @@ export type RequestStat = {
   p50: number | null
   p95: number | null
   max: number | null
+  // As they crossed the wire
   bytes_total: number
+  // Answers that came encoded; absent in steps whose client asked for none
+  encoded?: number
 }
 
 export type ProbeStat = {
@@ -145,6 +150,7 @@ export function summarize(step: {
       p95: pct(durs, 95),
       max: durs.length ? Math.max(...durs) : null,
       bytes_total: rs.reduce((sum, r) => sum + (r.bytes ?? 0), 0),
+      encoded: rs.filter((r) => r.encoding).length,
     }
   }
   const served = [

@@ -508,8 +508,11 @@ a section of the landing page (`/`), which the lane does not load.
 
 OutputsView items and thumbnails are timed to the response headers: the server
 builds the body before it sends them, so the load generator's own link does
-not bound the figure. Free-route requests carry one `AWSALB` cookie, so every
-user reaches the same free instance, and each step checks that they did.
+not bound the figure. Every request accepts `gzip, deflate`, as a browser does
+on this plain-HTTP origin, so the server compresses what it would for a
+browser; bytes are counted as they crossed the wire. Free-route requests carry
+one `AWSALB` cookie, so every user reaches the same free instance, and each
+step checks that they did.
 
 **Stops.** Two probes run once a second: the public service's `/health` and
 the free instance's `/is_standalone` with a Bearer token. A step stops at a
@@ -621,8 +624,8 @@ came from, so those steps compare as they are), `requests.jsonl`,
 `report.md`. The report gives each
 screen's table before → after with an Improvement column, the 1-user
 per-item times, the differences the comparison has to be read with (6
-connections per user, a different fixture, other thresholds, a changed
-request set), the Dashboard's robustness (DB pool timeouts, 401 and 5xx in the
+connections per user, a different fixture, items compressed in only one of
+the runs, other thresholds, a changed request set), the Dashboard's robustness (DB pool timeouts, 401 and 5xx in the
 server logs, instance replacement) and the post-checks (target health,
 scaling activity, the services' CPU per step, 5xx at the ALB, the ALB's
 slowest answer per step). Items are labelled by endpoint, the output's node

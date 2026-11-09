@@ -223,18 +223,29 @@ function bytesPerUser(f: StepFigures | undefined): number | null {
 // thumbnails follow whatever else is published
 const NOT_THE_RECORD = ["auth_refresh_anon", "is_standalone", "public_list"]
 
-// Bytes per user, before and after, over the record's items both steps sent;
-// null when they share none
+function encoded(f: StepFigures, name: string): boolean {
+  return (f.requests[name].encoded ?? 0) > 0
+}
+
+// The record's items both steps sent
+function recordItems(b: StepFigures, a: StepFigures): string[] {
+  return Object.keys(a.requests).filter(
+    (n) =>
+      n in b.requests &&
+      !NOT_THE_RECORD.includes(n) &&
+      !n.startsWith("thumbnail:"),
+  )
+}
+
+// Bytes per user, before and after, over the record's items both steps sent
+// the same way, compressed in both or in neither; null when there are none
 function recordBytes(
   b: StepFigures | undefined,
   a: StepFigures | undefined,
 ): [number, number] | null {
   if (!b?.vus || !a?.vus) return null
-  const shared = Object.keys(a.requests).filter(
-    (n) =>
-      n in b.requests &&
-      !NOT_THE_RECORD.includes(n) &&
-      !n.startsWith("thumbnail:"),
+  const shared = recordItems(b, a).filter(
+    (n) => encoded(a, n) === encoded(b, n),
   )
   if (!shared.length) return null
   const per = (f: StepFigures) =>
@@ -448,10 +459,23 @@ export function differences(
       "per PublicDataview visitor), so list and item times there are on the strict side.",
   ]
   for (const screen of ["dialog", "public"] as Screen[]) {
-    const bytes = recordBytes(
-      before.find((f) => f.screen === screen && f.vus === 1),
-      after.find((f) => f.screen === screen && f.vus === 1),
-    )
+    const b = before.find((f) => f.screen === screen && f.vus === 1)
+    const a = after.find((f) => f.screen === screen && f.vus === 1)
+    const bytes = recordBytes(b, a)
+    const recoded =
+      b?.vus && a?.vus
+        ? recordItems(b, a).filter((n) => encoded(a, n) !== encoded(b, n))
+        : []
+    if (recoded.length) {
+      notes.push(
+        `${SCREEN_TABLES[screen].title}: ${recoded.length} of the record's items came ` +
+          "compressed in only one of the runs, so its bytes per open " +
+          `(${fmtMB(bytesPerUser(b))} → ${fmtMB(bytesPerUser(a))}) compare the transfer; ` +
+          (bytes
+            ? "the fixture check reads the items sent the same way in both."
+            : "no item was sent the same way in both, so the fixture is not checked by bytes."),
+      )
+    }
     if (
       bytes &&
       bytes[0] > 0 &&
