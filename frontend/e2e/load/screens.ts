@@ -1,5 +1,7 @@
 import { ClientRequest } from "http"
 
+import { authHeaders as bearerHeaders } from "../helpers"
+
 import { RecordRef } from "./config"
 import {
   errorName,
@@ -64,13 +66,9 @@ export type Session = {
 
 const ACCEPT_JSON = { Accept: "application/json" }
 
+// helpers.ts's Bearer and ExToken, asking for JSON as the frontend does
 export function authHeaders(accessToken: string, exToken: string | null) {
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${accessToken}`,
-    ...ACCEPT_JSON,
-  }
-  if (exToken) headers.ExToken = exToken
-  return headers
+  return { ...bearerHeaders(accessToken, exToken), ...ACCEPT_JSON }
 }
 
 // ---------------------------------------------------------------------------

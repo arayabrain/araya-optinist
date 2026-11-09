@@ -42,7 +42,7 @@ import {
   RunReport,
 } from "./report"
 import globalSetup from "../global-setup"
-import { devIsUp } from "../helpers"
+import { devIsUp, publishPath } from "../helpers"
 
 import {
   fiveXxReason,
@@ -54,6 +54,7 @@ import {
   watchStreak,
 } from "./runner"
 import {
+  authHeaders,
   CaptureRow,
   checkDashboardCapture,
   CaptureChanged,
@@ -701,6 +702,16 @@ test.describe("load lane: request sets", () => {
     expect(itemName("/api/dataview/hidden_outputs/992")).toBe("hidden_outputs")
     expect(routeOf("/users/me")).toBe("public")
     expect(routeOf("/api/dataview/workflow/reproduce/7/u")).toBe("free")
+  })
+
+  test("the replay's headers and the publish path are the suite's own", () => {
+    expect(authHeaders("t", "x")).toEqual({
+      Authorization: "Bearer t",
+      ExToken: "x",
+      Accept: "application/json",
+    })
+    expect(authHeaders("t", null)).not.toHaveProperty("ExToken")
+    expect(publishPath(42, false)).toBe("/api/dataview/publish/42/off")
   })
 
   test("the Dashboard's capture must still be the replay's seven requests", () => {

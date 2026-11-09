@@ -2,6 +2,8 @@ import * as fs from "fs"
 import * as http from "http"
 import * as path from "path"
 
+import { PUBLISH_TIMEOUT_MS, publishPath } from "../helpers"
+
 import { Account, RecordRef } from "./config"
 import {
   errorName,
@@ -157,24 +159,17 @@ export async function findRecord(
 
 export const PUBLISHED = 1
 
-// Publishing syncs and validates against S3 within the request
-const PUBLISH_TIMEOUT_MS = 120_000
-
+// helpers.ts's setPublished by record id, over this lane's own connection
 export async function setPublished(
   base: URL,
   owner: Session,
   id: number,
   on: boolean,
 ): Promise<void> {
-  const res = await setupCall(
-    base,
-    "POST",
-    `/api/dataview/publish/${id}/${on ? "on" : "off"}`,
-    {
-      headers: authHeaders(owner.accessToken, owner.exToken),
-      timeoutMs: PUBLISH_TIMEOUT_MS,
-    },
-  )
+  const res = await setupCall(base, "POST", publishPath(id, on), {
+    headers: authHeaders(owner.accessToken, owner.exToken),
+    timeoutMs: PUBLISH_TIMEOUT_MS,
+  })
   if (res.status !== 200)
     throw new Error(`publish ${on ? "on" : "off"} answered ${res.status}`)
 }

@@ -1,12 +1,11 @@
 import * as fs from "fs"
 import * as path from "path"
 
-import { expect, Page, test } from "@playwright/test"
+import { expect, test } from "@playwright/test"
 
 import {
   activeFreeUsers,
   devIsUp,
-  filterColumn,
   otherActiveUsers,
   progressLog,
   sqlSkipReason,
@@ -152,13 +151,6 @@ function afterOf(w: WatchResult): StepOutcome["after"] {
 function skipNamed(log: ReturnType<typeof progressLog>, reason: string): void {
   if (reason) log.step(`skipped: ${reason}`)
   test.skip(!!reason, reason)
-}
-
-// The uid filter matches across every account; the row is then found by its
-// primary key
-async function filterTo(page: Page, uid: string): Promise<void> {
-  await filterColumn(page, "uid", uid)
-  await page.keyboard.press("Escape")
 }
 
 // The restore of a record this run published. The test body pays it; the hook
@@ -444,12 +436,10 @@ test.describe("Web UI load lane @disruptive", () => {
               await setPublished(base, await ownerSession(), rec.id, true)
             }
             log.step("capturing PublicDataview")
-            const rows: CaptureRow[] = await capturePublic(
-              browser,
-              base,
-              rec.id,
-              (page) => filterTo(page, cfg.publicRecord.uid),
-            )
+            const rows: CaptureRow[] = await capturePublic(browser, base, {
+              id: rec.id,
+              uid: cfg.publicRecord.uid,
+            })
             fs.writeFileSync(
               path.join(runDir, "capture-public.json"),
               JSON.stringify(rows, null, 1),

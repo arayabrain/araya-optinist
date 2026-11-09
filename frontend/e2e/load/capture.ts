@@ -6,7 +6,13 @@ import {
   Request,
 } from "@playwright/test"
 
-import { dismissStorageWarning, login } from "../helpers"
+import {
+  dismissStorageWarning,
+  filterPublicToRecord,
+  login,
+  publicRow,
+  PublicRecordRef,
+} from "../helpers"
 
 import { Account } from "./config"
 import { CaptureRow } from "./screens"
@@ -222,9 +228,8 @@ export async function captureOwner(
 
 async function openPublicRecord(
   page: Page,
-  recordId: number,
+  publicRecord: PublicRecordRef,
   rec: Recorder,
-  filterTo: (page: Page) => Promise<void>,
 ): Promise<void> {
   await page.goto("/public")
   await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible({
@@ -232,10 +237,12 @@ async function openPublicRecord(
   })
   await rec.settled()
   await clearModals(page)
-  if (!(await recordRow(page, recordId).isVisible())) {
+  if (!(await publicRow(page, publicRecord).isVisible())) {
     rec.setPhase("filter", page)
-    await filterTo(page)
-    await expect(recordRow(page, recordId)).toBeVisible({ timeout: 30_000 })
+    await filterPublicToRecord(page, publicRecord)
+    await expect(publicRow(page, publicRecord)).toBeVisible({
+      timeout: 30_000,
+    })
     await rec.settled()
   }
 }
@@ -248,23 +255,22 @@ async function openPublicRecord(
 export async function capturePublic(
   browser: Browser,
   base: URL,
-  recordId: number,
-  filterTo: (page: Page) => Promise<void>,
+  publicRecord: PublicRecordRef,
 ): Promise<CaptureRow[]> {
   const context = await newContext(browser, base)
   const rec = record(context, base, true)
   try {
     const page = await context.newPage()
     rec.setPhase("warmup_list", page)
-    await openPublicRecord(page, recordId, rec, filterTo)
+    await openPublicRecord(page, publicRecord, rec)
     rec.setPhase("dialog_warmup", page)
-    await openOutputs(page, recordId, rec)
+    await openOutputs(page, publicRecord.id, rec)
 
     await clearCache(context, page)
     rec.setPhase("public_list", page)
-    await openPublicRecord(page, recordId, rec, filterTo)
+    await openPublicRecord(page, publicRecord, rec)
     rec.setPhase("dialog", page)
-    await openOutputs(page, recordId, rec)
+    await openOutputs(page, publicRecord.id, rec)
     return rec.rows
   } finally {
     await context.close()

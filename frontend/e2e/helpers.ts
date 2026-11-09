@@ -1764,6 +1764,14 @@ export async function dataviewRecord(
   return { id: record.id, uid: record.uid }
 }
 
+// Publish syncs and validates against S3 in-request on a deployed env, which
+// outlasts the default request timeout
+export const PUBLISH_TIMEOUT_MS = 120_000
+
+export function publishPath(id: number, on: boolean): string {
+  return `/api/dataview/publish/${id}/${on ? "on" : "off"}`
+}
+
 export async function setPublished(page: Page, name: string, on: boolean) {
   const record = await findDataviewRecord(page, name)
   if (!record) {
@@ -1771,11 +1779,9 @@ export async function setPublished(page: Page, name: string, on: boolean) {
     throw new Error(`no dataview record named ${name} to publish`)
   }
   const headers = await apiHeaders(page)
-  // Publish syncs and validates against S3 in-request on a deployed env, which
-  // outlasts the default request timeout
   const res = await page.request.post(
-    `${apiUrl()}/api/dataview/publish/${record.id}/${on ? "on" : "off"}`,
-    { headers, timeout: 120_000 },
+    `${apiUrl()}${publishPath(record.id, on)}`,
+    { headers, timeout: PUBLISH_TIMEOUT_MS },
   )
   if (!res.ok()) {
     throw new Error(
