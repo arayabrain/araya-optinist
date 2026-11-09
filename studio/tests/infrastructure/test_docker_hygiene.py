@@ -14,7 +14,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from terraform_source import TERRAFORM_DIR, attribute, read, resource_block
+from terraform_source import (
+    TERRAFORM_DIR,
+    attribute,
+    read,
+    resource_block,
+    resource_blocks,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPTS = PROJECT_ROOT / "infrastructure" / "scripts"
@@ -23,7 +29,7 @@ USER_DATA = SCRIPTS / "ecs-user-data.sh"
 ECR_BUILD_PUSH = SCRIPTS / "ecr_build_push.sh"
 DEPLOYMENT_TF = TERRAFORM_DIR / "deployment.tf"
 
-TEMPLATES = ["ecs", "premium", "background", "public"]
+TEMPLATES = ["ecs", "premium", "background", "public", "public_dataview"]
 
 
 def _script() -> str:
@@ -191,6 +197,13 @@ class TestTerraform:
         assert attribute(block, "schedule_expression") == '"rate(6 hours)"'
         assert attribute(block, "max_concurrency") == '"25%"'
         assert attribute(block, "max_errors") == '"100%"'
+
+    def test_every_declared_launch_template_is_listed(self):
+        # A tier added with its own launch template must join the association
+        declared = set()
+        for path in sorted(TERRAFORM_DIR.glob("*.tf")):
+            declared |= set(resource_blocks(read(path), "aws_launch_template"))
+        assert declared == set(TEMPLATES)
 
     def test_association_id_is_an_output(self):
         tf = read(DEPLOYMENT_TF)

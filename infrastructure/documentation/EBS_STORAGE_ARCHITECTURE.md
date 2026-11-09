@@ -300,8 +300,8 @@ record, every CaImAn memmap (`output/{ws}/input_tiff/<digest>/` for HDF5 and MAT
 upload lands on the host's root EBS volume, next to docker's images and stopped containers. Only
 `/app/.snakemake` is on EFS. A task restart (any deploy) discards the local copy; the next run
 re-downloads from S3. Root sizes: free tier 88 GiB and premium 64 GiB (`root_volume_gib` in
-`local.free_tier_sizing_defaults` / `local.premium_tier_sizing_defaults`, `main.tf`); background
-and public hosts have the AMI's 30 GiB.
+`local.free_tier_sizing_defaults` / `local.premium_tier_sizing_defaults`, `main.tf`); background,
+public and public DataView hosts have the AMI's 30 GiB.
 
 Two guards keep the root from filling (details in
 [MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#host-root-volume-hygiene)):

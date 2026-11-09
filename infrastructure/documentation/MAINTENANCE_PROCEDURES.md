@@ -638,8 +638,9 @@ and once at 100 % the SSM agent and cloud-init could not write either, so the ho
 Two layers keep that from happening again:
 
 - **Host side.** The SSM association `<env>-docker-hygiene` (`deployment.tf`) runs
-  `infrastructure/scripts/docker_hygiene.sh` on every host launched from one of the four launch
-  templates (free, premium, background, public), every 6 hours and once after each deploy
+  `infrastructure/scripts/docker_hygiene.sh` on every host launched from one of the five launch
+  templates (free, premium, background, public, public DataView), every 6 hours and once after each
+  deploy
   (`null_resource.deploy_to_ecs` and `ecr_build_push.sh --deploy` call `start-associations-once`).
   It prunes stopped containers created more than 10 minutes ago, then, only when the ECS agent
   reports at least one RUNNING task and none mid-start, every image no container uses. The log is

@@ -165,7 +165,7 @@ resource "aws_ssm_document" "docker_hygiene" {
   })
 }
 
-# Keyed on the launch template ids: every host launched from one of the four
+# Keyed on the launch template ids: every host launched from one of the five
 # templates, the Lambda-created premium hosts included, carries this tag. A
 # replaced template (new id) drops hosts launched from the old id until they
 # are recycled. The NAT instance has no template and is left alone.
@@ -179,6 +179,7 @@ resource "aws_ssm_association" "docker_hygiene" {
       aws_launch_template.premium.id,
       aws_launch_template.background.id,
       aws_launch_template.public.id,
+      aws_launch_template.public_dataview.id,
     ]
   }
 

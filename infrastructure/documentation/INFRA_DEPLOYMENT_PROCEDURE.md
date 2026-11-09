@@ -457,8 +457,8 @@ unused images every 6 hours and after each deploy (`null_resource.deploy_to_ecs`
 
 Root volume sizes are `root_volume_gib` in `local.free_tier_sizing_defaults` (88 GiB) and
 `local.premium_tier_sizing_defaults` (64 GiB) in `main.tf`, overridable per environment through
-`free_tier_sizing` / `premium_tier_sizing` in the tfvars. Background and public hosts keep the
-AMI's 30 GiB. The ECS agent's cleanup knobs (`ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION` and the
+`free_tier_sizing` / `premium_tier_sizing` in the tfvars. Background, public and public DataView
+hosts keep the AMI's 30 GiB. The ECS agent's cleanup knobs (`ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION` and the
 `ECS_IMAGE_*` settings in `scripts/ecs-user-data.sh`) ship with the user data.
 
 A change to either reaches a host only when it is launched from the new launch template version:
@@ -467,8 +467,8 @@ A change to either reaches a host only when it is launched from the new launch t
   first: if they do not show `-/+`, replace them explicitly, at a time with no premium run active
   (users on the old instance lose their task):
   `terraform apply -replace=aws_instance.premium[0] -replace=aws_instance.background -var-file=...`.
-- The free and public ASGs do not instance-refresh under `$Latest`; their hosts pick the change up
-  at the next launch, or after a manual `aws autoscaling start-instance-refresh`.
+- The free, public and public DataView ASGs do not instance-refresh under `$Latest`; their hosts
+  pick the change up at the next launch, or after a manual `aws autoscaling start-instance-refresh`.
 - Premium hosts created by the Lambda (`premium_manager.py`) keep their size until terminated.
 
 The hygiene association needs none of this: it targets hosts by the
