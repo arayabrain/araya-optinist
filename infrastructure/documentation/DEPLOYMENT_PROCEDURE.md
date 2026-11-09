@@ -40,7 +40,11 @@ brew install terraform
 
 ### Optional Build Configuration
 
-The analytics (GTM) container ID is read at build time from the SSM String parameter `/<environment>/optinist/gtm-id` (`/development/optinist/gtm-id`, `/subscr/optinist/gtm-id`). The build log names the source, and if the parameter does not exist the frontend is built with analytics disabled. Any other SSM error (for example access denied) fails the build. See [ANALYTICS_ARCHITECTURE.md](ANALYTICS_ARCHITECTURE.md).
+The analytics (GTM) container ID is read at build time from the SSM String parameter `/<environment>/optinist/gtm-id` (`/development/optinist/gtm-id`, `/subscr/optinist/gtm-id`). The build log names the source, and if the parameter does not exist the frontend is built with analytics disabled. Any other SSM error (for example access denied) fails the build. See [ANALYTICS_ARCHITECTURE.md](ANALYTICS_ARCHITECTURE.md). To read the current development value:
+
+```bash
+aws ssm get-parameter --region ap-northeast-1 --name /development/optinist/gtm-id --query Parameter.Value --output text
+```
 
 `infrastructure/.env.deploy` (gitignored) is an optional local override. When it sets the key for the target environment, that value wins and SSM is not read:
 
