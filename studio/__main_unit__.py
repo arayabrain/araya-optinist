@@ -188,7 +188,7 @@ async def lifespan(app: FastAPI):
             job_id=PremiumExpirationSweep.JOB_ID,
         )
 
-        # Sweep never-verified, never-signed-in Firebase accounts. Dry-run
+        # Sweep never-verified Firebase accounts unused since registration. Dry-run
         # unless UNVERIFIED_ACCOUNT_CLEANUP_MODE=delete.
         BackgroundScheduler.add_job(
             func=UnverifiedAccountCleanupJob.run,

@@ -50,8 +50,8 @@ logger = AppLogger.get_logger()
 
 
 class UnverifiedAccountCleanupJob:
-    """Delete Firebase accounts that never verified their email and never
-    signed in, after a grace period.
+    """Delete Firebase accounts that never verified their email and were not
+    used after registration, once the grace period has passed.
 
     ``run`` is deliberately synchronous: AsyncIOScheduler executes sync jobs
     in a worker thread, keeping the blocking Firebase/DB/S3 calls off the

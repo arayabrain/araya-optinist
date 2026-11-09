@@ -345,7 +345,7 @@ class TestRunDelete:
 
         with patch.object(
             UnverifiedAccountCleanup, "MAX_ACCOUNTS_PER_RUN", 1
-        ), _patch_session(_mock_db([_db_user()])), patch.object(
+        ), _patch_session(_mock_db([_db_user(), _db_user()])), patch.object(
             UnverifiedAccountCleanupJob,
             "_deactivate_db_user",
             side_effect=RuntimeError("db down"),
@@ -392,7 +392,7 @@ class TestRunDelete:
         _set_candidates(mock_fb, [_fb_user(uid="bad"), good, never])
         mock_fb.get_user.side_effect = [ValueError("boom"), good, never]
         row = _db_user()
-        db = _mock_db([row, row, row])
+        db = _mock_db([row] * 5)
 
         with patch.object(
             UnverifiedAccountCleanup, "MAX_ACCOUNTS_PER_RUN", 1
