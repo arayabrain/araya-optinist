@@ -18,6 +18,7 @@ import tifffile
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.microscopes.IsxdReader import IsxdReader
 from studio.app.optinist.microscopes.MicroscopeDataReaderBase import (
+    OMEDataModel,
     unpack_microscope_libs,
 )
 from studio.app.optinist.microscopes.ND2Reader import ND2Reader
@@ -237,3 +238,34 @@ def test_thorlabs_reader_extracts_a_thor_zip_and_removes_it_on_release(tmp_path)
     assert len(list(tmp_path.iterdir())) == 3
     del reader
     assert sorted(p.name for p in tmp_path.iterdir()) == ["scan", "scan.thor.zip"]
+
+
+def test_thorlabs_reader_closes_its_tiff_on_release(tmp_path):
+    write_thorlabs_scan(tmp_path / "scan")
+    reader = ThorlabsReader()
+    reader.load(str(tmp_path / "scan"))
+    (handle_tiff,) = reader.resource_handles
+    del reader
+    assert handle_tiff.filehandle.closed
+
+
+def test_uint8_pixels_have_depth_8():
+    assert OMEDataModel.get_depth_from_pixel_type("uint8") == 8
+
+
+def test_reader_whose_library_fails_to_init_can_still_be_destroyed(monkeypatch):
+    def fail():
+        raise OSError("no library")
+
+    monkeypatch.setattr(ThorlabsReader, "_init_library", lambda self: fail())
+    reader = ThorlabsReader.__new__(ThorlabsReader)
+    with pytest.raises(OSError):
+        reader.__init__()
+    reader.__del__()
+
+
+@pytest.mark.parametrize("reader", [ND2Reader, OIRReader])
+def test_reader_is_unavailable_without_a_library_path(reader, monkeypatch):
+    monkeypatch.setattr(reader, "unpack_libs", staticmethod(lambda: None))
+    monkeypatch.setattr(reader, "get_library_path", staticmethod(lambda: None))
+    assert reader.is_available() is False
