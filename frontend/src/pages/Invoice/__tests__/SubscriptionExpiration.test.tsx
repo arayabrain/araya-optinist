@@ -92,9 +92,9 @@ describe("Invoice page subscription expiration", () => {
     expect(screen.queryByText(/expired on/)).not.toBeInTheDocument()
   })
 
-  it("shows expired on and Upgrade when is_expired=true", async () => {
+  it("trusts is_expired=true although the expiration is still ahead", async () => {
     renderInvoice({
-      expiration: hoursFromNowAsNaiveUtc(-3),
+      expiration: hoursFromNowAsNaiveUtc(48),
       is_expired: true,
     })
 
