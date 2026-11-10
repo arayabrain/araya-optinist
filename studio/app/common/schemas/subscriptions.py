@@ -117,6 +117,10 @@ class CreateCheckoutSessionResponse(BaseModel):
     session_id: str
 
 
+class CreatePortalSessionResponse(BaseModel):
+    url: str
+
+
 class PaymentMethodResponse(BaseModel):
     id: str
     type: str = "card"  # "card" or "link"

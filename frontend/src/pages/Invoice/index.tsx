@@ -2,6 +2,8 @@ import { useState, useEffect, FC } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
+import { useSnackbar } from "notistack"
+
 import ArrowBackIcon from "@mui/icons-material/ArrowBack"
 import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined"
 import {
@@ -15,6 +17,7 @@ import {
 import { styled } from "@mui/material/styles"
 
 import { InvoiceDTO } from "api/paymentMethod/PaymentMethodApiDTO"
+import { createPortalSessionApi } from "api/subscriptions/Subscriptions"
 import Loading from "components/common/Loading"
 import CardBrandIcon from "pages/Invoice/CardBrandIcon"
 import {
@@ -300,6 +303,7 @@ const InvoicesPage: FC = () => {
   const navigate = useNavigate()
 
   const dispatch = useDispatch<AppDispatch>()
+  const { enqueueSnackbar } = useSnackbar()
 
   // Redux selectors - separate slices
   const subscription = useSelector(selectUserSubscription)
@@ -405,12 +409,11 @@ const InvoicesPage: FC = () => {
   }
 
   const handleManageBilling = async (): Promise<void> => {
-    if (!shouldShowLoader) {
-      window.open(
-        "https://billing.stripe.com/p/login/5kQ9ATdaS2TbdknghI2wU00",
-        "_blank",
-        "noopener,noreferrer",
-      )
+    if (shouldShowLoader) return
+    try {
+      window.location.assign(await createPortalSessionApi())
+    } catch {
+      enqueueSnackbar("Could not open the billing portal", { variant: "error" })
     }
   }
 
