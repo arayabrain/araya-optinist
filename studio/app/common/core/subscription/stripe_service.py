@@ -787,25 +787,35 @@ class StripeService:
         """Cancel every Stripe subscription that can still bill, trusting Stripe
         over the local row: a past_due subscription has an expired local row."""
         customer = await get_stripe_customer(db, user)
-        billable = (
-            [
+        billable, pending_schedules = [], []
+        if customer:
+            billable = [
                 sub
                 for sub in stripe.Subscription.list(
                     customer=customer.id, status="all", limit=100
-                ).data
+                ).auto_paging_iter()
                 if sub.status
                 not in (
                     StripeSubscriptionStatus.CANCELED,
                     StripeSubscriptionStatus.INCOMPLETE_EXPIRED,
                 )
             ]
-            if customer
-            else []
-        )
-        if not billable:
+            # A not_started schedule is attached to no subscription yet.
+            pending_schedules = [
+                schedule
+                for schedule in stripe.SubscriptionSchedule.list(
+                    customer=customer.id, scheduled=True, limit=100
+                ).auto_paging_iter()
+                if schedule.status == "not_started"
+            ]
+        if not billable and not pending_schedules:
             raise HTTPException(
                 status_code=404, detail="No billable Stripe subscription found"
             )
+
+        for schedule in pending_schedules:
+            stripe.SubscriptionSchedule.cancel(schedule.id)
+            logger.info(f"Cancelled schedule {schedule.id} for user {user.id}")
 
         for sub in billable:
             if sub.get("schedule"):
