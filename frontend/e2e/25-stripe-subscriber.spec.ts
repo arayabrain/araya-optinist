@@ -372,6 +372,34 @@ test.describe("Stripe throwaway subscriber", () => {
       "the renewal charge was declined",
     ).toBeTruthy()
 
+    // Grace while Stripe retries: the failed renewal's period is mirrored, and
+    // the account keeps premium on it. The app runs on real time, not the
+    // clock's, so the first period alone would read premium here too.
+    const renewedEnd = periodEnd(pastDue)
+    expect(
+      renewedEnd,
+      "the failed renewal opened a new period",
+    ).toBeGreaterThan(firstEnd)
+    await expect
+      .poll(
+        () =>
+          Math.abs(storedSubscription(s.userId).expiration - renewedEnd) <= 60,
+        {
+          message: "the past-due period end was not mirrored into the app",
+          timeout: 90_000,
+          intervals: [5_000],
+        },
+      )
+      .toBe(true)
+    const { api, headers } = await apiLogin(s.email, PASSWORD)
+    try {
+      const me = await api.get("/users/me", { headers })
+      expect(me.ok(), `GET /users/me: ${await me.text()}`).toBeTruthy()
+      expect((await me.json()).subscription_status).toBe("Premium")
+    } finally {
+      await api.dispose()
+    }
+
     // 292: through Stripe's retries to the account's final dunning action.
     // A test clock moves at most two billing intervals per advance.
     let now = firstEnd + 3600
