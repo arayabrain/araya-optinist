@@ -32,19 +32,26 @@ from studio.app.common.schemas.users import User
 logger = AppLogger.get_logger()
 
 
-async def _get_stripe_customer_by_email(user: User) -> Optional[stripe.Customer]:
-    """Stripe customer with the user's email, only while Firebase holds that same
-    email verified: the stored email alone does not prove the caller owns it."""
+def owns_stored_email(user) -> bool:
+    """Whether Firebase holds the user's stored email, verified: the stored email
+    alone does not prove the user owns it."""
     try:
-        record = await asyncio.to_thread(firebase_auth.get_user, user.uid)
+        record = firebase_auth.get_user(user.uid)
     except Exception as e:
-        logger.warning(f"Skipping email lookup for user {user.id}: {e}")
-        return None
+        logger.warning(f"Could not check the email of user {user.id}: {e}")
+        return False
     if not record.email_verified or (record.email or "").lower() != user.email.lower():
         logger.warning(
-            f"Skipping email lookup for user {user.id}: "
-            "Firebase email is unverified or differs from the stored one"
+            f"User {user.id}: Firebase email is unverified or differs "
+            "from the stored one"
         )
+        return False
+    return True
+
+
+async def _get_stripe_customer_by_email(user: User) -> Optional[stripe.Customer]:
+    """Stripe customer with the user's email, only for its verified owner."""
+    if not await asyncio.to_thread(owns_stored_email, user):
         return None
 
     try:
