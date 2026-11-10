@@ -211,6 +211,7 @@ async def test_delete_user_success(mock_db, mock_user):
         DeletionStep.S3_DELETED.value,
         DeletionStep.WORKSPACES_DELETED.value,
         DeletionStep.COMPLETED.value,
+        DeletionStep.COMPLETED.value,  # free session logout, after completion
     ]
 
 
@@ -578,6 +579,46 @@ async def test_delete_user_without_stripe_customer_proceeds_without_stripe_key(
     assert result is True
     firebase.delete_user.assert_called_once_with(mock_user.uid)
     assert mock_user.active is False
+
+
+@pytest.mark.asyncio
+async def test_delete_user_logs_out_the_free_session(
+    mock_db, mock_user, fresh_stripe_worker
+):
+    """Activity tracking runs after the response and opens a free session for
+    the caller; nobody can log a deleted account out, so deletion does it."""
+    mock_db.query.side_effect = _query_by_model(mock_user, None)
+    active_at_logout = []
+
+    with patch(
+        "studio.app.common.core.users.crud_users.record_free_user_logout",
+        side_effect=lambda db, user_id: active_at_logout.append(mock_user.active),
+    ) as logout, patch(
+        "studio.app.common.core.users.crud_users.invalidate_user_tier_cache"
+    ) as invalidate_tier:
+        result, _, _ = await _delete(mock_db)
+
+    assert result is True
+    logout.assert_called_once_with(mock_db, 1)
+    assert active_at_logout == [False]
+    invalidate_tier.assert_called_once_with(mock_user.uid)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_survives_a_failed_free_logout(
+    mock_db, mock_user, fresh_stripe_worker
+):
+    mock_db.query.side_effect = _query_by_model(mock_user, None)
+
+    with patch(
+        "studio.app.common.core.users.crud_users.record_free_user_logout",
+        side_effect=Exception("db gone"),
+    ):
+        result, _, _ = await _delete(mock_db)
+
+    assert result is True
+    assert mock_user.active is False
+    mock_db.rollback.assert_called_once()
 
 
 @pytest.mark.asyncio

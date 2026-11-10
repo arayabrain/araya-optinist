@@ -14,6 +14,10 @@ from studio.app.common.core.auth.auth import authenticate_user
 from studio.app.common.core.auth.auth_email_service import AuthEmailService
 from studio.app.common.core.cloud.cloud_utils import ensure_user_bucket_exists
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.user_activity_middleware import (
+    invalidate_user_tier_cache,
+    record_free_user_logout,
+)
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
@@ -891,6 +895,15 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         deletion_record.status = DeletionStatus.COMPLETED.value
         deletion_record.completed_at = get_current_datetime()
         db.commit()
+
+        # Nobody can log a deleted account out, so close its free session here.
+        invalidate_user_tier_cache(user_db.uid)
+        try:
+            record_free_user_logout(db, user_id)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Free session logout failed for user {user_id}: {e}")
 
         return True
 
