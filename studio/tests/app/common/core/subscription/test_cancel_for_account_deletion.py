@@ -51,6 +51,8 @@ def stripe_calls():
     ) as list_schedules, patch(
         f"{MODULE}.stripe.SubscriptionSchedule.cancel"
     ) as cancel_schedule, patch(
+        f"{MODULE}.stripe.SubscriptionSchedule.release"
+    ) as release_schedule, patch(
         f"{MODULE}.SubscriptionService.get_user_subscription", return_value=None
     ), patch(
         f"{MODULE}.SubscriptionService.update_scheduled_downgrade"
@@ -62,6 +64,7 @@ def stripe_calls():
             "cancel": cancel,
             "list_schedules": list_schedules,
             "cancel_schedule": cancel_schedule,
+            "release_schedule": release_schedule,
         }
 
 
@@ -90,7 +93,8 @@ async def test_every_billable_subscription_is_cancelled_without_a_local_row(
     )
     cancelled = [c.args[0] for c in stripe_calls["cancel"].call_args_list]
     assert cancelled == ["sub_past_due", "sub_active"]
-    stripe_calls["cancel_schedule"].assert_called_once_with("sub_sched_1")
+    stripe_calls["release_schedule"].assert_called_once_with("sub_sched_1")
+    stripe_calls["cancel_schedule"].assert_not_called()
 
 
 @pytest.mark.asyncio

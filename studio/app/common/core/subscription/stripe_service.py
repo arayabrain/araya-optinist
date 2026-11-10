@@ -820,9 +820,9 @@ class StripeService:
         for sub in billable:
             if sub.get("schedule"):
                 try:
-                    stripe.SubscriptionSchedule.cancel(sub["schedule"])
+                    stripe.SubscriptionSchedule.release(sub["schedule"])
                 except Exception as e:
-                    logger.warning(f"Could not cancel schedule: {e}")
+                    logger.warning(f"Could not release schedule: {e}")
             stripe.Subscription.cancel(sub.id)
             logger.info(f"Cancelled subscription {sub.id} for user {user.id}")
 
