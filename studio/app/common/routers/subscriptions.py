@@ -18,7 +18,6 @@ from studio.app.common.core.subscription.constants import (
 from studio.app.common.core.subscription.stripe_service import (
     StripeService,
     get_or_create_stripe_customer,
-    get_stripe_customer,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.subscription.webhook_service import WebhookService
@@ -222,17 +221,17 @@ async def update_user_subscription(
 
 
 @router.post("/mgmts/portal-session", response_model=CreatePortalSessionResponse)
-async def create_portal_session(
+def create_portal_session(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    customer = await get_stripe_customer(db, user)
-    if not customer:
+    account = CheckoutService.get_subscription_account(db, user.id)
+    if not account:
         raise HTTPException(status_code=404, detail="No billing account found")
 
     try:
         session = stripe.billing_portal.Session.create(
-            customer=customer.id,
+            customer=account.provider_customer_id,
             return_url=f"{SubscriptionService.get_base_url()}/subscription/manage",
         )
     except stripe.error.StripeError as e:
