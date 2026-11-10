@@ -1,6 +1,7 @@
 import { test, expect, request } from "@playwright/test"
 
 import {
+  activeUserRows,
   apiLogin,
   apiUrl,
   firebaseAdminSkipReason,
@@ -94,15 +95,24 @@ async function advanceClock(clockId: string, to: number) {
   await waitForClock(clockId)
 }
 
-// Registered, verified, linked to its own Stripe customer by the account row
-// checkout would have written, and subscribed on pm_card_visa. Returns once
-// the app has activated it from customer.subscription.created, unless asked not
-// to wait.
+// Registered, verified, linked to its own Stripe customer, and subscribed on
+// pm_card_visa. The app creates and links the customer when checkout starts; a
+// test-clock customer must be created with its clock, so for that one the spec
+// writes the account row checkout would have. Returns once the app has
+// activated it from customer.subscription.created, unless asked not to wait.
 async function newSubscriber(
   tag: string,
   { clockId, activate = true }: { clockId?: string; activate?: boolean } = {},
 ) {
   const email = `e2e_stripe_${tag}_${Date.now()}@test.com`
+  const subscriber: Subscriber = {
+    email,
+    userId: "",
+    customerId: "",
+    subscriptionId: "",
+    paymentMethodId: "",
+  }
+  subscribers.push(subscriber)
   const api = await request.newContext({ baseURL: apiUrl() })
   try {
     const reg = await api.post("/api/register", {
@@ -121,34 +131,45 @@ async function newSubscriber(
   const userId = runSql(
     `SELECT id FROM users WHERE email = '${sqlLiteral(email)}';`,
   )
+  subscriber.userId = userId
 
-  const customer = stripePost("/v1/customers", {
-    email,
-    "metadata[user_id]": userId,
-    ...(clockId ? { test_clock: clockId } : {}),
-  })
-  const subscriber: Subscriber = {
-    email,
-    userId,
-    customerId: customer.id,
-    subscriptionId: "",
-    paymentMethodId: "",
+  if (clockId) {
+    subscriber.customerId = stripePost("/v1/customers", {
+      email,
+      "metadata[user_id]": userId,
+      test_clock: clockId,
+    }).id
+    runSqlWriteOnDev(
+      `INSERT INTO subscription_user_accounts
+         (user_id, provider_id, provider_customer_id)
+         SELECT ${userId}, id, '${subscriber.customerId}'
+         FROM subscription_providers WHERE name = 'stripe'`,
+    )
+  } else {
+    const { api, headers } = await apiLogin(email, PASSWORD)
+    try {
+      const res = await api.post(
+        "/api/subsc/checkout/create-checkout-session",
+        { headers, data: { plan_id: PREMIUM } },
+      )
+      expect(res.ok(), `create-checkout-session: ${await res.text()}`).toBe(
+        true,
+      )
+      const { session_id } = await res.json()
+      subscriber.customerId = stripeGet(`/v1/checkout/sessions/${session_id}`)
+        .customer as string
+    } finally {
+      await api.dispose()
+    }
   }
-  subscribers.push(subscriber)
-  runSqlWriteOnDev(
-    `INSERT INTO subscription_user_accounts
-       (user_id, provider_id, provider_customer_id)
-       SELECT ${userId}, id, '${customer.id}' FROM subscription_providers
-       WHERE name = 'stripe'`,
-  )
   const card = stripePost("/v1/payment_methods/pm_card_visa/attach", {
-    customer: customer.id,
+    customer: subscriber.customerId,
   })
-  stripePost(`/v1/customers/${customer.id}`, {
+  stripePost(`/v1/customers/${subscriber.customerId}`, {
     "invoice_settings[default_payment_method]": card.id,
   })
   const subscription = stripePost("/v1/subscriptions", {
-    customer: customer.id,
+    customer: subscriber.customerId,
     "items[0][price]": premiumPrice(),
     "metadata[plan_id]": PREMIUM,
   })
@@ -188,10 +209,10 @@ test.describe("Stripe throwaway subscriber", () => {
   // nothing a crashed case left behind keeps billing daily.
   test.afterAll(async () => {
     for (const s of subscribers) {
-      if (runSql(`SELECT active FROM users WHERE id = ${s.userId};`) !== "1") {
-        continue
-      }
       try {
+        if (activeUserRows(s.email) === 0) continue
+        // A case that died before verifying leaves an account that cannot log in
+        forceEmailVerified(s.email)
         const { api, headers } = await apiLogin(s.email, PASSWORD)
         const res = await api.delete("/users/me", { headers })
         if (!res.ok()) {
@@ -205,10 +226,21 @@ test.describe("Stripe throwaway subscriber", () => {
       }
     }
     for (const s of subscribers) {
+      // By email too: the app may have made one before the case recorded it
+      const ids = [s.customerId]
       try {
-        stripePost(`/v1/customers/${s.customerId}`, {}, "DELETE")
+        const found = stripeGet("/v1/customers", { email: s.email, limit: 10 })
+          .data as Record<string, any>[]
+        ids.push(...found.map((c) => c.id))
       } catch (e) {
-        console.warn(`customer ${s.customerId}: ${(e as Error).message}`)
+        console.warn(`customers of ${s.email}: ${(e as Error).message}`)
+      }
+      for (const id of new Set(ids.filter(Boolean))) {
+        try {
+          stripePost(`/v1/customers/${id}`, {}, "DELETE")
+        } catch (e) {
+          console.warn(`customer ${id}: ${(e as Error).message}`)
+        }
       }
     }
     for (const clock of clocks) {
@@ -285,7 +317,7 @@ test.describe("Stripe throwaway subscriber", () => {
     expect(customers.map((c) => c.id)).toEqual([s.customerId])
     expect(Date.now() / 1000 - customers[0].created).toBeLessThan(900)
 
-    // 240
+    // 240: the row the app wrote when checkout started
     expect(
       runSql(
         `SELECT a.provider_customer_id FROM subscription_user_accounts a
