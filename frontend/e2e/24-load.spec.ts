@@ -336,6 +336,8 @@ test.describe("Web UI load lane @disruptive", () => {
     let publicRecord: RecordState | null = null
     let post: RunReport["post"]
     let postError: string | null = null
+    let restoreError: string | null = null
+    let settleRan = false
     let settleUnhealthy: string | null = null
 
     // The settle belongs to the run: after an early end the last step has
@@ -464,7 +466,7 @@ test.describe("Web UI load lane @disruptive", () => {
               // changes nothing on the server, so the restore waits for it
               owedRestore = async () => {
                 await publishing.catch(() => undefined)
-                await payDebt(base, ownerSession, debtFile)
+                await payDebt(base, ownerSession, debtFile, { ownRun: true })
               }
               await publishing
             }
@@ -540,11 +542,18 @@ test.describe("Web UI load lane @disruptive", () => {
           }
           previous = outcome.figures
         }
-        await payRestore()
+        // A restore that failed still leaves the settle and the report to run
+        await payRestore().catch((e) => {
+          restoreError = (e as Error).message
+          console.error(
+            `could not unpublish the public record: ${restoreError}`,
+          )
+        })
       }
       // A public instance has been replaced 2 and 6 minutes after the load
       // that broke it, so the run watches that long before it reads AWS
       const settle = await cooldown(plan.settle_s, "settle")
+      settleRan = settle !== null
       settleUnhealthy = settle?.unhealthy ?? null
     } finally {
       await payRestore().catch((e) =>
@@ -604,6 +613,7 @@ test.describe("Web UI load lane @disruptive", () => {
         notRun,
         steps: outcomes,
         post,
+        settleRan,
         settleUnhealthy,
       }
       fs.writeFileSync(
@@ -618,6 +628,10 @@ test.describe("Web UI load lane @disruptive", () => {
       log.step(`report: ${report}`)
     }
 
+    expect(
+      restoreError,
+      `the public record was not restored: ${restoreError}`,
+    ).toBeNull()
     if (publicRecord) {
       const after = await findRecord(
         base,
