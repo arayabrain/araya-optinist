@@ -1014,14 +1014,15 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
          WHERE is_standby = 1 AND user_id IS NULL;`,
     )
 
-  // Real page login and a settled dedicated assignment, with recovery
+  // A settled dedicated assignment for the signed-in page, with recovery
   // capacity staged so the reassignment after the outage is placement, not
   // luck. Dedicated only: destroying a shared instance takes its other
   // tenants down with it, which is nobody's row.
+  // Callers run it inside their try: a failed staging still holds the
+  // assignment, and only their finally releases it.
   async function stageAssignedPremium(
     page: Page,
   ): Promise<{ userId: number; instanceA: string; candidate: string }> {
-    await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
     let instanceA = ""
     await expect
       .poll(
@@ -1099,16 +1100,38 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
     const sqlReason = sqlSkipReason()
     test.skip(!!sqlReason, `row 6214: ${sqlReason}`)
 
-    const { userId, instanceA } = await stageAssignedPremium(page)
-    // The Record tab's Reload button drives fresh premium-routed requests
-    // (PREM-13's trigger mechanics); idle pages fire none.
-    const wsId = await openWorkspace(page, "e2e-out-stop")
-    await page.locator('button[role="tab"]:has-text("Record")').click()
+    await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
     const reload = page.getByRole("button", { name: "Reload" })
-    await expect(reload).toBeVisible({ timeout: 30_000 })
+    const workspacesTab = page.getByRole("tab", {
+      name: "Workspaces",
+      exact: true,
+    })
     const snackbar = page.getByText(
       /dedicated premium instance is (temporarily unreachable|unresponsive)/,
     )
+    // One round of premium-routed traffic from the app; idle pages fire none.
+    // - Record table up: its Reload button (PREM-13's trigger mechanics).
+    // - Error view instead (a failed fetch removes the table and its Reload):
+    //   leave for the Workspaces list and come back, which refetches the
+    //   workspace. Both moves are in-app routes, so no unload, no release
+    //   beacon; goBack only from the list keeps it inside this document.
+    async function fireAppRequests() {
+      const answered = page
+        .waitForResponse(
+          (res) => ["xhr", "fetch"].includes(res.request().resourceType()),
+          { timeout: 15_000 },
+        )
+        .catch(() => null)
+      if (await reload.isVisible().catch(() => false)) {
+        await reload.click().catch(() => {})
+      } else {
+        await workspacesTab.click({ timeout: 5_000 }).catch(() => {})
+        if (new URL(page.url()).pathname === "/workspaces") {
+          await page.goBack().catch(() => {})
+        }
+      }
+      await answered
+    }
     // The named recovery mechanism, off the app's own console line: only the
     // instance-lost re-trigger calls assign once the row is gone, so recovery
     // without this line would mean some other path did the work.
@@ -1117,7 +1140,16 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
       if (msg.text().includes("Re-triggering assign")) retriggerArmed = true
     })
 
+    let wsId: number | undefined
     try {
+      // Opened before the assignment settles: openWorkspace is a full page
+      // load, and unloading a page that holds an assignment sends the
+      // release beacon, a soft release the next page reclaims.
+      wsId = await openWorkspace(page, "e2e-out-stop")
+      const { userId, instanceA } = await stageAssignedPremium(page)
+      await page.locator('button[role="tab"]:has-text("Record")').click()
+      await expect(reload).toBeVisible({ timeout: 30_000 })
+
       awsJson(`ec2 stop-instances --instance-ids ${instanceA}`)
 
       // The app notices: DEGRADED within the click-loop window. Mutation
@@ -1127,8 +1159,7 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
         .poll(
           async () => {
             if (await snackbar.isVisible().catch(() => false)) return true
-            await reload.click().catch(() => {})
-            await page.waitForTimeout(2_000)
+            await fireAppRequests()
             return snackbar.isVisible().catch(() => false)
           },
           {
@@ -1156,8 +1187,7 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
       await expect
         .poll(
           async () => {
-            await reload.click().catch(() => {})
-            await page.waitForTimeout(2_000)
+            await fireAppRequests()
             const res = await page.request.get(
               `${apiUrl()}/users/me/premium/status`,
               { headers: await apiHeaders(page), timeout: 60_000 },
@@ -1189,18 +1219,35 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
           message: `premium-${userId}-tg never went healthy on ${recovered}`,
         })
         .toBe(true)
-      await expect(snackbar).toBeHidden({ timeout: 120_000 })
+      // Clears on a reassignment to another instance, or - when the recovery
+      // restarted the same one - on a verified response, which needs traffic.
+      await expect
+        .poll(
+          async () => {
+            if (await snackbar.isHidden().catch(() => false)) return true
+            await fireAppRequests()
+            return snackbar.isHidden().catch(() => false)
+          },
+          {
+            timeout: 120_000,
+            intervals: [1_000],
+            message: "the unreachable snackbar stayed up after the recovery",
+          },
+        )
+        .toBe(true)
       console.log(
         `[22-disruptive] OUT-04: recovered from stopped ${instanceA} onto ${recovered}`,
       )
     } finally {
       await releaseAndAwaitPoolHeal(page)
-      await page.request
-        .delete(`${apiUrl()}/workspace/${wsId}`, {
-          headers: await apiHeaders(page),
-          timeout: 60_000,
-        })
-        .catch(() => {})
+      if (wsId !== undefined) {
+        await page.request
+          .delete(`${apiUrl()}/workspace/${wsId}`, {
+            headers: await apiHeaders(page),
+            timeout: 60_000,
+          })
+          .catch(() => {})
+      }
     }
   })
 
@@ -1220,13 +1267,14 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
     const sqlReason = sqlSkipReason()
     test.skip(!!sqlReason, `row 6215: ${sqlReason}`)
 
-    const { userId, instanceA, candidate } = await stageAssignedPremium(page)
-    // 1-then-not (the PREM-10 rule): the row must point at the doomed
-    // instance before the termination, or its move proves nothing.
-    expect(userRowInstance(userId), "pre-termination row").toBe(instanceA)
-
-    const t0 = windowStart()
+    await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
     try {
+      const { userId, instanceA, candidate } = await stageAssignedPremium(page)
+      // 1-then-not (the PREM-10 rule): the row must point at the doomed
+      // instance before the termination, or its move proves nothing.
+      expect(userRowInstance(userId), "pre-termination row").toBe(instanceA)
+
+      const t0 = windowStart()
       awsJson(`ec2 terminate-instances --instance-ids ${instanceA}`)
 
       // The event-driven path, not the hourly walk: this line only comes

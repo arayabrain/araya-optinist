@@ -1059,20 +1059,42 @@ export async function stageSecondRunningInstance(
   // A running EC2 is not yet a migration target: the readiness check the
   // optimizer runs demands a premium ECS task on it, so raise the service's
   // desired count to cover both instances and wait for the placement.
-  const desired = awsJson<{ services: { desiredCount: number }[] }>(
-    `ecs describe-services --cluster ${PREMIUM_CLUSTER} ` +
-      `--services ${PREMIUM_ECS_SERVICE}`,
-  ).services[0].desiredCount
-  if (desired < 2) {
-    awsJson(
-      `ecs update-service --cluster ${PREMIUM_CLUSTER} ` +
-        `--service ${PREMIUM_ECS_SERVICE} --desired-count 2`,
-    )
+  const raiseDesiredCount = () => {
+    const desired = awsJson<{ services: { desiredCount: number }[] }>(
+      `ecs describe-services --cluster ${PREMIUM_CLUSTER} ` +
+        `--services ${PREMIUM_ECS_SERVICE}`,
+    ).services[0].desiredCount
+    if (desired < 2) {
+      awsJson(
+        `ecs update-service --cluster ${PREMIUM_CLUSTER} ` +
+          `--service ${PREMIUM_ECS_SERVICE} --desired-count 2`,
+      )
+    }
   }
+  raiseDesiredCount()
+  // The manager can stop the candidate again during this wait:
+  // - a standby it has just minted runs briefly, then its create step stops it;
+  // - a sweep stops a running instance that holds no user.
+  // Stopped on two polls in a row is past the manager's 15s stop-waiter, so
+  // the stop is settled: start it again and restore the desired count the
+  // manager's sync may have lowered meanwhile.
+  let stoppedPolls = 0
   await expect
     .poll(
       () => {
-        p.tick(`waiting for a premium ECS task on ${candidate}`)
+        const state = instanceState(candidate!)
+        expect(
+          state,
+          `${candidate} was terminated while it was being staged`,
+        ).not.toBe("gone")
+        stoppedPolls = state === "stopped" ? stoppedPolls + 1 : 0
+        if (stoppedPolls >= 2) {
+          p.step(`${candidate} was stopped again; restarting it`)
+          awsJson(`ec2 start-instances --instance-ids ${candidate}`)
+          raiseDesiredCount()
+          stoppedPolls = 0
+        }
+        p.tick(`waiting for a premium ECS task on ${candidate} (${state})`)
         return premiumTaskStatusOn(candidate!)
       },
       {
