@@ -228,10 +228,13 @@ def create_portal_session(
     account = CheckoutService.get_subscription_account(db, user.id)
     if not account:
         raise HTTPException(status_code=404, detail="No billing account found")
+    customer_id = account.provider_customer_id
+    # Return the connection to the pool before the Stripe request.
+    db.close()
 
     try:
         session = stripe.billing_portal.Session.create(
-            customer=account.provider_customer_id,
+            customer=customer_id,
             return_url=f"{SubscriptionService.get_base_url()}/subscription/manage",
         )
     except stripe.error.StripeError as e:

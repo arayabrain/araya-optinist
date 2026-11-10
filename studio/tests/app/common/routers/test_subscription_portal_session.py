@@ -85,3 +85,21 @@ def test_stripe_error_returns_400(client):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Failed to open billing portal"
+
+
+def test_db_session_closed_before_stripe_call(client):
+    db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: db
+
+    def create(**_):
+        db.close.assert_called_once()
+        return MagicMock(url="https://billing.stripe.com/p/session/x")
+
+    with (
+        patch(GET_ACCOUNT, return_value=MagicMock(provider_customer_id="cus_1")),
+        patch(GET_BASE_URL, return_value="https://app.example"),
+        patch(SESSION_CREATE, side_effect=create),
+    ):
+        response = client.post(PORTAL_URL)
+
+    assert response.status_code == 200
