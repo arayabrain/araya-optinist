@@ -11,12 +11,15 @@ import {
   apiLogin,
   apiUrl,
   awsJson,
+  basePremiumInstanceIds,
   cloudwatchHas,
   devIsUp,
   disruptiveSkipReason,
+  instanceState,
   invokeMonitoringSweep,
   login,
   nextScheduledStop,
+  occupiedPremiumInstanceIds,
   openWorkspace,
   premiumTargetHealth,
   progressLog,
@@ -1328,9 +1331,28 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
     const sqlReason = sqlSkipReason()
     test.skip(!!sqlReason, `row 6215: ${sqlReason}`)
 
+    // The user must land on an instance TerminateInstances can reach, and a
+    // base instance is termination-protected. So before the sign-in assigns,
+    // an idle running base is stopped and a free non-base instance is staged
+    // running: the cascade's first pick is a ready instance with no user.
+    // Outside the try: nothing is assigned yet, and the sweep trims the extra
+    // instance a failure here leaves.
+    const baseIds = basePremiumInstanceIds()
+    const occupied = occupiedPremiumInstanceIds()
+    for (const id of baseIds) {
+      if (instanceState(id) === "running" && !occupied.has(id)) {
+        awsJson(`ec2 stop-instances --instance-ids ${id}`)
+      }
+    }
+    const target = await stageSecondRunningInstance(baseIds)
+
     await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
     try {
       const { userId, instanceA, candidate } = await stageAssignedPremium(page)
+      expect(
+        baseIds,
+        `the user landed on termination-protected ${instanceA}, not on staged ${target}`,
+      ).not.toContain(instanceA)
       // 1-then-not (the PREM-10 rule): the row must point at the doomed
       // instance before the termination, or its move proves nothing.
       expect(userRowInstance(userId), "pre-termination row").toBe(instanceA)

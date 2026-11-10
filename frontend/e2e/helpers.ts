@@ -828,6 +828,21 @@ export function premiumInstances(): { id: string; state: string }[] {
   )
 }
 
+// The Terraform-managed base instances, by the attribute that makes them one:
+// termination protection, so a TerminateInstances on one fails with
+// OperationNotPermitted. Instances the manager launches do not carry it.
+export function basePremiumInstanceIds(): string[] {
+  return premiumInstances()
+    .map((i) => i.id)
+    .filter(
+      (id) =>
+        awsJson<{ DisableApiTermination: { Value: boolean } }>(
+          `ec2 describe-instance-attribute --instance-id ${id} ` +
+            `--attribute disableApiTermination`,
+        ).DisableApiTermination.Value,
+    )
+}
+
 export function instanceState(instanceId: string): string {
   return premiumInstances().find((i) => i.id === instanceId)?.state ?? "gone"
 }
@@ -943,13 +958,14 @@ export function invokeMonitoringSweep(): string {
 // Idempotent: with the candidate already staged, only the row re-delete does
 // anything, so callers may re-run it after a wait.
 export async function stageSecondRunningInstance(
-  excludeId: string,
+  exclude: string | string[],
 ): Promise<string> {
   const p = progressLog("helpers", "stage-premium-target")
+  const excluded = [exclude].flat()
   const pickFree = () => {
     const occupied = occupiedPremiumInstanceIds()
     const free = premiumInstances().filter(
-      (i) => i.id !== excludeId && !occupied.has(i.id),
+      (i) => !excluded.includes(i.id) && !occupied.has(i.id),
     )
     // Settled first: a `pending`/`stopping` candidate costs the settle wait
     // below, and is one the manager is still cycling.
@@ -962,7 +978,7 @@ export async function stageSecondRunningInstance(
   p.step(
     candidate
       ? `found free instance ${candidate} (${instanceState(candidate)})`
-      : `no free instance beside ${excludeId}; asking the manager for one`,
+      : `no free instance beside ${excluded.join(", ") || "none"}; asking the manager for one`,
   )
   if (!candidate) {
     // No free instance to migrate onto - either the user holds the only one,
