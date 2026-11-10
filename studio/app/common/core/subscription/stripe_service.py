@@ -1,7 +1,9 @@
+import asyncio
 from typing import Optional
 
 import stripe
 from fastapi import HTTPException, status
+from firebase_admin import auth as firebase_auth
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -30,10 +32,23 @@ from studio.app.common.schemas.users import User
 logger = AppLogger.get_logger()
 
 
-async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
-    """Get Stripe customer by email"""
+async def _get_stripe_customer_by_email(user: User) -> Optional[stripe.Customer]:
+    """Stripe customer with the user's email, only while Firebase holds that same
+    email verified: the stored email alone does not prove the caller owns it."""
     try:
-        stripe_customers = stripe.Customer.list(email=email, limit=1)
+        record = await asyncio.to_thread(firebase_auth.get_user, user.uid)
+    except Exception as e:
+        logger.warning(f"Skipping email lookup for user {user.id}: {e}")
+        return None
+    if not record.email_verified or (record.email or "").lower() != user.email.lower():
+        logger.warning(
+            f"Skipping email lookup for user {user.id}: "
+            "Firebase email is unverified or differs from the stored one"
+        )
+        return None
+
+    try:
+        stripe_customers = stripe.Customer.list(email=user.email, limit=1)
         return stripe_customers.data[0] if stripe_customers.data else None
     except stripe.error.StripeError as e:
         logger.error(f"Error fetching Stripe customer: {str(e)}")
@@ -100,7 +115,7 @@ async def get_stripe_customer(db: Session, user: User) -> Optional[stripe.Custom
             return customer
 
     # 2. Fall back to Stripe API lookup by email (no create)
-    customer = await _get_stripe_customer_by_email(user.email)
+    customer = await _get_stripe_customer_by_email(user)
     if customer:
         _persist_customer(db, user, customer)
         return customer
@@ -137,7 +152,7 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
             return customer
 
     # 2. Fall back to Stripe API lookup by email
-    customer = await _get_stripe_customer_by_email(user.email)
+    customer = await _get_stripe_customer_by_email(user)
     if customer:
         _persist_customer(db, user, customer)
         return customer

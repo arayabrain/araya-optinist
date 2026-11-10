@@ -33,6 +33,7 @@ def mock_db():
 def mock_user():
     user = MagicMock()
     user.id = 1
+    user.uid = "uid-1"
     user.email = "test@example.com"
     user.name = "Test User"
     return user
@@ -245,6 +246,57 @@ class TestGetStripeCustomer:
 
             assert result is None
             mock_stripe.Customer.create.assert_not_called()
+
+
+class TestEmailLookupOwnership:
+    """The email fallback binds a customer only when Firebase holds the stored
+    email verified."""
+
+    @staticmethod
+    async def _lookup(mock_user, fb_email, fb_verified):
+        from studio.app.common.core.subscription.stripe_service import (
+            _get_stripe_customer_by_email,
+        )
+
+        if isinstance(fb_email, Exception):
+            get_user = {"side_effect": fb_email}
+        else:
+            record = MagicMock(email=fb_email, email_verified=fb_verified)
+            get_user = {"return_value": record}
+        with (
+            patch(f"{STRIPE_MODULE}.firebase_auth.get_user", **get_user) as fb_get,
+            patch(f"{STRIPE_MODULE}.stripe") as mock_stripe,
+        ):
+            mock_stripe.Customer.list.return_value.data = ["cus_found"]
+            result = await _get_stripe_customer_by_email(mock_user)
+        fb_get.assert_called_once_with(mock_user.uid)
+        return result, mock_stripe.Customer.list
+
+    @pytest.mark.asyncio
+    async def test_verified_email_other_than_stored_skips_lookup(self, mock_user):
+        result, customer_list = await self._lookup(
+            mock_user, "attacker@example.com", True
+        )
+        assert result is None
+        customer_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unverified_stored_email_skips_lookup(self, mock_user):
+        result, customer_list = await self._lookup(mock_user, "test@example.com", False)
+        assert result is None
+        customer_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_firebase_error_skips_lookup(self, mock_user):
+        result, customer_list = await self._lookup(mock_user, RuntimeError("x"), None)
+        assert result is None
+        customer_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_verified_stored_email_finds_customer(self, mock_user):
+        result, customer_list = await self._lookup(mock_user, "Test@Example.com", True)
+        assert result == "cus_found"
+        customer_list.assert_called_once_with(email="test@example.com", limit=1)
 
 
 # ---------------------------------------------------------------------------
