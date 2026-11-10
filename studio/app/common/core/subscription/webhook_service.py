@@ -23,6 +23,7 @@ from studio.app.common.core.subscription.constants import (
     PaymentStatus,
     StorageQuota,
     StorageSize,
+    StripeSubscriptionStatus,
     StripeWebhookEvent,
     SubscriptionCurrencyType,
     SubscriptionPlanIds,
@@ -1517,7 +1518,8 @@ class WebhookService:
         Upserts ``subscription_users`` (plan + expiration), syncs the storage
         quota, and invalidates the tier cache so the next ``/users/me`` call
         reflects the change. Acknowledges without a DB write when the
-        customer cannot be mapped or the event has no period end, so Stripe
+        customer cannot be mapped, the first payment is still pending
+        (incomplete), or the event has no period end, so Stripe
         does not retry.
         """
         customer_id = subscription_data.get("customer")
@@ -1537,6 +1539,21 @@ class WebhookService:
             f"Webhook: Handling customer.subscription.{event_label} for "
             f"customer {customer_id} (subscription {stripe_subscription_id})"
         )
+        status = subscription_data.get("status")
+        if status in (
+            StripeSubscriptionStatus.INCOMPLETE,
+            StripeSubscriptionStatus.INCOMPLETE_EXPIRED,
+        ):
+            logger.info(
+                f"Webhook: Subscription {stripe_subscription_id} is {status}; "
+                f"acknowledging subscription.{event_label} without DB change"
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "unpaid_status",
+                "message": f"Subscription not paid yet: {status}",
+            }
 
         # 1. Map Stripe customer -> local user account
         user_account = (

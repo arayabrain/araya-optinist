@@ -1235,6 +1235,28 @@ class TestSubscriptionLifecycleWebhooks:
         assert period_end({"current_period_end": 7}) == 7
         assert period_end({"items": {"data": []}}) is None
 
+    @pytest.mark.parametrize(
+        "handler, status",
+        [
+            (WebhookService.handle_subscription_created, "incomplete"),
+            (WebhookService.handle_subscription_updated, "incomplete_expired"),
+        ],
+    )
+    def test_unpaid_subscription_grants_nothing(
+        self, mock_db, subscription_event, handler, status
+    ):
+        """A subscription whose first payment never settled must not grant premium."""
+        subscription_event.pop("current_period_end")
+        subscription_event["items"] = {"data": [{"current_period_end": 2000000000}]}
+        subscription_event["status"] = status
+
+        with patch.object(CheckoutService, "create_or_update_subscription") as upsert:
+            result = handler(mock_db, subscription_event)
+
+        assert result["skipped"] is True
+        upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_dispatch_created_routes_to_handler(
         self, mock_db, subscription_event
