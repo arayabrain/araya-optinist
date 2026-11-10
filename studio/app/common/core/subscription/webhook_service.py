@@ -1518,9 +1518,9 @@ class WebhookService:
         Upserts ``subscription_users`` (plan + expiration), syncs the storage
         quota, and invalidates the tier cache so the next ``/users/me`` call
         reflects the change. Acknowledges without a DB write when the
-        customer cannot be mapped, the first payment is still pending
-        (incomplete), or the event has no period end, so Stripe
-        does not retry.
+        customer cannot be mapped, the subscription is not active, trialing
+        or past_due (past_due keeps premium while Stripe retries), or the
+        event has no period end, so Stripe does not retry.
         """
         customer_id = subscription_data.get("customer")
         stripe_subscription_id = subscription_data.get("id")
@@ -1540,9 +1540,10 @@ class WebhookService:
             f"customer {customer_id} (subscription {stripe_subscription_id})"
         )
         status = subscription_data.get("status")
-        if status in (
-            StripeSubscriptionStatus.INCOMPLETE,
-            StripeSubscriptionStatus.INCOMPLETE_EXPIRED,
+        if status not in (
+            StripeSubscriptionStatus.ACTIVE,
+            StripeSubscriptionStatus.TRIAL,
+            StripeSubscriptionStatus.PAST_DUE,
         ):
             logger.info(
                 f"Webhook: Subscription {stripe_subscription_id} is {status}; "
@@ -1552,7 +1553,7 @@ class WebhookService:
                 "success": True,
                 "skipped": True,
                 "reason": "unpaid_status",
-                "message": f"Subscription not paid yet: {status}",
+                "message": f"Subscription is not being paid: {status}",
             }
 
         # 1. Map Stripe customer -> local user account

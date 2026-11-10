@@ -1240,12 +1240,14 @@ class TestSubscriptionLifecycleWebhooks:
         [
             (WebhookService.handle_subscription_created, "incomplete"),
             (WebhookService.handle_subscription_updated, "incomplete_expired"),
+            (WebhookService.handle_subscription_updated, "unpaid"),
+            (WebhookService.handle_subscription_updated, "paused"),
         ],
     )
     def test_unpaid_subscription_grants_nothing(
         self, mock_db, subscription_event, handler, status
     ):
-        """A subscription whose first payment never settled must not grant premium."""
+        """A subscription nobody is paying for must not grant premium."""
         subscription_event.pop("current_period_end")
         subscription_event["items"] = {"data": [{"current_period_end": 2000000000}]}
         subscription_event["status"] = status
