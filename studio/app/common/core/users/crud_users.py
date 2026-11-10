@@ -40,6 +40,7 @@ from studio.app.common.models.subscription import (
     DeletionStep,
     SubscriptionAuditLog,
     SubscriptionPlans,
+    SubscriptionUserAccount,
     UserDeletionRecord,
     UserStorageUsage,
     UserSubscription,
@@ -482,6 +483,7 @@ async def update_user(
             .first()
         )
         assert user_db is not None, "User not found"
+        old_email = user_db.email
         user_data = data.dict(exclude_unset=True)
         role_id = user_data.pop("role_id", None)
         for key, value in user_data.items():
@@ -494,13 +496,14 @@ async def update_user(
         firebase_auth.update_user(user_db.uid, email=data.email)
 
         # Sync email to Stripe customer if user has a subscription account
-        if data.email:
+        if data.email and data.email != old_email:
             import stripe
 
             from studio.app.common.core.subscription.checkout_service import (
                 CheckoutService,
             )
 
+            SubscriptionService._ensure_stripe_initialized()
             try:
                 stripe_account = CheckoutService.get_subscription_account(
                     db, user_db.id
@@ -759,6 +762,18 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         if user_db is None:
             raise HTTPException(status_code=404, detail="User not found")
 
+        SubscriptionService._ensure_stripe_initialized()
+        if (
+            not SubscriptionService._stripe_initialized
+            and db.query(SubscriptionUserAccount)
+            .filter(SubscriptionUserAccount.user_id == user_id)
+            .first()
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Account deletion is temporarily unavailable",
+            )
+
         # Create deletion record for recovery tracking
         deletion_record = UserDeletionRecord(
             user_id=user_id,
@@ -814,7 +829,6 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         # Step 2: Cancel Stripe subscription (reversible)
         # ----------------------------------------
         try:
-            SubscriptionService._ensure_stripe_initialized()
             await StripeService.handle_cancel_user_subscription(
                 db, user_db, immediate=True
             )
