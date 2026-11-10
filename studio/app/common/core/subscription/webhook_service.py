@@ -1559,7 +1559,7 @@ class WebhookService:
 
         # 2. Derive expiration from the event payload (trial overrides period)
         trial_end = subscription_data.get("trial_end")
-        current_period_end = subscription_data.get("current_period_end")
+        current_period_end = CheckoutService.subscription_period_end(subscription_data)
         if trial_end:
             expiration_date = datetime_from_timestamp(trial_end)
         elif current_period_end:
