@@ -21,7 +21,7 @@ def verifier():
     another test would leave the verifier uncalled and this fixture blind."""
     auth_helper._token_cache.clear()
     with patch(f"{MODULE}.firebase_auth.verify_id_token") as mock:
-        mock.return_value = {"uid": "uid-1"}
+        mock.return_value = {"uid": "uid-1", "email_verified": True}
         yield mock
     auth_helper._token_cache.clear()
 

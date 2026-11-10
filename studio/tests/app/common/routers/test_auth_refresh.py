@@ -138,7 +138,9 @@ async def test_a_token_check_does_not_wait_for_refreshes_stalled_at_firebase():
     auth_helper._token_cache.clear()
     try:
         with patch.object(
-            auth_helper.firebase_auth, "verify_id_token", return_value={"uid": "uid-1"}
+            auth_helper.firebase_auth,
+            "verify_id_token",
+            return_value={"uid": "uid-1", "email_verified": True},
         ):
             checked = await asyncio.wait_for(
                 auth_helper.extract_uid_from_firebase_jwt_async("new-token"), 1
