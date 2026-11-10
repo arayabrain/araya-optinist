@@ -602,7 +602,10 @@ running into the 13:00 UTC stop is refused.
 9. **The public record is restored whatever happens.** The restore is owed in
    `publish-restore.json` in the run's folder before the publish request, paid
    at the end, in an `afterEach` hook when the test times out, and by the next
-   run when this one was killed.
+   run when this one was killed. The next run pays it only while the record's
+   `updated_at` is within 15 minutes after the publish (the publish's own sync
+   moves it); a later change is the owner's, and the run stops and names the
+   file. A restore that fails still lets the settle and the report run.
 
 **Settings** (`e2e/.env` or the shell). A flag is on for `1` or `true` only;
 a relative path is from `e2e/`:
