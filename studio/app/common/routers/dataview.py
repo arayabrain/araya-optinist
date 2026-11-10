@@ -520,6 +520,18 @@ async def _ensure_experiment_downloaded(
     except RemoteStorageLockError as e:
         logger.warning(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except OSError as e:
+        logger.error(
+            f"Download of experiment {workspace_id}/{unique_id} "
+            f"failed with OSError: {e}"
+        )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "data_error",
+                "message": "Experiment data is unavailable",
+            },
+        )
 
     return None
 
