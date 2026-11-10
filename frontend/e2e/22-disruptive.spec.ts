@@ -1008,6 +1008,18 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
       `SELECT instance_id FROM premium_user_assignments
          WHERE user_id = ${userId};`,
     )
+  // `instanceId` once the user's row has settled on it, else "". The status
+  // names an assign's instance while the attempt is still in flight: the row
+  // holds the RESERVING placeholder for its ALB ARNs, which the status does
+  // not return, and an attempt that fails rolls the row back.
+  const settledInstance = (userId: number, instanceId: string) =>
+    /^i-[0-9a-f]+$/.test(instanceId) &&
+    runSql(
+      `SELECT instance_id FROM premium_user_assignments
+         WHERE user_id = ${userId} AND target_group_arn LIKE 'arn:%';`,
+    ) === instanceId
+      ? instanceId
+      : ""
   const standbyRows = () =>
     runSql(
       `SELECT COUNT(*) FROM premium_user_assignments
@@ -1023,6 +1035,12 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
   async function stageAssignedPremium(
     page: Page,
   ): Promise<{ userId: number; instanceA: string; candidate: string }> {
+    const me = await page.request.get(`${apiUrl()}/users/me`, {
+      headers: await apiHeaders(page),
+      timeout: 60_000,
+    })
+    expect(me.ok(), await me.text()).toBe(true)
+    const userId: number = (await me.json()).id
     let instanceA = ""
     await expect
       .poll(
@@ -1032,7 +1050,10 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
             { headers: await apiHeaders(page), timeout: 60_000 },
           )
           expect(res.ok(), await res.text()).toBe(true)
-          instanceA = (await res.json()).assignment?.instance_id ?? ""
+          instanceA = settledInstance(
+            userId,
+            (await res.json()).assignment?.instance_id ?? "",
+          )
           return instanceA
         },
         {
@@ -1042,12 +1063,6 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
         },
       )
       .toMatch(/^i-[0-9a-f]+$/)
-    const me = await page.request.get(`${apiUrl()}/users/me`, {
-      headers: await apiHeaders(page),
-      timeout: 60_000,
-    })
-    expect(me.ok(), await me.text()).toBe(true)
-    const userId: number = (await me.json()).id
     test.skip(
       runSql(
         `SELECT is_shared FROM premium_user_assignments
@@ -1062,13 +1077,57 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
   // Release, then wait for the pool to really self-heal before ending the
   // run: these tests consume the capacity they destroy, and the PREM-06
   // pre-stage recipe in the README assumes a standby exists.
+  // The release has to stick:
+  // - the app's own assign calls are cut first: its instance-lost re-trigger
+  //   would assign again behind the release;
+  // - an assign already in flight lands after a release that found nothing,
+  //   so the release goes out only while no assign claim is live, until two
+  //   polls in a row find neither a claim nor an assignment.
   async function releaseAndAwaitPoolHeal(page: Page) {
-    await page.request
-      .delete(`${apiUrl()}/users/me/premium/assign`, {
-        headers: await apiHeaders(page),
-        timeout: 300_000,
-      })
-      .catch(() => {})
+    await page.route(/\/users\/me\/premium\/assign(\?|$)/, (route) =>
+      route.request().method() === "POST" ? route.abort() : route.continue(),
+    )
+    const headers = await apiHeaders(page)
+    const me = await page.request.get(`${apiUrl()}/users/me`, {
+      headers,
+      timeout: 60_000,
+    })
+    expect(me.ok(), await me.text()).toBe(true)
+    const userId: number = (await me.json()).id
+    let clearPolls = 0
+    await expect
+      .poll(
+        async () => {
+          const claimed =
+            runSql(
+              `SELECT COUNT(*) FROM premium_assign_claims
+                 WHERE user_id = ${userId} AND expires_at > NOW();`,
+            ) !== "0"
+          const res = await page.request.get(
+            `${apiUrl()}/users/me/premium/status`,
+            { headers, timeout: 60_000 },
+          )
+          const held = !res.ok() || !!(await res.json()).assignment
+          if (held && !claimed) {
+            await page.request
+              .delete(`${apiUrl()}/users/me/premium/assign`, {
+                headers,
+                timeout: 300_000,
+              })
+              .catch(() => {})
+          }
+          clearPolls = held || claimed ? 0 : clearPolls + 1
+          return clearPolls
+        },
+        {
+          timeout: 5 * 60_000,
+          intervals: [10_000],
+          message:
+            "the test user's premium assignment never stayed released " +
+            "(or its status never answered) - the next run starts on a held instance",
+        },
+      )
+      .toBeGreaterThanOrEqual(2)
     invokeMonitoringSweep()
     let count = ""
     await expect
@@ -1193,8 +1252,11 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
               { headers: await apiHeaders(page), timeout: 60_000 },
             )
             if (!res.ok()) return ""
-            recovered = (await res.json()).assignment?.instance_id ?? ""
-            return /^i-[0-9a-f]+$/.test(recovered) ? recovered : ""
+            recovered = settledInstance(
+              userId,
+              (await res.json()).assignment?.instance_id ?? "",
+            )
+            return recovered
           },
           {
             timeout: 12 * 60_000,
@@ -1210,8 +1272,7 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
         "recovery happened but the instance-lost re-trigger never armed - something else assigned",
       ).toBe(true)
 
-      // Row and ALB consistent with what the client now holds.
-      expect(userRowInstance(userId)).toBe(recovered)
+      // ALB consistent with what the client and the settled row now hold.
       await expect
         .poll(() => premiumTargetHealth(userId).includes("healthy"), {
           timeout: 5 * 60_000,
@@ -1316,8 +1377,11 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
               { headers: await apiHeaders(page), timeout: 60_000 },
             )
             if (!res.ok()) return ""
-            recovered = (await res.json()).assignment?.instance_id ?? ""
-            return /^i-[0-9a-f]+$/.test(recovered) ? recovered : ""
+            recovered = settledInstance(
+              userId,
+              (await res.json()).assignment?.instance_id ?? "",
+            )
+            return recovered
           },
           {
             timeout: 12 * 60_000,
@@ -1331,7 +1395,6 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
         recovered,
         "the recovery reassigned onto the terminated instance",
       ).not.toBe(instanceA)
-      expect(userRowInstance(userId)).toBe(recovered)
       await expect
         .poll(() => premiumTargetHealth(userId).includes("healthy"), {
           timeout: 5 * 60_000,
