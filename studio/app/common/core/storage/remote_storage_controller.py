@@ -7,7 +7,7 @@ import shutil
 import time
 import uuid
 from abc import ABCMeta, abstractmethod
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from enum import Enum
@@ -23,6 +23,7 @@ from studio.app.common.core.utils.filepath_creater import (
     InvalidPathError,
     join_filepath,
 )
+from studio.app.common.core.utils.json_writer import _write_text_atomic
 from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
@@ -202,15 +203,17 @@ class RemoteSyncStatusFileUtil:
             os.path.dirname(remote_sync_status_file_path),
             exist_ok=True,
         )
-        with open(remote_sync_status_file_path, "w") as f:
-            sync_status_data = RemoteSyncStatusData(
-                remote_bucket_name=remote_bucket_name,
-                remote_storage_type=RemoteStorageType.get_activated_type().value,
-                sync_action=sync_action.value,
-                sync_status=sync_status.value,
-                timestamp=str(get_current_datetime()),
-            )
-            json.dump(asdict(sync_status_data), f, indent=2)
+        sync_status_data = RemoteSyncStatusData(
+            remote_bucket_name=remote_bucket_name,
+            remote_storage_type=RemoteStorageType.get_activated_type().value,
+            sync_action=sync_action.value,
+            sync_status=sync_status.value,
+            timestamp=str(get_current_datetime()),
+        )
+        _write_text_atomic(
+            remote_sync_status_file_path,
+            json.dumps(asdict(sync_status_data), indent=2),
+        )
 
     @classmethod
     def create_sync_status_file_for_success(
@@ -382,17 +385,22 @@ class RemoteSyncLockFileUtil:
             f = open(remote_sync_lock_file_path, "x")
         except FileExistsError:
             raise RemoteStorageLockError(workspace_id, unique_id)
-        with f:
-            file_data = {
-                "workspace_id": workspace_id,
-                "unique_id": unique_id,
-                "timestamp": get_current_datetime(),
-                "token": token,
-            }
-            json.dump(file_data, f, default=str, indent=2)
+        try:
+            with f:
+                file_data = {
+                    "workspace_id": workspace_id,
+                    "unique_id": unique_id,
+                    "timestamp": get_current_datetime(),
+                    "token": token,
+                }
+                json.dump(file_data, f, default=str, indent=2)
 
-            # force fsync
-            os.fsync(f.fileno())
+                # force fsync
+                os.fsync(f.fileno())
+        except BaseException:
+            with suppress(OSError):
+                os.remove(remote_sync_lock_file_path)
+            raise
         return token
 
     @classmethod
@@ -1139,45 +1147,52 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
                 workspace_id, unique_id
             )
 
-        # generate remote-sync-status-file (for pendding)
-        # *updates are only made when self.sync_mode==ALL (full sync)
-        if self.sync_mode == RemoteExperimentSyncMode.ALL:
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
-                bucket_name,
-                workspace_id,
-                unique_id,
-                self.sync_action,
-            )
+        try:
+            # generate remote-sync-status-file (for pendding)
+            # *updates are only made when self.sync_mode==ALL (full sync)
+            if self.sync_mode == RemoteExperimentSyncMode.ALL:
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
+                    bucket_name,
+                    workspace_id,
+                    unique_id,
+                    self.sync_action,
+                )
 
-        self.__controller = RemoteStorageController(bucket_name)
+            self.__controller = RemoteStorageController(bucket_name)
+        except BaseException:
+            self.__release_lock()
+            raise
+
+    def __release_lock(self):
+        if not self.owns_lock:
+            RemoteSyncLockFileUtil.delete_sync_lock_file(
+                self.workspace_id, self.unique_id, self.lock_token
+            )
 
     async def __aenter__(self) -> RemoteStorageController:
         return self.__controller
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # update remote-sync-status-file
-        # *updates are only made when self.sync_mode==ALL (full sync)
-        if self.sync_mode == RemoteExperimentSyncMode.ALL:
-            if not exc_type:  # Processing success
-                RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
-                    self.bucket_name,
-                    self.workspace_id,
-                    self.unique_id,
-                    self.sync_action,
-                )
-            else:  # Processing error
-                RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
-                    self.bucket_name,
-                    self.workspace_id,
-                    self.unique_id,
-                    self.sync_action,
-                )
-
-        # delete lock file
-        if not self.owns_lock:
-            RemoteSyncLockFileUtil.delete_sync_lock_file(
-                self.workspace_id, self.unique_id, self.lock_token
-            )
+        try:
+            # update remote-sync-status-file
+            # *updates are only made when self.sync_mode==ALL (full sync)
+            if self.sync_mode == RemoteExperimentSyncMode.ALL:
+                if not exc_type:  # Processing success
+                    RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
+                        self.bucket_name,
+                        self.workspace_id,
+                        self.unique_id,
+                        self.sync_action,
+                    )
+                else:  # Processing error
+                    RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
+                        self.bucket_name,
+                        self.workspace_id,
+                        self.unique_id,
+                        self.sync_action,
+                    )
+        finally:
+            self.__release_lock()
 
 
 class RemoteStorageReader(BaseRemoteStorageReaderWriter):
