@@ -49,13 +49,10 @@ def owns_stored_email(user) -> bool:
     return True
 
 
-async def _get_stripe_customer_by_email(user: User) -> Optional[stripe.Customer]:
-    """Stripe customer with the user's email, only for its verified owner."""
-    if not await asyncio.to_thread(owns_stored_email, user):
-        return None
-
+async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
+    """Get Stripe customer by email. Callers check owns_stored_email first."""
     try:
-        stripe_customers = stripe.Customer.list(email=user.email, limit=1)
+        stripe_customers = stripe.Customer.list(email=email, limit=1)
         return stripe_customers.data[0] if stripe_customers.data else None
     except stripe.error.StripeError as e:
         logger.error(f"Error fetching Stripe customer: {str(e)}")
@@ -122,7 +119,9 @@ async def get_stripe_customer(db: Session, user: User) -> Optional[stripe.Custom
             return customer
 
     # 2. Fall back to Stripe API lookup by email (no create)
-    customer = await _get_stripe_customer_by_email(user)
+    if not await asyncio.to_thread(owns_stored_email, user):
+        return None
+    customer = await _get_stripe_customer_by_email(user.email)
     if customer:
         _persist_customer(db, user, customer)
         return customer
@@ -142,7 +141,15 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
     Uses SELECT FOR UPDATE to prevent concurrent requests from creating
     duplicate customers for the same user.
     """
+    from studio.app.common.core.subscription.checkout_service import CheckoutService
     from studio.app.common.models.subscription import SubscriptionUserAccount
+
+    account = CheckoutService.get_subscription_account(db, user.id)
+    customer = _retrieve_if_active(account, user.id) if account else None
+    if customer:
+        return customer
+    # The ownership check awaits, so it must finish before the row lock below.
+    owns_email = await asyncio.to_thread(owns_stored_email, user)
 
     # 1. Check database first with row lock to prevent race conditions.
     #    If a row exists, the lock serializes concurrent requests for the
@@ -159,7 +166,7 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
             return customer
 
     # 2. Fall back to Stripe API lookup by email
-    customer = await _get_stripe_customer_by_email(user)
+    customer = await _get_stripe_customer_by_email(user.email) if owns_email else None
     if customer:
         _persist_customer(db, user, customer)
         return customer
