@@ -38,6 +38,7 @@ from studio.app.common.schemas.subscriptions import (
     CancelSubscriptionResponse,
     CreateCheckoutSessionRequest,
     CreateCheckoutSessionResponse,
+    CreatePortalSessionResponse,
     CreateSetupIntentResponse,
     DeletionPriorityRequest,
     DeletionPriorityResponse,
@@ -217,6 +218,30 @@ async def update_user_subscription(
         status_code=501,
         detail="This API endpoint is not implemented and currently not in use",
     )
+
+
+@router.post("/mgmts/portal-session", response_model=CreatePortalSessionResponse)
+def create_portal_session(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    account = CheckoutService.get_subscription_account(db, user.id)
+    if not account:
+        raise HTTPException(status_code=404, detail="No billing account found")
+    customer_id = account.provider_customer_id
+    # Return the connection to the pool before the Stripe request.
+    db.close()
+
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{SubscriptionService.get_base_url()}/subscription/manage",
+        )
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error creating portal session for user {user.id}: {e}")
+        raise HTTPException(status_code=400, detail="Failed to open billing portal")
+
+    return CreatePortalSessionResponse(url=session.url)
 
 
 @router.get("/mgmts/server-time")

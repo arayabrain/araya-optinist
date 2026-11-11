@@ -62,7 +62,9 @@ def stub_firebase_verify(uid: str):
     auth_helper._token_cache.clear()
     try:
         with patch.object(
-            auth_helper.firebase_auth, "verify_id_token", return_value={"uid": uid}
+            auth_helper.firebase_auth,
+            "verify_id_token",
+            return_value={"uid": uid, "email_verified": True},
         ):
             yield
     finally:

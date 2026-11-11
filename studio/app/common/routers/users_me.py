@@ -506,6 +506,12 @@ async def update_me(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # An unproven email change could inherit a deleted user's Stripe customer.
+    if data.email and data.email.lower() != current_user.email.lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email address cannot be changed",
+        )
     return await crud_users.update_user(
         db, current_user.id, data, organization_id=current_user.organization.id
     )
