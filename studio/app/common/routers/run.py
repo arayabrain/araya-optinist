@@ -37,7 +37,12 @@ from studio.app.common.core.utils.datetime_utils import (
     get_datetime_for_timezone,
 )
 from studio.app.common.core.utils.filepath_creater import InvalidPathError
-from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
+from studio.app.common.core.workflow.workflow import (
+    DataFilterParam,
+    NodeItem,
+    NodeType,
+    RunItem,
+)
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
 from studio.app.common.core.workflow.workflow_input_validator import (
     WorkflowValidationError,
@@ -108,6 +113,21 @@ async def _check_storage_quota(user_id: Optional[int]) -> None:
             )
 
 
+def _refuse_maintenance_for_non_admin(current_user: Optional[User], runItem: RunItem):
+    if current_user is None or not any(
+        node.type == NodeType.ALGO
+        and isinstance(node.data.path, str)
+        and node.data.path.split("/")[0] == "maintenance"
+        for node in runItem.nodeDict.values()
+    ):
+        return
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can run maintenance nodes",
+        )
+
+
 @router.post(
     "/{workspace_id}",
     response_model=str,
@@ -122,6 +142,7 @@ async def run(
     db: Session = Depends(get_db),
 ):
     try:
+        _refuse_maintenance_for_non_admin(current_user, runItem)
         user_id = current_user.id if current_user else None
         await _check_storage_quota(user_id)
         await asyncio.to_thread(ensure_local_disk_headroom)
@@ -212,6 +233,7 @@ async def run_id(
     db: Session = Depends(get_db),
 ):
     try:
+        _refuse_maintenance_for_non_admin(current_user, runItem)
         user_id = current_user.id if current_user else None
         await _check_storage_quota(user_id)
         await asyncio.to_thread(ensure_local_disk_headroom)

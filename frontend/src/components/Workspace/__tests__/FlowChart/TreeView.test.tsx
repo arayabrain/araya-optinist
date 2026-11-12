@@ -9,6 +9,7 @@ import { describe, it, beforeEach } from "@jest/globals"
 import { render, screen } from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event"
 
+import { ROLE } from "@types"
 import { mockStoreData } from "components/Workspace/__tests__/FlowChart/mockStoreData.json"
 import { AlgorithmTreeView } from "components/Workspace/FlowChart/TreeView"
 import { getAlgoList } from "store/slice/AlgorithmList/AlgorithmListActions"
@@ -24,6 +25,13 @@ jest.mock("api/algolist/AlgoList", () => ({
 jest.mock("react-dnd", () => ({
   ...jest.requireActual("react-dnd"),
   useDrag: () => [{ isDragging: false }, null],
+}))
+
+jest.mock("components/Workspace/FlowChart/Buttons/CondaNoticeButton", () => ({
+  CondaNoticeButton: () =>
+    jest.requireActual("react").createElement("span", {
+      "data-testid": "conda-notice",
+    }),
 }))
 
 const mockStore = configureStore([thunk])
@@ -191,4 +199,28 @@ describe("AlgorithmTreeView", () => {
       runAlready: true,
     })
   })
+
+  it.each([
+    [false, ROLE.ADMIN, 1],
+    [false, ROLE.OPERATOR, 0],
+    [true, undefined, 1],
+  ])(
+    "offers Create env for a missing env (standalone %s, role %s)",
+    async (standalone, roleId, notices) => {
+      const state = JSON.parse(JSON.stringify(mockStoreData))
+      state.algorithmList.tree.caiman.children.caiman_mc.condaEnvExists = false
+      state.mode = { mode: standalone, loading: false }
+      state.user = { currentUser: roleId && { role_id: roleId } }
+      render(
+        <Provider store={mockStore(state)}>
+          <AlgorithmTreeView />
+        </Provider>,
+      )
+      await userEvent.click(screen.getByText("Algorithm"))
+      await userEvent.click(screen.getByText("caiman"))
+
+      expect(screen.queryAllByTestId("conda-notice")).toHaveLength(notices)
+      expect(screen.getAllByTestId("AddIcon")).toHaveLength(2 - notices)
+    },
+  )
 })

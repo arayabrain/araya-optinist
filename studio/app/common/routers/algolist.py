@@ -1,11 +1,13 @@
 import inspect
 from functools import cache
-from typing import Dict, List, Set, ValuesView
+from typing import Dict, List, Optional, Set, ValuesView
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from studio.app.common.core.auth.auth_dependencies import get_current_user
 from studio.app.common.core.snakemake.smk_utils import SmkInternalUtils, SmkUtils
 from studio.app.common.schemas.algolist import Algo, AlgoList, Arg, Return
+from studio.app.common.schemas.users import User
 from studio.app.const import NOT_DISPLAY_ARGS_LIST
 from studio.app.wrappers import wrapper_dict
 
@@ -94,7 +96,9 @@ class NestDictGetter:
 # A sync route, so it runs in the threadpool: an env not built yet is checked on
 # the snakemake volume, a network filesystem in production
 @router.get("/algolist", response_model=AlgoList, tags=["others"])
-def get_algolist() -> Dict[str, Algo]:
+def get_algolist(
+    current_user: Optional[User] = Depends(get_current_user),
+) -> Dict[str, Algo]:
     """_summary_
 
     Returns:
@@ -120,4 +124,7 @@ def get_algolist() -> Dict[str, Algo]:
         }
     """
 
-    return NestDictGetter.get_nest_dict(wrapper_dict, "")
+    algos = NestDictGetter.get_nest_dict(wrapper_dict, "")
+    if current_user is not None and not current_user.is_admin:
+        algos.pop("maintenance", None)
+    return algos
