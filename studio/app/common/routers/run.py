@@ -462,7 +462,7 @@ async def run_result(
 )
 async def cancel_run(workspace_id: str, uid: str):
     try:
-        return WorkflowMonitor(workspace_id, uid).cancel_run()
+        return await asyncio.to_thread(WorkflowMonitor(workspace_id, uid).cancel_run)
     except HTTPException as e:
         logger.error(e)
         raise e

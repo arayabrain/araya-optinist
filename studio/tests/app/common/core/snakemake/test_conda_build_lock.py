@@ -47,6 +47,7 @@ def test_a_missing_env_is_built_under_the_lock(conda_dir, monkeypatch):
     env = SimpleNamespace(address=str(conda_dir / "abc_"))
     create = _create()
     monkeypatch.setattr(snakemake_executor, "_env_create", create)
+    monkeypatch.setattr(snakemake_executor, "BUILD_LOCK_POLL_SECONDS", 0.05)
 
     with open(conda_dir / ".build.lock", "a") as held:
         fcntl.flock(held, fcntl.LOCK_EX)
@@ -59,6 +60,20 @@ def test_a_missing_env_is_built_under_the_lock(conda_dir, monkeypatch):
     builder.join(5)
 
     create.assert_called_once_with(env, False)
+
+
+def test_a_lock_held_past_the_deadline_fails_the_run(conda_dir, monkeypatch):
+    env = SimpleNamespace(address=str(conda_dir / "abc_"))
+    create = _create()
+    monkeypatch.setattr(snakemake_executor, "_env_create", create)
+    monkeypatch.setattr(snakemake_executor, "BUILD_LOCK_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(snakemake_executor, "BUILD_LOCK_POLL_SECONDS", 0.05)
+
+    with open(conda_dir / ".build.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(WorkflowError, match="Gave up"):
+            snakemake_executor._env_create_locked(env)
+    create.assert_not_called()
 
 
 def test_a_build_that_leaves_no_flag_fails(conda_dir, monkeypatch):

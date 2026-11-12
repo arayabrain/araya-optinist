@@ -61,7 +61,7 @@ def test_another_runs_conda_build_is_not_taken():
     assert _search([other]).process is None
 
 
-def test_cancel_stops_the_children_before_the_process(tmp_path):
+def test_cancel_kills_lingering_children_before_signalling_the_process(tmp_path):
     sent = []
     pip, conda = Mock(pid=2), Mock(pid=1)
     for proc in (pip, conda):
@@ -75,8 +75,9 @@ def test_cancel_stops_the_children_before_the_process(tmp_path):
         monitor,
         "search_process",
         return_value=WorkflowProcessInfo(process=conda, pid_data=pid_data),
-    ):
+    ), patch(f"{MODULE}.wait_procs", side_effect=[([], [pip]), ([pip], [])]) as wait:
         assert monitor.cancel_run()
 
     conda.children.assert_called_once_with(recursive=True)
-    assert sent == [(2, signal.SIGTERM), (1, signal.SIGTERM)]
+    assert wait.call_args_list[0].args == ([pip],)
+    assert sent == [(2, signal.SIGTERM), (2, signal.SIGKILL), (1, signal.SIGTERM)]

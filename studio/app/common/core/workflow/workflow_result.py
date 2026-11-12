@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from fastapi import HTTPException, status
 from filelock import FileLock, Timeout
-from psutil import AccessDenied, NoSuchProcess, Process, process_iter
+from psutil import AccessDenied, NoSuchProcess, Process, process_iter, wait_procs
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
@@ -59,6 +59,7 @@ from studio.app.const import DATE_FORMAT
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
+CANCEL_GRACE_SECONDS = 5
 
 
 class WorkflowResult:
@@ -890,14 +891,24 @@ class WorkflowMonitor:
                 f"script: {pid_data.last_script_file}"
             )
 
-        # A killed conda would leave its pip child writing into the env
+        # Descendants die first, so conda and the build lock it sits under outlive
+        # every process that writes into the env
         process = current_process.process
-        for proc in process.children(recursive=True)[::-1] + [process]:
-            try:
-                cmdline = proc.as_dict(attrs=["cmdline"]).get("cmdline") or []
-                logger.info(f"Cancel sends SIGTERM to [{proc.pid}] {' '.join(cmdline)}")
-                proc.send_signal(signal.SIGTERM)
-            except NoSuchProcess:
-                continue
+        children = process.children(recursive=True)[::-1]
+        self._send(children, signal.SIGTERM)
+        _, alive = wait_procs(children, timeout=CANCEL_GRACE_SECONDS)
+        self._send(alive, signal.SIGKILL)
+        wait_procs(alive, timeout=CANCEL_GRACE_SECONDS)
+        self._send([process], signal.SIGTERM)
 
         return True
+
+    @staticmethod
+    def _send(procs, sig):
+        for proc in procs:
+            try:
+                cmdline = proc.as_dict(attrs=["cmdline"]).get("cmdline") or []
+                logger.info(f"Cancel sends {sig.name} to [{proc.pid}] {cmdline}")
+                proc.send_signal(sig)
+            except NoSuchProcess:
+                continue

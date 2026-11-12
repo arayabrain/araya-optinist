@@ -51,6 +51,24 @@ from studio.app.dir_path import DIRPATH
 logger = AppLogger.get_logger()
 
 _env_create = Env.create
+# Longer than building every env in a row on EFS (caiman alone is about an hour)
+BUILD_LOCK_WAIT_SECONDS = 3 * 60 * 60
+BUILD_LOCK_POLL_SECONDS = 10
+
+
+def _flock_or_fail(f, address):
+    deadline = time.monotonic() + BUILD_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise WorkflowError(
+                    f"Gave up on conda env {address} after waiting "
+                    f"{BUILD_LOCK_WAIT_SECONDS} s for another env build to finish"
+                )
+            time.sleep(BUILD_LOCK_POLL_SECONDS)
 
 
 def _env_create_locked(self, dryrun=False):
@@ -61,7 +79,7 @@ def _env_create_locked(self, dryrun=False):
     with open(
         join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, ".build.lock"]), "a"
     ) as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        _flock_or_fail(f, self.address)
         logger.info(f"Holding the conda build lock for {self.address}")
         env_path = _env_create(self, dryrun)
     if not get_env_setup_done_flag_file(Path(env_path)).exists():
