@@ -215,57 +215,19 @@ resource "null_resource" "deploy_to_ecs" {
       set -e
       echo "=== Starting ECS deployment ==="
 
-      # Force a new deployment on EVERY service in the cluster (main, premium,
-      # public, background) so all tiers re-pull the just-pushed :latest, not
-      # only the main service.
-      echo "Forcing ECS deployment on all services in ${aws_ecs_cluster.main.name}..."
-      SERVICES=$(aws ecs list-services \
+      # Every service in the cluster (main, premium, public, background), so
+      # all tiers re-pull the just-pushed :latest. The groups are the tiers
+      # whose ELB health check replaces a host
+      bash ../scripts/ecs_rollout.sh \
         --cluster ${aws_ecs_cluster.main.name} \
         --region ${var.aws_region} \
-        --query 'serviceArns[]' --output text)
-      if [ -z "$SERVICES" ]; then
-        echo "ERROR: no ECS services found in ${aws_ecs_cluster.main.name}"
+        --asg ${aws_autoscaling_group.main.name} \
+        --asg ${aws_autoscaling_group.public.name} \
+        --hygiene-association ${aws_ssm_association.docker_hygiene.association_id} || {
+        echo "deploy_to_ecs is marked tainted, so the next terraform apply forces a new"
+        echo "deployment on every service again."
         exit 1
-      fi
-      for svc in $SERVICES; do
-        echo "  -> $${svc##*/}"
-        aws ecs update-service \
-          --cluster ${aws_ecs_cluster.main.name} \
-          --service "$svc" \
-          --force-new-deployment \
-          --region ${var.aws_region} >/dev/null
-      done
-
-      # One `aws ecs wait` stops at 10 minutes, shorter than a public rollout
-      echo "Waiting for all services to stabilize (up to about an hour)..."
-      DEADLINE=$(( $(date +%s) + 3700 ))
-      until aws ecs wait services-stable \
-        --cluster ${aws_ecs_cluster.main.name} \
-        --services $SERVICES \
-        --region ${var.aws_region}; do
-        # Start another wait only if it and the sleep can finish by the deadline
-        if [ $(( $(date +%s) + 615 )) -gt "$DEADLINE" ]; then
-          echo "ERROR: services not stable within about an hour; the new image may not be serving."
-          aws ecs describe-services \
-            --cluster ${aws_ecs_cluster.main.name} \
-            --services $SERVICES \
-            --region ${var.aws_region} \
-            --query 'services[?!(length(deployments) == `1` && runningCount == desiredCount)].[serviceName, events[0].message]' \
-            --output text || true
-          echo "Check those services in the ECS console. deploy_to_ecs is marked tainted,"
-          echo "so the next terraform apply forces a new deployment on every service again."
-          exit 1
-        fi
-        echo "Still rolling out, waiting again..."
-        sleep 15
-      done
-
-      # Each host now holds the image this deploy replaced; prune it now
-      # rather than at the next scheduled run
-      echo "Triggering docker hygiene on all hosts..."
-      aws ssm start-associations-once \
-        --association-ids ${aws_ssm_association.docker_hygiene.association_id} \
-        --region ${var.aws_region} || echo "Warning: could not trigger docker hygiene; it runs on its 6 h schedule"
+      }
 
       echo "=== DEPLOYMENT COMPLETE ==="
       echo "Application is ready at: http://${aws_lb.autoscaling.dns_name}"

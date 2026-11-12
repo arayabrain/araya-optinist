@@ -140,7 +140,7 @@ OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team 
 
 4. **Host docker hygiene (`docker_hygiene.sh`, every 6 hours and after each deploy):**
    - `aws_ssm_association "docker_hygiene"` (`deployment.tf`) runs on every host launched from one of the four launch templates (free, premium, background, public). It prunes stopped containers older than 10 minutes and, when the ECS agent reports a steady running task, every image no container uses.
-   - Each force-deploy leaves the replaced 2.1 GB image and the previous task's stopped container on every host; without this, a few deploys fill a 48 GB root. Both `terraform apply` (`null_resource.deploy_to_ecs`) and `ecr_build_push.sh --deploy` trigger a run after `ecs wait services-stable`. See [MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#host-root-volume-hygiene) for the manual trigger and the full-disk runbook.
+   - Each force-deploy leaves the replaced 2.1 GB image and the previous task's stopped container on every host; without this, a few deploys fill a 48 GB root. Both `terraform apply` (`null_resource.deploy_to_ecs`) and `ecr_build_push.sh --deploy` roll out through `ecs_rollout.sh`, which triggers a run once every service is stable. See [MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#host-root-volume-hygiene) for the manual trigger and the full-disk runbook.
 
    > **Design note / future consideration:** this script runs one-shot bootstrap (package installs, DB seeding, Firebase admin verification, which need only run once) on a 30-minute loop. The seed migration now owns the DB reference rows, so the DB block could be removed from here entirely. Running the rest once at launch would be cleaner. Not required for correctness — the bootstrap steps are idempotent — but it would stop re-running one-shot work every 30 minutes for the life of each instance.
 
@@ -150,16 +150,16 @@ OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team 
 
 ### Determine What Needs to Be Deployed
 
-| What changed                 | Actions needed                                                   |
-| ---------------------------- | ---------------------------------------------------------------- |
-| Frontend code (`frontend/`)  | `ecr_build_push.sh` → Force ECS redeployment                     |
-| Studio code (`studio/`)      | `ecr_build_push.sh` → Force ECS redeployment                     |
-| Lambda code (`*_package/`)   | `terraform apply`                                                |
-| Infrastructure (`.tf` files) | `terraform apply`                                                |
-| Frontend + Infrastructure    | `terraform apply` → `ecr_build_push.sh` → Force ECS redeployment |
-| Everything                   | `terraform apply` → `ecr_build_push.sh` → Force ECS redeployment |
+| What changed                 | Actions needed                                          |
+| ---------------------------- | ------------------------------------------------------- |
+| Frontend code (`frontend/`)  | `ecr_build_push.sh --deploy`                            |
+| Studio code (`studio/`)      | `ecr_build_push.sh --deploy`                            |
+| Lambda code (`*_package/`)   | `terraform apply`                                       |
+| Infrastructure (`.tf` files) | `terraform apply`                                       |
+| Frontend + Infrastructure    | `terraform apply` (builds, pushes and rolls out itself) |
+| Everything                   | `terraform apply` (builds, pushes and rolls out itself) |
 
-> **Important:** When both infrastructure and application code change, run `terraform apply` **before** `ecr_build_push.sh`. The build script reads Terraform outputs (domain, port, protocol) to configure the frontend build.
+> **Important:** One deploy, one rollout. On a new commit `terraform apply` runs `ecr_build_push.sh` itself (`null_resource.build_and_deploy`) and then rolls out every service (`null_resource.deploy_to_ecs`), so do not follow it with `ecr_build_push.sh --deploy` or a manual force: on free and public each extra rollout adds 10 to 30 minutes, and one issued while another is in progress restarts it. What a rollout does: [INFRA_DEPLOYMENT_PROCEDURE.md — Cycling All Services](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services).
 
 ### Step 1: Apply Infrastructure Changes (if needed)
 
@@ -239,6 +239,8 @@ The script automatically:
 ### Step 3: Force ECS Redeployment (after Docker image push)
 
 Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
+
+`ecr_build_push.sh --deploy` does this step for every service through `ecs_rollout.sh` ([what it does](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services)). The options below are manual fallbacks without its safeguards: they neither wait for a rollout in progress nor keep the Auto Scaling groups from replacing a host mid-rollout.
 
 **Option A: AWS Console**
 

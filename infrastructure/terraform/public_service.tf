@@ -373,6 +373,11 @@ output "public_target_group_arn" {
   value       = aws_lb_target_group.public.arn
 }
 
+output "public_asg_name" {
+  description = "Name of the public Auto Scaling group; ecr_build_push.sh --deploy suspends its host health checks during a rollout"
+  value       = aws_autoscaling_group.public.name
+}
+
 # wait_for_capacity_timeout=0 means `terraform apply` returns before targets
 # are healthy. Use this output to verify the public tier is serving traffic
 # before relying on the listener default-action flip.

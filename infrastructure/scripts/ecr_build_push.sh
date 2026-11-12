@@ -253,29 +253,28 @@ echo "============================================"
 # Optional: force every service to re-pull :latest
 # ===========================================
 # Runs AFTER the push, so the force always resolves the digest we just pushed.
-# Cycles all tiers (main/premium/public/background), not just the main service.
+# Cycles all tiers (main/premium/public/background), not just the main service;
+# ecs_rollout.sh is the same rollout terraform apply runs.
 if [ "$DEPLOY" = true ]; then
     CLUSTER=$(terraform -chdir="$TERRAFORM_DIR" output -raw ecs_cluster_name)
-    echo ""
-    echo "Forcing new deployment on all services in ${CLUSTER}..."
-    SERVICES=$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
-        --query 'serviceArns[]' --output text)
-    for svc in $SERVICES; do
-        echo "  -> ${svc##*/}"
-        aws ecs update-service --cluster "$CLUSTER" --service "$svc" \
-            --force-new-deployment --region "$REGION" >/dev/null
+    ROLLOUT_ARGS="--cluster $CLUSTER --region $REGION"
+    # An output missing from an older state only leaves that group's host
+    # health checks on during the rollout
+    for ASG_OUTPUT in asg_name public_asg_name; do
+        ASG=$(terraform -chdir="$TERRAFORM_DIR" output -raw "$ASG_OUTPUT" 2>/dev/null || echo "")
+        if [ -n "$ASG" ]; then
+            ROLLOUT_ARGS="$ROLLOUT_ARGS --asg $ASG"
+        else
+            echo "Warning: no '${ASG_OUTPUT}' output; that group's host health checks stay on during the rollout"
+        fi
     done
-    echo "Force-new-deployment issued for all services (re-pulling ${ECR_URI}:latest)."
-    echo "Running services restart now; any service at desiredCount 0 re-pulls on next scale-up."
-
-    # Each host now holds the image this deploy replaced; prune it once the
-    # new tasks are up rather than at the next scheduled run
-    echo "Waiting for services to stabilize..."
-    aws ecs wait services-stable --cluster "$CLUSTER" --services $SERVICES --region "$REGION" \
-        || echo "Warning: services not stable yet; docker hygiene runs on its 6 h schedule"
     HYGIENE_ID=$(terraform -chdir="$TERRAFORM_DIR" output -raw docker_hygiene_association_id 2>/dev/null || echo "")
     if [ -n "$HYGIENE_ID" ]; then
-        aws ssm start-associations-once --association-ids "$HYGIENE_ID" --region "$REGION" \
-            || echo "Warning: could not trigger docker hygiene"
+        ROLLOUT_ARGS="$ROLLOUT_ARGS --hygiene-association $HYGIENE_ID"
     fi
+    echo ""
+    # Unquoted: the names and ids carry no spaces
+    # shellcheck disable=SC2086
+    bash "$SCRIPT_DIR/ecs_rollout.sh" $ROLLOUT_ARGS
+    echo "Any service at desiredCount 0 re-pulls :latest on its next scale-up."
 fi

@@ -388,10 +388,42 @@ aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
   --query 'services[].{name:serviceName,deployments:length(deployments),running:runningCount}'
 ```
 
-`terraform apply` does both steps itself in `null_resource.deploy_to_ecs`. It waits up to about
-an hour for every service to settle (the public service alone took about 40 minutes on
-development) and fails the apply, naming each unsettled service, if one does not. The failed
-resource is tainted, so the next apply forces a new deployment on every service again.
+`terraform apply` (`null_resource.deploy_to_ecs`) and `ecr_build_push.sh --deploy` do both steps
+through `infrastructure/scripts/ecs_rollout.sh`, which the loop above does not replicate. Run it
+directly to cycle the services by hand:
+
+```bash
+bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
+  --asg <env>-optinist-asg --asg <env>-optinist-public-asg
+```
+
+Free and public run one task per host, so each host stops its old task, waits out the target
+group's deregistration delay, then starts the new one (the public service alone took about 30 to
+40 minutes on development). The script keeps that from growing further:
+
+- **A rollout already in progress finishes first** (up to 30 minutes, then the force goes ahead
+  with a warning). `terraform apply` rolls a service whose task definition changed before it
+  builds the image; forcing on top of that rollout restarts it.
+- **The groups' `HealthCheck` process is suspended for the rollout** and resumed whichever way the
+  script exits. A restarted task is past its host's grace period, so a target failing a few checks
+  would otherwise get the whole host replaced mid-rollout. A group already suspended beforehand
+  is left as found.
+- **It waits up to about an hour** for every service to settle and exits 1, naming each unsettled
+  service, if one does not. For `terraform apply` that fails the apply and taints the resource, so
+  the next apply forces a new deployment on every service again. Docker hygiene runs only after a
+  settled rollout.
+
+A run killed outright (closed terminal, `kill -9`, the laptop sleeping) cannot resume the health
+checks. Check both groups and resume any it left suspended:
+
+```bash
+for ASG in <env>-optinist-asg <env>-optinist-public-asg; do
+  aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG" \
+    --region "$REGION" --query 'AutoScalingGroups[0].SuspendedProcesses[].ProcessName'
+done
+aws autoscaling resume-processes --auto-scaling-group-name <group> \
+  --scaling-processes HealthCheck --region "$REGION"
+```
 
 ### Safe Deployment Workflow
 
