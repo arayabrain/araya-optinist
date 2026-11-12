@@ -1,9 +1,10 @@
+import fcntl
 import os
 import signal
 import time
 from unittest.mock import Mock, patch
 
-from psutil import NoSuchProcess
+from psutil import STATUS_RUNNING, STATUS_ZOMBIE, NoSuchProcess
 
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.workflow.workflow_result import WorkflowMonitor
@@ -33,12 +34,12 @@ def _process(pid):
     return Mock(pid=pid)
 
 
-def _search(procs):
+def _search(procs, create_time=None):
     pid_data = WorkflowPIDFileData(
         last_pid=GONE_PID,
         func_name="f",
         last_script_file="f.py",
-        create_time=time.time(),
+        create_time=create_time or time.time(),
     )
     with patch(f"{MODULE}.Runner.read_pid_file", return_value=pid_data), patch(
         f"{MODULE}.Process", side_effect=_process
@@ -61,6 +62,30 @@ def test_another_runs_conda_build_is_not_taken():
     assert _search([other]).process is None
 
 
+def test_a_run_queued_behind_the_build_lock_outlives_the_startup_grace(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(DIRPATH, "SNAKEMAKE_CONDA_ENV_DIR", str(tmp_path))
+    three_hours_ago = time.time() - 3 * 60 * 60
+
+    assert _search([], three_hours_ago) is None
+    with open(tmp_path / ".build.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert _search([], three_hours_ago).process is None
+    assert _search([], three_hours_ago) is None
+
+
+def test_wait_counts_zombies_and_exited_processes_as_gone():
+    zombie, gone, running = Mock(), Mock(), Mock()
+    zombie.status.return_value = STATUS_ZOMBIE
+    gone.status.side_effect = NoSuchProcess(3)
+    running.status.return_value = STATUS_RUNNING
+
+    assert WorkflowMonitor._wait([zombie, gone]) == []
+    with patch(f"{MODULE}.CANCEL_GRACE_SECONDS", 0):
+        assert WorkflowMonitor._wait([zombie, gone, running]) == [running]
+
+
 def test_cancel_kills_lingering_children_before_signalling_the_process(tmp_path):
     sent = []
     pip, conda = Mock(pid=2), Mock(pid=1)
@@ -75,9 +100,15 @@ def test_cancel_kills_lingering_children_before_signalling_the_process(tmp_path)
         monitor,
         "search_process",
         return_value=WorkflowProcessInfo(process=conda, pid_data=pid_data),
-    ), patch(f"{MODULE}.wait_procs", side_effect=[([], [pip]), ([pip], [])]) as wait:
+    ), patch.object(WorkflowMonitor, "_wait", side_effect=[[pip], []]) as wait:
         assert monitor.cancel_run()
 
     conda.children.assert_called_once_with(recursive=True)
     assert wait.call_args_list[0].args == ([pip],)
-    assert sent == [(2, signal.SIGTERM), (2, signal.SIGKILL), (1, signal.SIGTERM)]
+    assert sent == [
+        (1, signal.SIGSTOP),
+        (2, signal.SIGTERM),
+        (2, signal.SIGKILL),
+        (1, signal.SIGTERM),
+        (1, signal.SIGCONT),
+    ]

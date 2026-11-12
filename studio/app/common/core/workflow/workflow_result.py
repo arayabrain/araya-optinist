@@ -1,8 +1,10 @@
 import asyncio
 import copy
+import fcntl
 import os
 import re
 import signal
+import time
 from abc import ABCMeta, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
@@ -13,7 +15,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from fastapi import HTTPException, status
 from filelock import FileLock, Timeout
-from psutil import AccessDenied, NoSuchProcess, Process, process_iter, wait_procs
+from psutil import (
+    STATUS_ZOMBIE,
+    AccessDenied,
+    NoSuchProcess,
+    Process,
+    process_iter,
+)
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
@@ -60,6 +68,19 @@ from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
 CANCEL_GRACE_SECONDS = 5
+CONDA_BUILD_LOCK = ".build.lock"
+
+
+def conda_build_running() -> bool:
+    path = join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, CONDA_BUILD_LOCK])
+    if not os.path.exists(path):
+        return False
+    with open(path) as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
 
 
 class WorkflowResult:
@@ -828,8 +849,12 @@ class WorkflowMonitor:
         # Rescue action when process not found
         if process_data is None:
             # Check elapsed time for process startup
-            # *Retry for a certain period of time even if process not found
-            if pid_data.elapsed_time_float < self.PROCESS_SNAKEMAKE_WAIT_TIMEOUT:
+            # *Retry for a certain period of time even if process not found,
+            # and while a run may still be queued behind the conda build lock
+            if (
+                pid_data.elapsed_time_float < self.PROCESS_SNAKEMAKE_WAIT_TIMEOUT
+                or conda_build_running()
+            ):
                 # logger.debug(f"Set dummy workflow process tentatively. [{pid_data}]")
                 process_data = WorkflowProcessInfo(process=None, pid_data=pid_data)
             else:
@@ -891,17 +916,36 @@ class WorkflowMonitor:
                 f"script: {pid_data.last_script_file}"
             )
 
-        # Descendants die first, so conda and the build lock it sits under outlive
-        # every process that writes into the env
+        # Stopped, conda cannot exit and release the build lock it sits under
+        # before every process that writes into the env is gone
         process = current_process.process
-        children = process.children(recursive=True)[::-1]
-        self._send(children, signal.SIGTERM)
-        _, alive = wait_procs(children, timeout=CANCEL_GRACE_SECONDS)
-        self._send(alive, signal.SIGKILL)
-        wait_procs(alive, timeout=CANCEL_GRACE_SECONDS)
-        self._send([process], signal.SIGTERM)
+        self._send([process], signal.SIGSTOP)
+        try:
+            children = process.children(recursive=True)[::-1]
+            self._send(children, signal.SIGTERM)
+            self._send(self._wait(children), signal.SIGKILL)
+            self._wait(children)
+        finally:
+            self._send([process], signal.SIGTERM)
+            self._send([process], signal.SIGCONT)
 
         return True
+
+    @staticmethod
+    def _wait(procs):
+        # Children of the stopped parent stay zombies, which psutil waits on
+        deadline = time.monotonic() + CANCEL_GRACE_SECONDS
+        while True:
+            alive = []
+            for proc in procs:
+                try:
+                    if proc.status() != STATUS_ZOMBIE:
+                        alive.append(proc)
+                except NoSuchProcess:
+                    continue
+            if not alive or time.monotonic() >= deadline:
+                return alive
+            time.sleep(0.1)
 
     @staticmethod
     def _send(procs, sig):

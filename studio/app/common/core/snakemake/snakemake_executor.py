@@ -42,7 +42,10 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import get_pickle_file, join_filepath
-from studio.app.common.core.workflow.workflow_result import WorkflowResult
+from studio.app.common.core.workflow.workflow_result import (
+    CONDA_BUILD_LOCK,
+    WorkflowResult,
+)
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -77,7 +80,7 @@ def _env_create_locked(self, dryrun=False):
     os.makedirs(DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, exist_ok=True)
     # Global lock, per-env plus per-container pkgs locks if builds start to queue
     with open(
-        join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, ".build.lock"]), "a"
+        join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, CONDA_BUILD_LOCK]), "a"
     ) as f:
         _flock_or_fail(f, self.address)
         logger.info(f"Holding the conda build lock for {self.address}")
