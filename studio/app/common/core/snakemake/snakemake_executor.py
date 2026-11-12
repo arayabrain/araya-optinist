@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import fcntl
 import logging
 import os
 import time
@@ -16,6 +17,8 @@ from snakemake.api import (
     SnakemakeApi,
     StorageSettings,
 )
+from snakemake.deployment.conda import Env, get_env_setup_done_flag_file
+from snakemake.exceptions import WorkflowError
 
 from studio.app.common.core.cloud.storage_tracking import (
     update_user_storage_after_workflow,
@@ -46,6 +49,30 @@ from studio.app.common.core.workspace.workspace_data_capacity_services import (
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
+
+_env_create = Env.create
+
+
+def _env_create_locked(self, dryrun=False):
+    if dryrun or get_env_setup_done_flag_file(Path(self.address)).exists():
+        return _env_create(self, dryrun)
+    os.makedirs(DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, exist_ok=True)
+    # Global lock, per-env plus per-container pkgs locks if builds start to queue
+    with open(
+        join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, ".build.lock"]), "a"
+    ) as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        logger.info(f"Holding the conda build lock for {self.address}")
+        env_path = _env_create(self, dryrun)
+    if not get_env_setup_done_flag_file(Path(env_path)).exists():
+        raise WorkflowError(
+            f"Conda env {env_path} was not built. Remove it once no conda or pip "
+            "process uses it, and the next run builds it again"
+        )
+    return env_path
+
+
+Env.create = _env_create_locked
 
 
 def snakemake_execute(
@@ -284,13 +311,18 @@ def _started_at(workspace_id: str, unique_id: str):
         return None
 
 
-def _dag(snakemake_api: SnakemakeApi, smk_workdir: str, params: SmkParam):
+def _dag(
+    snakemake_api: SnakemakeApi,
+    smk_workdir: str,
+    params: SmkParam,
+    snakefile: str = DIRPATH.SNAKEMAKE_FILEPATH,
+):
     deployment_methods = []
     if getattr(params, "use_conda", True):
         deployment_methods.append(DeploymentMethod.CONDA)
 
     return snakemake_api.workflow(
-        snakefile=Path(DIRPATH.SNAKEMAKE_FILEPATH),
+        snakefile=Path(snakefile),
         workdir=Path(smk_workdir),
         storage_settings=StorageSettings(),
         resource_settings=ResourceSettings(cores=getattr(params, "cores", 1)),

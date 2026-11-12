@@ -210,6 +210,12 @@ if [ "$ENABLE_LOCAL_CLEANUP" = "1" ]; then
     echo "Cleanup worker started (PID: $CLEANUP_PID)"
 fi
 
+# Unsupervised: a failed build only logs, and the first run that needs the env retries
+if [ "$PREBUILD_CONDA_ENVS" = "1" ]; then
+    echo "Starting conda env pre-build (PREBUILD_CONDA_ENVS=1)..."
+    poetry run python -m studio.app.common.core.snakemake.build_conda_envs &
+fi
+
 # Start the application in background
 echo "Starting application..."
 poetry run python main.py --host="$BACKEND_HOST" --port="$BACKEND_PORT" --workers="$UVICORN_WORKERS" &

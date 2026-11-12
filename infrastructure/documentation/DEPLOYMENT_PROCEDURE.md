@@ -385,6 +385,14 @@ aws logs tail $LOG_GROUP \
 
 **Tip:** You can also view logs in AWS Console → CloudWatch → Log Groups → `/ecs/subscr-optinist-*`
 
+**Conda env pre-build:** each free-tier task builds the conda envs the image needs and the shared EFS lacks, in the background after startup (`PREBUILD_CONDA_ENVS=1`). The deploy does not wait for it. Its result is in the free task's log:
+
+- `Conda envs to build: none`: no env yaml changed, done in seconds.
+- `Conda envs to build: [...]`: those yamls changed (any byte), so they get new envs; up to an hour for caiman. Runs that need one of these envs wait until it is built.
+- `Conda envs not built: [...]`: a build failed (`Conda env <name> failed to build` holds the traceback). The first run that needs the env retries the build, or an admin can run the matching `setup_conda_*` maintenance node.
+
+Snakemake's own build output (`Creating conda environment ...`) goes to `logs/studio.log` on the instance, not to CloudWatch.
+
 ### 6. Verify Secrets Manager Access (optional)
 
 ```bash

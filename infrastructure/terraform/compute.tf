@@ -837,6 +837,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
           value = "1"
         },
         {
+          name  = "PREBUILD_CONDA_ENVS"
+          value = "1"
+        },
+        {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
         },
