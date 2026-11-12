@@ -77,6 +77,8 @@ resource "aws_lb_target_group" "autoscaling" {
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
 
+  deregistration_delay = local.free_tg_deregistration_delay
+
   health_check {
     enabled             = true
     healthy_threshold   = 2

@@ -8,8 +8,8 @@ resource "aws_lb_target_group" "public" {
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
 
-  # Match the listener idle_timeout so streaming responses survive deregistration.
-  deregistration_delay = 600
+  # Production: the listener idle_timeout, so streaming responses survive deregistration
+  deregistration_delay = local.public_tg_deregistration_delay
 
   health_check {
     enabled             = true

@@ -286,7 +286,7 @@ Stripe variables are intentionally omitted because the subscriptions router is g
 
 | Resource | Terraform | Notes |
 |---|---|---|
-| Target group | `aws_lb_target_group.public` | `/health` check, 600s deregistration delay |
+| Target group | `aws_lb_target_group.public` | `/health` check, deregistration delay 600 s on production (the listener idle timeout), 60 s on development |
 | Launch template | `aws_launch_template.public` | `var.public_instance_type`, 30 GB gp3 root |
 | Auto Scaling Group | `aws_autoscaling_group.public` | ELB health check, 900s grace, `OldestInstance` policy, `GroupDesiredCapacity` metric for the serving alarm |
 | Task definition | `aws_ecs_task_definition.public` | EC2/bridge, EFS published-data mounts (output + input cache) |
