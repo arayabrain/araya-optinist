@@ -3,7 +3,6 @@ import copy
 import os
 import re
 import signal
-import time
 from abc import ABCMeta, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
@@ -727,7 +726,6 @@ class WorkflowMonitor:
     PROCESS_CONDA_CMDLINE = (
         "\\b(?:conda)\\b.*\\b(?:env)\\b.*\\b(?:create)\\b.*/\\.snakemake/conda/"
     )
-    PROCESS_CONDA_WAIT_TIMEOUT = 3600  # sec
 
     def __init__(self, workspace_id: str, unique_id: str):
         self.workspace_id = workspace_id
@@ -792,8 +790,10 @@ class WorkflowMonitor:
             # it is temporarily set to debug.
             # logger.debug(f"No workflow process found. {pid_data}")
 
-            # Search for the existence of a conda command process ("conda env create")
-            conda_process = None
+            # Search for this run's own conda command process ("conda env create")
+            workdir = os.path.realpath(
+                join_filepath([DIRPATH.OUTPUT_DIR, self.workspace_id, self.unique_id])
+            )
             for proc in process_iter(["pid", "name"]):
                 try:
                     # Targeting specific programs for backlog (for performance)
@@ -808,35 +808,18 @@ class WorkflowMonitor:
                     cmdline = proc.as_dict(attrs=["cmdline"]).get("cmdline")
                     cmdline = " ".join(cmdline) if cmdline else ""
                     cmdline = cmdline.replace("\\", "/")
+                    if not re.search(self.PROCESS_CONDA_CMDLINE, cmdline):
+                        continue
 
-                    if re.search(self.PROCESS_CONDA_CMDLINE, cmdline):
-                        conda_ps_create_elapsed = int(time.time() - proc.create_time())
-                        logger.debug(
-                            f"Found conda process. [{proc}] [{cmdline}] "
-                            f"[{conda_ps_create_elapsed} sec]",
-                        )
-                        conda_process = Process(proc.pid)
+                    # Only this run's build runs in its workdir
+                    if os.path.realpath(proc.cwd()) != workdir:
+                        continue
 
-                        # Check elapsed time for process startup
-                        #
-                        # ATTENTION:
-                        # The conda command process is a separate process from
-                        #   the snakemake process (although it is a child process),
-                        #   so it is difficult to identify the process with certainty.
-                        # Therefore, the process start time is used here to determine
-                        #   the process by estimation.
-                        if conda_ps_create_elapsed < self.PROCESS_CONDA_WAIT_TIMEOUT:
-                            process_data = WorkflowProcessInfo(
-                                process=conda_process, pid_data=pid_data
-                            )
-                        else:
-                            logger.warning(
-                                "This conda command is "
-                                "probably an irrelevant process.."
-                                f"[{conda_process}] [{conda_ps_create_elapsed} sec]"
-                            )
-                    else:
-                        continue  # skip that process
+                    logger.debug(f"Found conda process. [{proc}] [{cmdline}]")
+                    process_data = WorkflowProcessInfo(
+                        process=Process(proc.pid), pid_data=pid_data
+                    )
+                    break
 
                 except (AccessDenied, NoSuchProcess):
                     continue  # skip that process, also one that exited mid-read
@@ -907,7 +890,14 @@ class WorkflowMonitor:
                 f"script: {pid_data.last_script_file}"
             )
 
-        # send kill to process
-        current_process.process.send_signal(signal.SIGTERM)
+        # A killed conda would leave its pip child writing into the env
+        process = current_process.process
+        for proc in process.children(recursive=True)[::-1] + [process]:
+            try:
+                cmdline = proc.as_dict(attrs=["cmdline"]).get("cmdline") or []
+                logger.info(f"Cancel sends SIGTERM to [{proc.pid}] {' '.join(cmdline)}")
+                proc.send_signal(signal.SIGTERM)
+            except NoSuchProcess:
+                continue
 
         return True
