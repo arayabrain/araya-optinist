@@ -15,13 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from fastapi import HTTPException, status
 from filelock import FileLock, Timeout
-from psutil import (
-    STATUS_ZOMBIE,
-    AccessDenied,
-    NoSuchProcess,
-    Process,
-    process_iter,
-)
+from psutil import STATUS_ZOMBIE, AccessDenied, NoSuchProcess, Process, process_iter
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
