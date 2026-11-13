@@ -5,6 +5,8 @@ Note of this file:
   is set by the value of the environment variable (.env).
 """
 
+import builtins
+import errno
 import os
 import shutil
 
@@ -468,3 +470,86 @@ def test_create_user_bucket_name_matches_s3_naming_rules(monkeypatch):
     monkeypatch.setenv("S3_USER_BUCKET_SECRET", "test-secret")
     name = RemoteStorageController.create_user_bucket_name(id=42)
     assert re.fullmatch(r"[a-z0-9.\-]+", name)
+
+
+_real_open = builtins.open
+
+
+class _DiskFullFile:
+    """Creates the file, then fails every write the way a full disk does."""
+
+    def __init__(self, path, mode):
+        _real_open(path, mode).close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def write(self, _):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def _fail_writes_to(name):
+    def fake_open(path, mode="r", *args, **kwargs):
+        if os.path.basename(str(path)).startswith(name) and mode[0] in "wxa":
+            return _DiskFullFile(path, mode)
+        return _real_open(path, mode, *args, **kwargs)
+
+    return fake_open
+
+
+class TestReaderOnDiskFull:
+    workspace_id = "default"
+    unique_id = "reader_disk_full"
+    experiment_dir = os.path.join(DIRPATH.OUTPUT_DIR, workspace_id, unique_id)
+
+    @pytest.fixture(autouse=True)
+    def clean_experiment_dir(self):
+        shutil.rmtree(self.experiment_dir, ignore_errors=True)
+        yield
+        shutil.rmtree(self.experiment_dir, ignore_errors=True)
+
+    def _assert_recoverable(self):
+        assert os.listdir(self.experiment_dir) == ["remote_sync_stat.json"]
+        assert not RemoteSyncLockFileUtil.check_sync_lock_file(
+            self.workspace_id, self.unique_id
+        )
+        assert RemoteSyncStatusFileUtil.check_sync_status_unsynced(
+            self.workspace_id, self.unique_id
+        )
+
+    def test_status_write_failure_on_enter_releases_lock(self, monkeypatch):
+        RemoteSyncStatusFileUtil.create_sync_status_file_for_error(
+            "test-bucket", self.workspace_id, self.unique_id, RemoteSyncAction.DOWNLOAD
+        )
+        monkeypatch.setattr(builtins, "open", _fail_writes_to("remote_sync_stat.json"))
+
+        with pytest.raises(OSError):
+            RemoteStorageReader("test-bucket", self.workspace_id, self.unique_id)
+
+        self._assert_recoverable()
+
+    @pytest.mark.asyncio
+    async def test_status_write_failure_on_exit_releases_lock(self, monkeypatch):
+        with pytest.raises(OSError):
+            async with RemoteStorageReader(
+                "test-bucket", self.workspace_id, self.unique_id
+            ):
+                monkeypatch.setattr(
+                    builtins, "open", _fail_writes_to("remote_sync_stat.json")
+                )
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        self._assert_recoverable()
+
+    def test_lock_write_failure_removes_the_lock(self, monkeypatch):
+        monkeypatch.setattr(builtins, "open", _fail_writes_to("remote_sync.lock"))
+
+        with pytest.raises(OSError):
+            RemoteSyncLockFileUtil.create_sync_lock_file(
+                self.workspace_id, self.unique_id
+            )
+
+        assert os.listdir(self.experiment_dir) == []

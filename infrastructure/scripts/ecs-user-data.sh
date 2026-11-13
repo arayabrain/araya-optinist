@@ -163,6 +163,14 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CW_C
                     "iops_in_progress",
                     "io_time"
                 ]
+            },
+            "disk": {
+                "measurement": [
+                    "used_percent"
+                ],
+                "resources": [
+                    "/"
+                ]
             }
         }
     },
