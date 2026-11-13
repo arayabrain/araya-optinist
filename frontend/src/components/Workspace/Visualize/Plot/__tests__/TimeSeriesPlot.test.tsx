@@ -84,6 +84,7 @@ function renderPlot(
   byId: object,
   keys: string[],
   extraItems: object = {},
+  targetData: object = { "0": events(4) },
 ) {
   jest
     .mocked(getTimeSeriesInitDataApi)
@@ -103,7 +104,7 @@ function renderPlot(
       displayData: {
         ...displayData(undefined, { type: "" }),
         timeSeries: {
-          [TARGET]: entry(4, { "0": events(4) }, { "0": "fulfilled" }),
+          [TARGET]: entry(4, targetData, { "0": "fulfilled" }),
           [SOURCE]: entry(frames, data, byId),
         },
         roi: {
@@ -159,6 +160,31 @@ const settle = (respond: () => void) =>
     respond()
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
+
+describe("TimeSeriesPlot default selection", () => {
+  it("opens with the first five rows drawn when nothing is selected", () => {
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockReturnValue(new Promise(() => undefined))
+    const keys = xrangeOf(7)
+    const store = renderPlot(
+      4,
+      {},
+      {},
+      [],
+      { [TARGET_ID]: item(TARGET, [], null) },
+      Object.fromEntries(
+        keys.map((key) => [key, key === "0" ? events(4) : stub]),
+      ),
+    )
+
+    const target = store.getState().visualaizeItem.items[TARGET_ID]
+    expect((target as { drawOrderList: string[] }).drawOrderList).toEqual(
+      keys.slice(0, 5),
+    )
+    expect(requested()).toEqual(["1", "2", "3", "4"])
+  })
+})
 
 describe("TimeSeriesPlot shading", () => {
   it("retries the failed records, fetches the rest and reports what fails again", async () => {

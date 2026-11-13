@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { memo, useContext, useEffect, useMemo, useState } from "react"
+import { memo, useContext, useEffect, useMemo, useRef, useState } from "react"
 import PlotlyChart from "react-plotlyjs-ts"
 import { useSelector, useDispatch, useStore, shallowEqual } from "react-redux"
 
@@ -73,9 +73,14 @@ import {
   selectTimeSeriesShadeSourceItem,
   selectTimeSeriesItemShadeSourceItemId,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
-import { setTimeSeriesItemDrawOrder } from "store/slice/VisualizeItem/VisualizeItemSlice"
+import {
+  setTimeSeriesItemDrawOrder,
+  setTimeSeriesItemDrawOrderList,
+} from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { AppDispatch, RootState } from "store/store"
 import { arrayEqualityFn } from "utils/EqualityUtils"
+
+const DEFAULT_DRAWN_ROWS = 5
 
 export const TimeSeriesPlot = memo(function TimeSeriesPlot() {
   const { itemId, filePath: path } = useContext(DisplayDataContext)
@@ -187,6 +192,27 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     isExistFilterRoi,
     isOutput,
     roiUniqueList,
+  ])
+
+  // once per file, and never over a selection a link or the filter dialog owns
+  const defaultedPath = useRef<string>()
+  useEffect(() => {
+    if (defaultedPath.current === path || dataKeys.length === 0) return
+    defaultedPath.current = path
+    if (drawOrderList.length > 0 || dialogFilterNodeId || itemIdRoi) return
+    const keys = dataKeys.slice(0, DEFAULT_DRAWN_ROWS)
+    dispatch(setTimeSeriesItemDrawOrderList({ itemId, drawOrderList: keys }))
+    keys.forEach((index) =>
+      dispatch(getTimeSeriesDataByIdOnce({ path, index })),
+    )
+  }, [
+    dataKeys,
+    dialogFilterNodeId,
+    dispatch,
+    drawOrderList,
+    itemId,
+    itemIdRoi,
+    path,
   ])
 
   useEffect(() => {

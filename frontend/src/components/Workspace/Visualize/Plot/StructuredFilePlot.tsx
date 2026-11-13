@@ -127,6 +127,8 @@ export function reducedNote(
   return parts.length > 0 ? `Showing the first ${parts.join(" and ")}` : null
 }
 
+const VISIBLE_COLUMNS = 5
+
 const TimeSeriesView = memo(function TimeSeriesView({
   data,
   index,
@@ -148,9 +150,16 @@ const TimeSeriesView = memo(function TimeSeriesView({
       type: "scatter",
       mode: "lines",
       name: `col ${columns?.[col] ?? col}`,
+      visible: col < VISIBLE_COLUMNS ? true : "legendonly",
     })
   }
-  const note = reducedNote(data.length, numCols, shape)
+  const note = [
+    reducedNote(data.length, numCols, shape),
+    numCols > VISIBLE_COLUMNS &&
+      `Drawing ${VISIBLE_COLUMNS} of ${numCols} columns: click the legend to show more`,
+  ]
+    .filter(Boolean)
+    .join(". ")
 
   const layout = {
     title: "Time Series",
