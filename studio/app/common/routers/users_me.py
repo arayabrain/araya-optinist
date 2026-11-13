@@ -18,6 +18,7 @@ from studio.app.common.core.middleware.user_activity_middleware import (
     increment_heartbeat_failures,
     invalidate_activity_cache,
     mark_user_logged_out,
+    record_free_user_logout,
 )
 from studio.app.common.core.premium.premium_assignment_service import (
     AUTOSCALING_POOL_INSTANCE_ID,
@@ -29,10 +30,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 from studio.app.common.core.users import crud_users
-from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.db.database import get_db
-from studio.app.common.models import FreeUserAssignment
-from studio.app.common.models.instance_usage import InstanceUsageLog, UsageTier
 from studio.app.common.schemas.premium import (
     FreeLogoutResponse,
     PremiumAssignResponse,
@@ -304,36 +302,10 @@ async def logout_free_user(
         }
 
     try:
-        invalidate_activity_cache(current_user.id)
-        mark_user_logged_out(current_user.id)
-
-        # Update logged_out_at timestamp via direct SQL
-        from sqlalchemy import update
-
-        now = get_current_datetime()
-
-        stmt = (
-            update(FreeUserAssignment)
-            .where(FreeUserAssignment.user_id == current_user.id)
-            .values(logged_out_at=now)
-        )
-        result = db.execute(stmt)
-
-        # Close usage log session
-        usage_stmt = (
-            update(InstanceUsageLog)
-            .where(
-                InstanceUsageLog.user_id == current_user.id,
-                InstanceUsageLog.tier == UsageTier.FREE,
-                InstanceUsageLog.ended_at.is_(None),
-            )
-            .values(ended_at=now)
-        )
-        db.execute(usage_stmt)
-
+        stamped = record_free_user_logout(db, current_user.id)
         db.commit()
 
-        if result.rowcount > 0:
+        if stamped > 0:
             logger.info(
                 f"Free user {current_user.id} logged out, data cleanup scheduled"
             )

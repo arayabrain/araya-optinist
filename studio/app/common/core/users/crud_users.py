@@ -14,6 +14,10 @@ from studio.app.common.core.auth.auth import authenticate_user
 from studio.app.common.core.auth.auth_email_service import AuthEmailService
 from studio.app.common.core.cloud.cloud_utils import ensure_user_bucket_exists
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.middleware.user_activity_middleware import (
+    invalidate_user_tier_cache,
+    record_free_user_logout,
+)
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageSimpleWriter,
@@ -40,6 +44,7 @@ from studio.app.common.models.subscription import (
     DeletionStep,
     SubscriptionAuditLog,
     SubscriptionPlans,
+    SubscriptionUserAccount,
     UserDeletionRecord,
     UserStorageUsage,
     UserSubscription,
@@ -482,6 +487,7 @@ async def update_user(
             .first()
         )
         assert user_db is not None, "User not found"
+        old_email = user_db.email
         user_data = data.dict(exclude_unset=True)
         role_id = user_data.pop("role_id", None)
         for key, value in user_data.items():
@@ -494,13 +500,14 @@ async def update_user(
         firebase_auth.update_user(user_db.uid, email=data.email)
 
         # Sync email to Stripe customer if user has a subscription account
-        if data.email:
+        if data.email and data.email != old_email:
             import stripe
 
             from studio.app.common.core.subscription.checkout_service import (
                 CheckoutService,
             )
 
+            SubscriptionService._ensure_stripe_initialized()
             try:
                 stripe_account = CheckoutService.get_subscription_account(
                     db, user_db.id
@@ -759,6 +766,18 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         if user_db is None:
             raise HTTPException(status_code=404, detail="User not found")
 
+        SubscriptionService._ensure_stripe_initialized()
+        if (
+            not SubscriptionService._stripe_initialized
+            and db.query(SubscriptionUserAccount)
+            .filter(SubscriptionUserAccount.user_id == user_id)
+            .first()
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Account deletion is temporarily unavailable",
+            )
+
         # Create deletion record for recovery tracking
         deletion_record = UserDeletionRecord(
             user_id=user_id,
@@ -814,7 +833,6 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         # Step 2: Cancel Stripe subscription (reversible)
         # ----------------------------------------
         try:
-            SubscriptionService._ensure_stripe_initialized()
             await StripeService.handle_cancel_user_subscription(
                 db, user_db, immediate=True
             )
@@ -877,6 +895,15 @@ async def delete_user(db: Session, user_id: int, organization_id: int) -> bool:
         deletion_record.status = DeletionStatus.COMPLETED.value
         deletion_record.completed_at = get_current_datetime()
         db.commit()
+
+        # Nobody can log a deleted account out, so close its free session here.
+        invalidate_user_tier_cache(user_db.uid)
+        try:
+            record_free_user_logout(db, user_id)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Free session logout failed for user {user_id}: {e}")
 
         return True
 

@@ -157,7 +157,7 @@ The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_im
 **Problem:** A user opens the app while the free tier is down; login and the post-login bootstrap calls would 503.
 
 **Solution:** Auth and bootstrap routes are served from public:
-- `/auth/*` and `/users/me/*` route to the public TG (ALB priorities 305, 306).
+- `/auth/*` and `/users/me/*` route to the public TG (ALB priorities 305, 306), except `PUT` and `DELETE /users/me`, which call Stripe and go to the free TG (304).
 - The user logs in and the SPA bootstraps; premium users then provision via the normal assignment cascade.
 
 ### 2. SPA Document Request Lands on Public

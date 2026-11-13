@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+import stripe
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from firebase_admin.auth import EmailAlreadyExistsError
@@ -26,6 +27,7 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
 )
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.users import crud_users
 from studio.app.common.db.database import get_db
 from studio.app.common.models import Organization as OrganizationModel
@@ -1007,6 +1009,76 @@ class TestUpdateUser:
         no_firebase.update_user.assert_called_once_with(
             "uid-remail", email="after@example.com"
         )
+
+    def _stripe_customer(self, db, uid, email, monkeypatch):
+        user_id = seed_user(db, uid, email)
+        db.add(
+            SubscriptionUserAccount(
+                user_id=user_id, provider_id=1, provider_customer_id=f"cus_{uid}"
+            )
+        )
+        db.commit()
+        monkeypatch.setattr(SubscriptionService, "_stripe_initialized", False)
+        monkeypatch.setattr(stripe, "api_key", None)
+        monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_unit")
+        synced = []
+        monkeypatch.setattr(
+            stripe.Customer,
+            "modify",
+            lambda customer, **kwargs: synced.append(
+                (stripe.api_key, customer, kwargs)
+            ),
+        )
+        return user_id, synced
+
+    def test_a_changed_email_reaches_stripe_on_a_cold_worker(
+        self, db, no_firebase, admin_id, monkeypatch
+    ):
+        """`stripe.api_key` is set lazily, so a worker that has served no
+        subscription request would send the sync without a key and only warn."""
+        user_id, synced = self._stripe_customer(
+            db, "uid-stripe-mail", "old@example.com", monkeypatch
+        )
+
+        asyncio.run(
+            crud_users.update_user(
+                db,
+                user_id,
+                UserUpdate(
+                    name="Mail",
+                    email="new@example.com",
+                    role_id=UserRole.operator.value,
+                ),
+                ORGANIZATION_ID,
+            )
+        )
+
+        assert synced == [
+            ("sk_test_unit", "cus_uid-stripe-mail", {"email": "new@example.com"})
+        ]
+
+    def test_an_unchanged_email_does_not_call_stripe(
+        self, db, no_firebase, admin_id, monkeypatch
+    ):
+        """The profile page sends the current email with every name edit."""
+        user_id, synced = self._stripe_customer(
+            db, "uid-stripe-name", "same@example.com", monkeypatch
+        )
+
+        asyncio.run(
+            crud_users.update_user(
+                db,
+                user_id,
+                UserUpdate(
+                    name="Renamed",
+                    email="same@example.com",
+                    role_id=UserRole.operator.value,
+                ),
+                ORGANIZATION_ID,
+            )
+        )
+
+        assert synced == []
 
     def test_a_user_from_another_organization_is_not_found(
         self, db, no_firebase, admin_id

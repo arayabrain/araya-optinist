@@ -27,7 +27,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -43,7 +43,7 @@ from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.utils.instance_utils import resolve_instance_id
 from studio.app.common.db.database import run_db_lookup, session_scope
 from studio.app.common.models import FreeUserAssignment
-from studio.app.common.models.instance_usage import InstanceUsageLog
+from studio.app.common.models.instance_usage import InstanceUsageLog, UsageTier
 
 # Constants
 BEARER_PREFIX = "Bearer "
@@ -217,7 +217,7 @@ def _get_user_id_and_tier(uid: str) -> Tuple[Optional[int], Optional[str]]:
 
         db = next(get_db())
         try:
-            user = db.query(User).filter(User.uid == uid).first()
+            user = db.query(User).filter(User.uid == uid, User.active.is_(True)).first()
             if not user:
                 return None, None
 
@@ -310,6 +310,31 @@ def clear_logged_out_status(user_id: int) -> None:
     """Clear logged out status for a user on re-login."""
     with _logged_out_lock:
         _logged_out_users.pop(user_id, None)
+
+
+def record_free_user_logout(db, user_id: int) -> int:
+    """Stamp the free assignment logged out and end the open free usage session.
+
+    The caller commits. Returns the number of assignment rows stamped.
+    """
+    invalidate_activity_cache(user_id)
+    mark_user_logged_out(user_id)
+    now = get_current_datetime()
+    result = db.execute(
+        update(FreeUserAssignment)
+        .where(FreeUserAssignment.user_id == user_id)
+        .values(logged_out_at=now)
+    )
+    db.execute(
+        update(InstanceUsageLog)
+        .where(
+            InstanceUsageLog.user_id == user_id,
+            InstanceUsageLog.tier == UsageTier.FREE,
+            InstanceUsageLog.ended_at.is_(None),
+        )
+        .values(ended_at=now)
+    )
+    return result.rowcount
 
 
 def clear_free_user_logged_out_at(user_id: int) -> bool:

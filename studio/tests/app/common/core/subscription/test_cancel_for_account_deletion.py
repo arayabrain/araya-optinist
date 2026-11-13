@@ -1,0 +1,156 @@
+"""Account deletion cancels what Stripe can still bill, whatever the local row says.
+
+After deletion nobody can sign in to cancel, so a subscription left live here
+keeps charging the card.
+"""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+import stripe
+from fastapi import HTTPException
+
+from studio.app.common.core.subscription.stripe_service import StripeService
+
+MODULE = "studio.app.common.core.subscription.stripe_service"
+
+
+def subscription(sub_id, status, schedule=None):
+    return stripe.Subscription.construct_from(
+        {"id": sub_id, "status": status, "schedule": schedule}, "sk_test_unit"
+    )
+
+
+def pending_schedule(schedule_id):
+    return stripe.SubscriptionSchedule.construct_from(
+        {"id": schedule_id, "status": "not_started", "subscription": None},
+        "sk_test_unit",
+    )
+
+
+def pages(*pages):
+    return MagicMock(data=pages[0], auto_paging_iter=lambda: iter(sum(pages, [])))
+
+
+@pytest.fixture
+def user():
+    user = MagicMock()
+    user.id = 7
+    user.email = "deleted@example.com"
+    return user
+
+
+@pytest.fixture
+def stripe_calls():
+    with patch(f"{MODULE}.get_stripe_customer", new=AsyncMock()) as customer, patch(
+        f"{MODULE}.get_or_create_stripe_customer", new=AsyncMock()
+    ) as get_or_create, patch(f"{MODULE}.stripe.Subscription.list") as listing, patch(
+        f"{MODULE}.stripe.Subscription.cancel"
+    ) as cancel, patch(
+        f"{MODULE}.stripe.SubscriptionSchedule.list", return_value=pages([])
+    ) as list_schedules, patch(
+        f"{MODULE}.stripe.SubscriptionSchedule.cancel"
+    ) as cancel_schedule, patch(
+        f"{MODULE}.stripe.SubscriptionSchedule.release"
+    ) as release_schedule, patch(
+        f"{MODULE}.SubscriptionService.get_user_subscription", return_value=None
+    ), patch(
+        f"{MODULE}.SubscriptionService.update_scheduled_downgrade"
+    ):
+        yield {
+            "customer": customer,
+            "get_or_create": get_or_create,
+            "list": listing,
+            "cancel": cancel,
+            "list_schedules": list_schedules,
+            "cancel_schedule": cancel_schedule,
+            "release_schedule": release_schedule,
+        }
+
+
+@pytest.mark.asyncio
+async def test_every_billable_subscription_is_cancelled_without_a_local_row(
+    user, stripe_calls
+):
+    """A failed renewal leaves Stripe past_due while the local expiration has
+    passed; Stripe's retry would then charge the deleted account."""
+    stripe_calls["customer"].return_value = MagicMock(id="cus_1")
+    stripe_calls["list"].return_value = pages(
+        [
+            subscription("sub_past_due", "past_due"),
+            subscription("sub_active", "active", schedule="sub_sched_1"),
+            subscription("sub_done", "canceled"),
+            subscription("sub_expired", "incomplete_expired"),
+        ]
+    )
+
+    await StripeService.handle_cancel_user_subscription(
+        MagicMock(), user, immediate=True
+    )
+
+    stripe_calls["list"].assert_called_once_with(
+        customer="cus_1", status="all", limit=100
+    )
+    cancelled = [c.args[0] for c in stripe_calls["cancel"].call_args_list]
+    assert cancelled == ["sub_past_due", "sub_active"]
+    stripe_calls["release_schedule"].assert_called_once_with("sub_sched_1")
+    stripe_calls["cancel_schedule"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_user_without_a_stripe_customer_creates_none(user, stripe_calls):
+    """An admin-granted plan has a local row but no Stripe history; deletion
+    must not create a Stripe customer for an account it is removing."""
+    stripe_calls["customer"].return_value = None
+
+    with pytest.raises(HTTPException) as raised:
+        await StripeService.handle_cancel_user_subscription(
+            MagicMock(), user, immediate=True
+        )
+
+    assert raised.value.status_code == 404
+    stripe_calls["get_or_create"].assert_not_called()
+    stripe_calls["list"].assert_not_called()
+    stripe_calls["cancel"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_billable_subscription_past_the_first_page_is_cancelled(
+    user, stripe_calls
+):
+    """status="all" lists terminal history too, so a live subscription can sit
+    behind a full page of canceled ones."""
+    stripe_calls["customer"].return_value = MagicMock(id="cus_1")
+    stripe_calls["list"].return_value = pages(
+        [subscription(f"sub_old_{i}", "canceled") for i in range(100)],
+        [subscription("sub_live", "active")],
+    )
+
+    await StripeService.handle_cancel_user_subscription(
+        MagicMock(), user, immediate=True
+    )
+
+    stripe_calls["cancel"].assert_called_once_with("sub_live")
+
+
+@pytest.mark.parametrize("current_status", ["active", "canceled"])
+@pytest.mark.asyncio
+async def test_a_scheduled_plan_change_is_cancelled(user, stripe_calls, current_status):
+    """A plan change leaves a not_started schedule on the customer, attached to
+    no subscription; once it starts it opens a new paid subscription."""
+    stripe_calls["customer"].return_value = MagicMock(id="cus_1")
+    stripe_calls["list"].return_value = pages(
+        [subscription("sub_current", current_status)]
+    )
+    stripe_calls["list_schedules"].return_value = pages(
+        [pending_schedule("sub_sched_next")]
+    )
+
+    await StripeService.handle_cancel_user_subscription(
+        MagicMock(), user, immediate=True
+    )
+
+    stripe_calls["list_schedules"].assert_called_once_with(
+        customer="cus_1", scheduled=True, limit=100
+    )
+    stripe_calls["cancel_schedule"].assert_called_once_with("sub_sched_next")
