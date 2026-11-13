@@ -13,7 +13,7 @@ import {
 // directly rather than through a markdown parser.
 const Privacy = () => {
   return (
-    <LegalPageLayout title="Privacy Policy" lastUpdated="2026-11-13">
+    <LegalPageLayout title="Privacy Policy" lastUpdated="2026-08-01">
       <P>
         Araya Inc. (&quot;we,&quot; &quot;us,&quot; or &quot;Araya&quot;)
         provides the cloud service &quot;Araya-OptiNiSt Cloud&quot; (the
@@ -209,8 +209,8 @@ const Privacy = () => {
           by this provider; we do not store card numbers.
         </li>
         <li>
-          Analytics provider: for website and usage analytics (currently Google
-          LLC / Google Analytics; see Section 5).
+          Analytics provider: for website and usage analytics (planned: Google
+          LLC / Google Analytics, not yet active; see Section 5).
         </li>
       </ul>
       <P>
@@ -244,7 +244,9 @@ const Privacy = () => {
         </TableHead>
         <TableBody>
           <TableRow>
-            <TableCell>Google LLC: authentication and analytics</TableCell>
+            <TableCell>
+              Google LLC: authentication (analytics planned)
+            </TableCell>
             <TableCell>United States and other countries</TableCell>
             <TableCell>
               Google is certified under the EU-U.S. Data Privacy Framework
@@ -350,8 +352,9 @@ const Privacy = () => {
 
       <H3>5.2 Analytics (Google Analytics)</H3>
       <P>
-        We use Google Analytics, provided by Google LLC, to understand how the
-        Service is used and to improve it. Google Analytics uses cookies and
+        We plan to use Google Analytics, provided by Google LLC, to understand
+        how the Service is used and to improve it (this analytics integration is
+        not yet active on the Service). Google Analytics uses cookies and
         similar technologies to collect information such as pages viewed,
         interactions, approximate location derived from IP address, and device
         and browser information. This information is transmitted to and stored
@@ -372,12 +375,13 @@ const Privacy = () => {
         below.
       </P>
       <P>
-        Consent: We use a cookie-consent banner that requests your prior opt-in
-        consent for analytics cookies if you are in the EEA or the UK, and that
-        lets you decline or withdraw consent at any time; elsewhere, analytics
-        may run on an opt-out basis. Google Analytics will be configured with a
-        data-retention period of 14 months and Google Signals / advertising
-        features disabled.
+        Consent: Before activating analytics, we will use a cookie-consent
+        banner that requests your prior opt-in consent for analytics cookies if
+        you are in the EEA or the UK, and that lets you decline or withdraw
+        consent at any time; elsewhere, analytics may run on an opt-out basis.
+        Google Analytics will be configured with IP-address anonymization
+        enabled, a data-retention period of 14 months, and Google Signals /
+        advertising features disabled.
       </P>
 
       <H2>6. Data Sharing and Publishing Features</H2>
