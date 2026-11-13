@@ -1163,12 +1163,25 @@ async def get_csv(
 STRUCTURED_MAX_VALUES = 1_000_000
 STRUCTURED_MAX_COLUMNS = 1000
 STRUCTURED_MAX_FRAMES = 10
+STRUCTURED_MAX_3D_VALUES = 2048 * 2048
 
 
 def _structured_selection(shape, start_index: int, end_index: int) -> tuple:
     match len(shape):
         case 3:
-            stop = min(shape[0], end_index, start_index + STRUCTURED_MAX_FRAMES)
+            frame = int(shape[1]) * int(shape[2])
+            if frame > STRUCTURED_MAX_3D_VALUES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"3D slices of {shape[1]} x {shape[2]} values are too "
+                        "large to preview"
+                    ),
+                )
+            frames = min(
+                STRUCTURED_MAX_FRAMES, STRUCTURED_MAX_3D_VALUES // max(1, frame)
+            )
+            stop = min(shape[0], end_index, start_index + frames)
             return (slice(start_index, stop),)
         case 2:
             cols = min(shape[1], STRUCTURED_MAX_COLUMNS)

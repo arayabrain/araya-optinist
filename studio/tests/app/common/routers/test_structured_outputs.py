@@ -540,6 +540,26 @@ def test_structured_3d_frames_are_capped(client, monkeypatch, params, frames):
     assert data["total_frames"] == 10
 
 
+@pytest.mark.parametrize(
+    "budget, status, frames",
+    [(64 * 64 * 4, 200, 4), (64 * 64 * 20, 200, 10), (64 * 64 - 1, 422, None)],
+)
+def test_structured_3d_frames_fit_the_value_budget(
+    client, monkeypatch, budget, status, frames
+):
+    monkeypatch.setattr(
+        "studio.app.common.routers.outputs.STRUCTURED_MAX_3D_VALUES", budget
+    )
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        params={"start_index": 0, "end_index": 1_000_000},
+    )
+
+    assert response.status_code == status
+    if frames is not None:
+        assert len(response.json()["data"]) == frames
+
+
 @pytest.mark.parametrize("node_id", ["hdf5_1d_node", "hdf5_table_col_node"])
 def test_structured_1d_over_budget_is_reduced(client, monkeypatch, node_id):
     monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_VALUES", 20)
