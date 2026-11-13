@@ -1,12 +1,17 @@
+import asyncio
 import os
 import shutil
+import threading
 
 import h5py
+import httpx
 import numpy as np
 import pytest
 import scipy.io
 import yaml
 
+from studio.__main_unit__ import app
+from studio.app.common.routers import outputs
 from studio.app.dir_path import DIRPATH
 
 WORKSPACE_ID = "test_structured"
@@ -584,3 +589,35 @@ def test_structured_rejects_negative_indices(client, params):
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_structured_read_not_started_in_time_is_refused(monkeypatch):
+    monkeypatch.setattr(outputs, "STRUCTURED_READ_WAIT_SECONDS", 0.3)
+    reading, released = threading.Event(), threading.Event()
+    read = []
+    structured_body = outputs._structured_body
+
+    def held_structured_body(full_path, *args):
+        read.append(os.path.basename(full_path))
+        reading.set()
+        released.wait(5)
+        return structured_body(full_path, *args)
+
+    monkeypatch.setattr(outputs, "_structured_body", held_structured_body)
+    url = f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}"
+
+    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+        held = asyncio.create_task(http.get(f"{url}/hdf5_3d_node"))
+        for _ in range(500):
+            if reading.is_set():
+                break
+            await asyncio.sleep(0.01)
+        refused = await http.get(f"{url}/hdf5_1d_node")
+        released.set()
+        held = await held
+
+    assert refused.status_code == 429, refused.text
+    assert refused.headers["Retry-After"] == "5"
+    assert held.status_code == 200, held.text
+    assert read == ["data_3d.h5"]

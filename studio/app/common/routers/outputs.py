@@ -127,6 +127,11 @@ _timeseries_reads_in_flight = 0
 _image_read_executor = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="image-read"
 )
+# One structured preview at a time bounds its encode peak to one per process
+_structured_read_executor = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="structured-read"
+)
+STRUCTURED_READ_WAIT_SECONDS = 30
 
 
 async def get_or_generate_thumbnail(
@@ -745,33 +750,44 @@ async def _read_timeseries(read, *args) -> Response:
     429 if the read does not start within TIMESERIES_READ_WAIT_SECONDS.
     """
     global _timeseries_reads_in_flight
-    context = contextvars.copy_context()
-    future = _timeseries_read_executor.submit(
-        context.run, _timeseries_body, read, *args
-    )
     _timeseries_reads_in_flight += 1
     try:
-        try:
-            async with asyncio.timeout(TIMESERIES_READ_WAIT_SECONDS):
-                body = await asyncio.wrap_future(future)
-        except TimeoutError:
-            # A started read cannot be stopped, so it is answered
-            if not future.cancel():
-                body = await asyncio.wrap_future(future)
-            else:
-                logger.warning(
-                    "Timeseries read not started in %s s; %d in flight",
-                    TIMESERIES_READ_WAIT_SECONDS,
-                    _timeseries_reads_in_flight,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Other timeseries are being read. Please retry.",
-                    headers={"Retry-After": "5"},
-                )
+        body = await _run_or_429(
+            _timeseries_read_executor,
+            TIMESERIES_READ_WAIT_SECONDS,
+            "Other timeseries are being read. Please retry.",
+            _timeseries_body,
+            read,
+            *args,
+        )
+    except HTTPException as e:
+        if e.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+            logger.warning(
+                "Timeseries read not started in %s s; %d in flight",
+                TIMESERIES_READ_WAIT_SECONDS,
+                _timeseries_reads_in_flight,
+            )
+        raise
     finally:
         _timeseries_reads_in_flight -= 1
     return Response(content=body, media_type="application/json")
+
+
+async def _run_or_429(executor, wait_seconds, detail, func, *args) -> bytes:
+    """func(*args) on executor; 429 if it does not start within wait_seconds."""
+    future = executor.submit(contextvars.copy_context().run, func, *args)
+    try:
+        async with asyncio.timeout(wait_seconds):
+            return await asyncio.wrap_future(future)
+    except TimeoutError:
+        # A started read cannot be stopped, so it is answered
+        if not future.cancel():
+            return await asyncio.wrap_future(future)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
+            headers={"Retry-After": "5"},
+        )
 
 
 def _timeseries_body(read, *args) -> bytes:
@@ -1297,7 +1313,15 @@ async def get_structured_data(
             detail="Node has no hdf5Path or matPath",
         )
 
-    body = await asyncio.to_thread(
-        _structured_body, full_path, hdf5_path, mat_path, start_index, end_index
+    body = await _run_or_429(
+        _structured_read_executor,
+        STRUCTURED_READ_WAIT_SECONDS,
+        "Other previews are being read. Please retry.",
+        _structured_body,
+        full_path,
+        hdf5_path,
+        mat_path,
+        start_index,
+        end_index,
     )
     return Response(content=body, media_type="application/json")
