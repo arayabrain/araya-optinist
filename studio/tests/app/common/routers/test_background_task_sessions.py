@@ -422,7 +422,7 @@ def test_run_result_holds_no_connection_while_it_saves():
 def _call_run(endpoint, db, background_tasks):
     kwargs = dict(
         workspace_id="1",
-        runItem=Mock(),
+        runItem=Mock(nodeDict={}),
         background_tasks=background_tasks,
         remote_bucket_name="bucket",
         current_user=Mock(id=1),

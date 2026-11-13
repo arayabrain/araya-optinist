@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import fcntl
 import logging
 import os
 import time
@@ -16,6 +17,8 @@ from snakemake.api import (
     SnakemakeApi,
     StorageSettings,
 )
+from snakemake.deployment.conda import Env, get_env_setup_done_flag_file
+from snakemake.exceptions import WorkflowError
 
 from studio.app.common.core.cloud.storage_tracking import (
     update_user_storage_after_workflow,
@@ -39,13 +42,58 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import get_pickle_file, join_filepath
-from studio.app.common.core.workflow.workflow_result import WorkflowResult
+from studio.app.common.core.workflow.workflow_result import (
+    CONDA_BUILD_LOCK,
+    WorkflowResult,
+)
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
+
+_env_create = Env.create
+# Longer than building every env in a row on EFS (caiman alone is about an hour)
+BUILD_LOCK_WAIT_SECONDS = 3 * 60 * 60
+BUILD_LOCK_POLL_SECONDS = 10
+
+
+def _flock_or_fail(f, address):
+    deadline = time.monotonic() + BUILD_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise WorkflowError(
+                    f"Gave up on conda env {address} after waiting "
+                    f"{BUILD_LOCK_WAIT_SECONDS} s for another env build to finish"
+                )
+            time.sleep(BUILD_LOCK_POLL_SECONDS)
+
+
+def _env_create_locked(self, dryrun=False):
+    if dryrun or get_env_setup_done_flag_file(Path(self.address)).exists():
+        return _env_create(self, dryrun)
+    os.makedirs(DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, exist_ok=True)
+    # Global lock, per-env plus per-container pkgs locks if builds start to queue
+    with open(
+        join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, CONDA_BUILD_LOCK]), "a"
+    ) as f:
+        _flock_or_fail(f, self.address)
+        logger.info(f"Holding the conda build lock for {self.address}")
+        env_path = _env_create(self, dryrun)
+    if not get_env_setup_done_flag_file(Path(env_path)).exists():
+        raise WorkflowError(
+            f"Conda env {env_path} was not built. Remove it once no conda or pip "
+            "process uses it, and the next run builds it again"
+        )
+    return env_path
+
+
+Env.create = _env_create_locked
 
 
 def snakemake_execute(
@@ -284,13 +332,18 @@ def _started_at(workspace_id: str, unique_id: str):
         return None
 
 
-def _dag(snakemake_api: SnakemakeApi, smk_workdir: str, params: SmkParam):
+def _dag(
+    snakemake_api: SnakemakeApi,
+    smk_workdir: str,
+    params: SmkParam,
+    snakefile: str = DIRPATH.SNAKEMAKE_FILEPATH,
+):
     deployment_methods = []
     if getattr(params, "use_conda", True):
         deployment_methods.append(DeploymentMethod.CONDA)
 
     return snakemake_api.workflow(
-        snakefile=Path(DIRPATH.SNAKEMAKE_FILEPATH),
+        snakefile=Path(snakefile),
         workdir=Path(smk_workdir),
         storage_settings=StorageSettings(),
         resource_settings=ResourceSettings(cores=getattr(params, "cores", 1)),

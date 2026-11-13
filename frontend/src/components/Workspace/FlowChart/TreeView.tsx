@@ -42,7 +42,9 @@ import {
 import { NODE_TYPE_SET } from "store/slice/FlowElement/FlowElementType"
 import { FILE_TYPE } from "store/slice/InputNode/InputNodeType"
 import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
-import { AppDispatch } from "store/store"
+import { selectModeStandalone } from "store/slice/Standalone/StandaloneSeclector"
+import { isAdmin } from "store/slice/User/UserSelector"
+import { AppDispatch, RootState } from "store/store"
 import { getNanoId } from "utils/nanoid/NanoIdUtils"
 
 export const AlgorithmTreeView = memo(function AlgorithmTreeView() {
@@ -249,6 +251,9 @@ const AlgoNodeComponent = memo(function AlgoNodeComponent({
       [onAddAlgoNode, name, node],
     ),
   )
+  const canCreateEnv = useSelector(
+    (state: RootState) => selectModeStandalone(state) || isAdmin(state),
+  )
 
   return (
     <LeafItem
@@ -266,7 +271,7 @@ const AlgoNodeComponent = memo(function AlgoNodeComponent({
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {node.condaEnvExists ? (
+            {node.condaEnvExists || !canCreateEnv ? (
               <AddButton
                 name={name}
                 showParameterUrl={true}

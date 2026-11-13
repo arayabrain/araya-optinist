@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import fcntl
 import os
 import re
 import signal
@@ -14,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from fastapi import HTTPException, status
 from filelock import FileLock, Timeout
-from psutil import AccessDenied, NoSuchProcess, Process, process_iter
+from psutil import STATUS_ZOMBIE, AccessDenied, NoSuchProcess, Process, process_iter
 
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptFunction
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
@@ -60,6 +61,20 @@ from studio.app.const import DATE_FORMAT
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
+CANCEL_GRACE_SECONDS = 5
+CONDA_BUILD_LOCK = ".build.lock"
+
+
+def conda_build_running() -> bool:
+    path = join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, CONDA_BUILD_LOCK])
+    if not os.path.exists(path):
+        return False
+    with open(path) as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
 
 
 class WorkflowResult:
@@ -727,7 +742,6 @@ class WorkflowMonitor:
     PROCESS_CONDA_CMDLINE = (
         "\\b(?:conda)\\b.*\\b(?:env)\\b.*\\b(?:create)\\b.*/\\.snakemake/conda/"
     )
-    PROCESS_CONDA_WAIT_TIMEOUT = 3600  # sec
 
     def __init__(self, workspace_id: str, unique_id: str):
         self.workspace_id = workspace_id
@@ -792,8 +806,10 @@ class WorkflowMonitor:
             # it is temporarily set to debug.
             # logger.debug(f"No workflow process found. {pid_data}")
 
-            # Search for the existence of a conda command process ("conda env create")
-            conda_process = None
+            # Search for this run's own conda command process ("conda env create")
+            workdir = os.path.realpath(
+                join_filepath([DIRPATH.OUTPUT_DIR, self.workspace_id, self.unique_id])
+            )
             for proc in process_iter(["pid", "name"]):
                 try:
                     # Targeting specific programs for backlog (for performance)
@@ -808,35 +824,18 @@ class WorkflowMonitor:
                     cmdline = proc.as_dict(attrs=["cmdline"]).get("cmdline")
                     cmdline = " ".join(cmdline) if cmdline else ""
                     cmdline = cmdline.replace("\\", "/")
+                    if not re.search(self.PROCESS_CONDA_CMDLINE, cmdline):
+                        continue
 
-                    if re.search(self.PROCESS_CONDA_CMDLINE, cmdline):
-                        conda_ps_create_elapsed = int(time.time() - proc.create_time())
-                        logger.debug(
-                            f"Found conda process. [{proc}] [{cmdline}] "
-                            f"[{conda_ps_create_elapsed} sec]",
-                        )
-                        conda_process = Process(proc.pid)
+                    # Only this run's build runs in its workdir
+                    if os.path.realpath(proc.cwd()) != workdir:
+                        continue
 
-                        # Check elapsed time for process startup
-                        #
-                        # ATTENTION:
-                        # The conda command process is a separate process from
-                        #   the snakemake process (although it is a child process),
-                        #   so it is difficult to identify the process with certainty.
-                        # Therefore, the process start time is used here to determine
-                        #   the process by estimation.
-                        if conda_ps_create_elapsed < self.PROCESS_CONDA_WAIT_TIMEOUT:
-                            process_data = WorkflowProcessInfo(
-                                process=conda_process, pid_data=pid_data
-                            )
-                        else:
-                            logger.warning(
-                                "This conda command is "
-                                "probably an irrelevant process.."
-                                f"[{conda_process}] [{conda_ps_create_elapsed} sec]"
-                            )
-                    else:
-                        continue  # skip that process
+                    logger.debug(f"Found conda process. [{proc}] [{cmdline}]")
+                    process_data = WorkflowProcessInfo(
+                        process=Process(proc.pid), pid_data=pid_data
+                    )
+                    break
 
                 except (AccessDenied, NoSuchProcess):
                     continue  # skip that process, also one that exited mid-read
@@ -844,8 +843,12 @@ class WorkflowMonitor:
         # Rescue action when process not found
         if process_data is None:
             # Check elapsed time for process startup
-            # *Retry for a certain period of time even if process not found
-            if pid_data.elapsed_time_float < self.PROCESS_SNAKEMAKE_WAIT_TIMEOUT:
+            # *Retry for a certain period of time even if process not found,
+            # and while a run may still be queued behind the conda build lock
+            if (
+                pid_data.elapsed_time_float < self.PROCESS_SNAKEMAKE_WAIT_TIMEOUT
+                or conda_build_running()
+            ):
                 # logger.debug(f"Set dummy workflow process tentatively. [{pid_data}]")
                 process_data = WorkflowProcessInfo(process=None, pid_data=pid_data)
             else:
@@ -907,7 +910,43 @@ class WorkflowMonitor:
                 f"script: {pid_data.last_script_file}"
             )
 
-        # send kill to process
-        current_process.process.send_signal(signal.SIGTERM)
+        # Stopped, conda cannot exit and release the build lock it sits under
+        # before every process that writes into the env is gone
+        process = current_process.process
+        self._send([process], signal.SIGSTOP)
+        try:
+            children = process.children(recursive=True)[::-1]
+            self._send(children, signal.SIGTERM)
+            self._send(self._wait(children), signal.SIGKILL)
+            self._wait(children)
+        finally:
+            self._send([process], signal.SIGTERM)
+            self._send([process], signal.SIGCONT)
 
         return True
+
+    @staticmethod
+    def _wait(procs):
+        # Children of the stopped parent stay zombies, which psutil waits on
+        deadline = time.monotonic() + CANCEL_GRACE_SECONDS
+        while True:
+            alive = []
+            for proc in procs:
+                try:
+                    if proc.status() != STATUS_ZOMBIE:
+                        alive.append(proc)
+                except NoSuchProcess:
+                    continue
+            if not alive or time.monotonic() >= deadline:
+                return alive
+            time.sleep(0.1)
+
+    @staticmethod
+    def _send(procs, sig):
+        for proc in procs:
+            try:
+                cmdline = proc.as_dict(attrs=["cmdline"]).get("cmdline") or []
+                logger.info(f"Cancel sends {sig.name} to [{proc.pid}] {cmdline}")
+                proc.send_signal(sig)
+            except NoSuchProcess:
+                continue
