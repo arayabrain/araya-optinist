@@ -108,7 +108,7 @@ const DataView = memo(function DataView({
         />
       )
     case "bar":
-      return <BarView data={result.data as number[]} />
+      return <BarView data={result.data as number[]} shape={result.shape} />
     default:
       return <Typography>Unsupported data type: {result.data_type}</Typography>
   }
@@ -272,7 +272,13 @@ const ImageView = memo(function ImageView({
   )
 })
 
-const BarView = memo(function BarView({ data }: { data: number[] }) {
+const BarView = memo(function BarView({
+  data,
+  shape,
+}: {
+  data: number[]
+  shape?: number[]
+}) {
   const plotData = [
     {
       x: data.map((_, i) => i),
@@ -288,5 +294,14 @@ const BarView = memo(function BarView({ data }: { data: number[] }) {
     autosize: true,
   }
 
-  return <PlotlyChart data={plotData} layout={layout} />
+  return (
+    <Box>
+      {shape && data.length < shape[0] && (
+        <Typography variant="caption" color="text.secondary">
+          Showing the first {data.length} of {shape[0]} values
+        </Typography>
+      )}
+      <PlotlyChart data={plotData} layout={layout} />
+    </Box>
+  )
 })

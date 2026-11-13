@@ -1153,13 +1153,25 @@ async def get_csv(
 
 STRUCTURED_MAX_VALUES = 1_000_000
 STRUCTURED_MAX_COLUMNS = 1000
+STRUCTURED_MAX_FRAMES = 10
 
 
-def _structured_2d_selection(shape) -> tuple[slice, slice]:
-    rows, cols = shape
-    cols = min(cols, STRUCTURED_MAX_COLUMNS)
-    rows = min(rows, max(1, STRUCTURED_MAX_VALUES // max(1, cols)))
-    return slice(rows), slice(cols)
+def _structured_selection(shape, start_index: int, end_index: int) -> tuple:
+    match len(shape):
+        case 3:
+            start = max(0, start_index)
+            stop = min(shape[0], end_index, start + STRUCTURED_MAX_FRAMES)
+            return (slice(start, stop),)
+        case 2:
+            cols = min(shape[1], STRUCTURED_MAX_COLUMNS)
+            rows = min(shape[0], max(1, STRUCTURED_MAX_VALUES // max(1, cols)))
+            return slice(rows), slice(cols)
+        case 1:
+            return (slice(STRUCTURED_MAX_VALUES),)
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported data dimensionality: {len(shape)}",
+    )
 
 
 @router.get(
@@ -1214,30 +1226,14 @@ async def get_structured_data(
             with h5py.File(full_path, "r") as f:
                 dataset, field = hdf5_dataset(f, hdf5_path)
                 shape = dataset.shape
-                ndim = dataset.ndim
-                if field is not None:
-                    data = dataset[field]
-                    if ndim == 2:
-                        data = data[_structured_2d_selection(shape)]
-                elif ndim == 3:
-                    si = max(0, start_index)
-                    ei = min(shape[0], end_index)
-                    data = dataset[si:ei]
-                elif ndim == 2:
-                    data = dataset[_structured_2d_selection(shape)]
-                else:
-                    data = dataset[:]
+                selection = _structured_selection(shape, start_index, end_index)
+                source = dataset if field is None else dataset.fields(field)
+                data = source[selection]
         elif mat_path is not None:
-            raw = MatGetter.data(full_path, mat_path)
-            data = np.asarray(raw)
+            data = np.asarray(MatGetter.data(full_path, mat_path))
             shape = data.shape
-            ndim = data.ndim
-            if ndim == 3:
-                si = max(0, start_index)
-                ei = min(shape[0], end_index)
-                data = data[si:ei]
-            elif ndim == 2:
-                data = data[_structured_2d_selection(shape)]
+            selection = _structured_selection(shape, start_index, end_index)
+            data = data[selection]
         else:
             raise HTTPException(
                 status_code=400,
@@ -1249,7 +1245,7 @@ async def get_structured_data(
     data = np.asarray(data)
     dataset_path = hdf5_path or mat_path
 
-    match ndim:
+    match len(shape):
         case 3:
             return {
                 "data": data.tolist(),
@@ -1258,7 +1254,7 @@ async def get_structured_data(
                 "dataset_path": dataset_path,
             }
         case 2:
-            rows, cols = _structured_2d_selection(shape)
+            rows, cols = selection
             return {
                 "data": data.tolist(),
                 "columns": [str(c) for c in range(shape[1])[cols]],
@@ -1271,11 +1267,7 @@ async def get_structured_data(
             return {
                 "data": data.tolist(),
                 "index": list(range(len(data))),
+                "shape": [int(n) for n in shape],
                 "data_type": "bar",
                 "dataset_path": dataset_path,
             }
-        case _:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported data dimensionality: {ndim}",
-            )
