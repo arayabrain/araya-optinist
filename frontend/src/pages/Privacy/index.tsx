@@ -13,7 +13,7 @@ import {
 // directly rather than through a markdown parser.
 const Privacy = () => {
   return (
-    <LegalPageLayout title="Privacy Policy" lastUpdated="2026-11-02">
+    <LegalPageLayout title="Privacy Policy" lastUpdated="2026-11-13">
       <P>
         Araya Inc. (&quot;we,&quot; &quot;us,&quot; or &quot;Araya&quot;)
         provides the cloud service &quot;Araya-OptiNiSt Cloud&quot; (the
@@ -209,8 +209,8 @@ const Privacy = () => {
           by this provider; we do not store card numbers.
         </li>
         <li>
-          Analytics provider: for website and usage analytics, only with your
-          consent (currently Google LLC / Google Analytics; see Section 5).
+          Analytics provider: for website and usage analytics (currently Google
+          LLC / Google Analytics; see Section 5).
         </li>
       </ul>
       <P>
@@ -282,25 +282,23 @@ const Privacy = () => {
           &quot;APPI&quot;):
         </strong>{" "}
         Your research data (research content) is stored in Japan; certain
-        account, authentication, and billing information, and, if you accept
-        analytics, the usage data described in Section 5.2, may be processed
+        account, authentication, and billing information may be processed
         outside Japan by the providers noted below. Where personal data is
         provided to a third party located in a foreign country (for example, to
         Google and Stripe in the United States for authentication, analytics,
         and payment processing), we obtain your consent to such transfer when
-        you create your account or, for analytics, when you accept the analytics
-        notice, and the relevant recipients also maintain systems that conform
-        to recognized international frameworks (the EU-U.S. Data Privacy
-        Framework and Standard Contractual Clauses). On request, we will provide
-        information about the destination country (currently the United States),
-        that country&apos;s personal-information-protection system, and the
-        measures the recipient takes to protect personal data. The Personal
-        Information Protection Commission designates the EU and the UK as having
-        a protection regime equivalent to Japan&apos;s. In short, your research
-        data remains stored in Japan; the cross-border provision of personal
-        data is limited to account, authentication, and billing information
-        provided to Google and Stripe, and, if you accept analytics, usage data
-        provided to Google (currently in the United States).
+        you create your account and the relevant recipients also maintain
+        systems that conform to recognized international frameworks (the EU-U.S.
+        Data Privacy Framework and Standard Contractual Clauses). On request, we
+        will provide information about the destination country (currently the
+        United States), that country&apos;s personal-information-protection
+        system, and the measures the recipient takes to protect personal data.
+        The Personal Information Protection Commission designates the EU and the
+        UK as having a protection regime equivalent to Japan&apos;s. In short,
+        your research data remains stored in Japan; the cross-border provision
+        of personal data is limited to account, authentication, and billing
+        information provided to Google and Stripe (currently in the United
+        States).
       </P>
       <P>
         <strong>
@@ -314,21 +312,18 @@ const Privacy = () => {
         recognitions), so they do not require Standard Contractual Clauses; your
         research data itself is not transferred to the United States or other
         third countries. (2) A limited set of personal data (such as your name,
-        email address, authentication tokens, payment-related information and,
-        if you accept analytics, the usage data described in Section 5.2, but
-        not your research data) is processed by Google (Firebase and Google
-        Analytics) and Stripe, which may process it in the United States or
-        other countries. These transfers rely on the recipients&apos; EU-U.S.
-        Data Privacy Framework certifications and/or the European
-        Commission&apos;s 2021 Standard Contractual Clauses (with the UK
-        Addendum and Swiss amendments), as set out in each provider&apos;s data
-        processing terms. Where required, we will carry out a transfer impact
-        assessment in respect of these onward transfers. The Service is operated
-        from Japan, and with your consent the analytics described in Section 5.2
-        records how visitors, including visitors in the EEA/UK, use the Service.
-        We have not appointed a representative under Article 27 of the GDPR or
-        the UK GDPR; you can contact us directly using the details in Section
-        10.
+        email address, authentication tokens, and payment-related information,
+        but not your research data) is processed by Google (Firebase) and
+        Stripe, which may process it in the United States or other countries.
+        These transfers rely on the recipients&apos; EU-U.S. Data Privacy
+        Framework certifications and/or the European Commission&apos;s 2021
+        Standard Contractual Clauses (with the UK Addendum and Swiss
+        amendments), as set out in each provider&apos;s data processing terms.
+        Where required, we will carry out a transfer impact assessment in
+        respect of these onward transfers. Because the Service is operated from
+        Japan and is not directed at, and does not monitor the behaviour of,
+        individuals in the EEA/UK, we have not appointed a representative under
+        GDPR Article 27; we will reassess this if our activities change.
       </P>
 
       <H3>4.3 Processing on behalf of organizations</H3>
@@ -350,21 +345,17 @@ const Privacy = () => {
       <P>
         To keep you signed in, the Service stores authentication tokens in your
         browser&apos;s local storage or similar. These are strictly necessary to
-        use the Service. We also store your analytics consent choice there so
-        that we do not ask again on every visit.
+        use the Service.
       </P>
 
       <H3>5.2 Analytics (Google Analytics)</H3>
       <P>
-        With your consent, we use Google Analytics, provided by Google LLC and
-        loaded through Google Tag Manager, to understand how the Service is used
-        and to improve it. Google Analytics uses cookies and similar
-        technologies to collect information such as pages viewed, certain
-        actions (registering, signing in, running an analysis pipeline, and
-        viewing public data), approximate location derived from IP address, and
-        device and browser information. We do not send your name, email address,
-        or research data to Google Analytics. This information is transmitted to
-        and stored by Google. For details, see Google&apos;s{" "}
+        We use Google Analytics, provided by Google LLC, to understand how the
+        Service is used and to improve it. Google Analytics uses cookies and
+        similar technologies to collect information such as pages viewed,
+        interactions, approximate location derived from IP address, and device
+        and browser information. This information is transmitted to and stored
+        by Google. For details, see Google&apos;s{" "}
         <ExternalLink href="https://policies.google.com/privacy">
           Privacy Policy
         </ExternalLink>{" "}
@@ -377,34 +368,16 @@ const Privacy = () => {
         <ExternalLink href="https://tools.google.com/dlpage/gaoptout">
           Google Analytics Opt-out Browser Add-on
         </ExternalLink>
-        , or by declining analytics cookies through the consent notice described
+        , or by declining analytics cookies through the consent banner described
         below.
       </P>
       <P>
-        Consent: Analytics is opt-in for all visitors, wherever you are located.
-        On your first visit, a notice asks whether to allow analytics cookies,
-        with Accept and Decline options of equal prominence. Until you accept,
-        no analytics events are sent; if you accept, the pages viewed and
-        actions taken in that tab before accepting (up to ten) are sent at that
-        point; if you decline, none are sent. The Service still loads the Google
-        Tag Manager script from Google on every visit, including after you
-        decline; like any request to a website, that request gives Google your
-        IP address and browser information, but no analytics cookies are set and
-        no analytics events are sent. You can change your choice at any time:
-        signed-in users can use the Analytics Cookies setting on the Account
-        page, and any visitor can select the Cookie settings link in the footer
-        of the home and public data pages to see the notice again. A change
-        applies at once in the tab where you make it; other tabs of the Service
-        that are already open keep your earlier choice until you reload them.
-        Google Analytics is configured with a data-retention period of 14
-        months, Google Signals and advertising personalization disabled, page
-        addresses (including the address of the previous page) recorded without
-        URL query parameters, and data redaction enabled for email addresses and
-        selected URL parameters. According to Google, for visitors in the EU,
-        Switzerland and the UK, Google Analytics does not log or store IP
-        addresses and uses them only to derive approximate location; for other
-        visitors, Google also uses them to provide basic service functionality
-        and to detect spam, and discards them after use.
+        Consent: We use a cookie-consent banner that requests your prior opt-in
+        consent for analytics cookies if you are in the EEA or the UK, and that
+        lets you decline or withdraw consent at any time; elsewhere, analytics
+        may run on an opt-out basis. Google Analytics will be configured with
+        IP-address anonymization enabled, a data-retention period of 14 months,
+        and Google Signals / advertising features disabled.
       </P>
 
       <H2>6. Data Sharing and Publishing Features</H2>
