@@ -5,7 +5,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, fields, is_dataclass
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 import h5py
 import numpy as np
@@ -132,6 +132,9 @@ _structured_read_executor = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="structured-read"
 )
 STRUCTURED_READ_WAIT_SECONDS = 30
+# Matches DEFAULT_DRAWN_ROWS in TimeSeriesPlot.tsx
+INIT_FULL_RECORDS = 5
+INIT_FULL_POINTS = 500_000
 
 
 async def get_or_generate_thumbnail(
@@ -698,29 +701,31 @@ def _require_output_file(filepath: str) -> None:
 
 
 def _load_timeseries_record(dirpath: str, record_id: str) -> JsonTimeSeriesData:
+    """Load a single timeseries record from either chunked or legacy format."""
+    return next(_load_timeseries_records(dirpath, [record_id]))[1]
+
+
+def _load_timeseries_records(dirpath: str, record_ids: List[str]):
     """
-    Load a single timeseries record from either chunked or legacy format.
-
-    Args:
-        dirpath: Directory containing the timeseries data
-        record_id: Record identifier (as string)
-
-    Returns:
-        JsonTimeSeriesData for the specified record
+    (record_id, JsonTimeSeriesData) one at a time; chunked storage yields only
+    the ids in the first id's chunk.
     """
     if TimeSeriesChunkHandler.is_chunked_format(dirpath):
-        # Chunked format
-        cell_data = TimeSeriesChunkHandler.get_record_data(dirpath, record_id)
-        # Convert from split format to DataFrame
-        df = pd.DataFrame(
-            cell_data["data"], index=cell_data["index"], columns=cell_data["columns"]
-        )
-        return JsonReader.read_as_timeseries_from_df(df)
+        for record_id, cell_data in TimeSeriesChunkHandler.iter_records_data(
+            dirpath, record_ids
+        ):
+            df = pd.DataFrame(
+                cell_data["data"],
+                index=cell_data["index"],
+                columns=cell_data["columns"],
+            )
+            yield record_id, JsonReader.read_as_timeseries_from_df(df)
     else:
         # Legacy format
-        return JsonReader.read_as_timeseries(
-            join_filepath([dirpath, f"{record_id}.json"])
-        )
+        for record_id in record_ids:
+            yield record_id, JsonReader.read_as_timeseries(
+                join_filepath([dirpath, f"{record_id}.json"])
+            )
 
 
 @router.get(
@@ -804,7 +809,7 @@ def _timeseries_body(read, *args) -> bytes:
 def _init_timeseries_data(
     abs_dirpath: str, isFull: Optional[bool]
 ) -> JsonTimeSeriesData:
-    """The first record in full and the first point of every other."""
+    """The records the plot draws by default in full, the first point of others."""
     full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         abs_dirpath = full_json_dirpath
@@ -818,12 +823,9 @@ def _init_timeseries_data(
         return_data.meta = PlotMetaData(title="0 ROIs found")
         return return_data
 
-    # Get first cell data
-    index = file_numbers[0]
-    str_index = str(index)
-
-    # Load first record using common helper
-    json_data = _load_timeseries_record(abs_dirpath, str_index)
+    full_ids = [str(i) for i in file_numbers[: 1 if isFull else INIT_FULL_RECORDS]]
+    records = _load_timeseries_records(abs_dirpath, full_ids)
+    str_index, json_data = next(records)
 
     first = json_data.xrange[:1]  # empty for a zero-length time range
     data = {str(i): {x: json_data.data[x] for x in first} for i in file_numbers}
@@ -840,6 +842,19 @@ def _init_timeseries_data(
     return_data.data[str_index] = json_data.data
     if json_data.std is not None:
         return_data.std[str_index] = json_data.std
+
+    points = len(json_data.xrange)
+    try:
+        for record_id, record in records:
+            points += len(json_data.xrange)
+            if points > INIT_FULL_POINTS:
+                break
+            return_data.data[record_id] = record.data
+            if json_data.std is not None and record.std is not None:
+                return_data.std[record_id] = record.std
+    except Exception:
+        # The rest stay one point and are read by id, as before
+        logger.warning("Timeseries init read stopped in %s", abs_dirpath, exc_info=True)
 
     return return_data
 

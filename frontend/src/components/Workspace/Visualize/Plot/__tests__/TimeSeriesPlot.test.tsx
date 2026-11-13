@@ -14,6 +14,7 @@ import {
   SHADE_TOTAL_CAP,
 } from "components/Workspace/Visualize/Plot/eventSpans"
 import { TimeSeriesPlot } from "components/Workspace/Visualize/Plot/TimeSeriesPlot"
+import { getTimeSeriesInitData } from "store/slice/DisplayData/DisplayDataActions"
 import displayData from "store/slice/DisplayData/DisplayDataSlice"
 import { DATA_TYPE_SET } from "store/slice/DisplayData/DisplayDataType"
 import visualaizeItem, {
@@ -85,6 +86,7 @@ function renderPlot(
   keys: string[],
   extraItems: object = {},
   targetData: object = { "0": events(4) },
+  targetById: object = { "0": "fulfilled" },
 ) {
   jest
     .mocked(getTimeSeriesInitDataApi)
@@ -104,7 +106,7 @@ function renderPlot(
       displayData: {
         ...displayData(undefined, { type: "" }),
         timeSeries: {
-          [TARGET]: entry(4, targetData, { "0": "fulfilled" }),
+          [TARGET]: entry(4, targetData, targetById),
           [SOURCE]: entry(frames, data, byId),
         },
         roi: {
@@ -186,6 +188,46 @@ describe("TimeSeriesPlot default selection", () => {
       TARGET,
     )
     expect(requested()).toEqual(["1", "2", "3", "4"])
+  })
+
+  it("reads nothing by id when the init returns the first five rows in full", () => {
+    jest
+      .mocked(getTimeSeriesDataByIdApi)
+      .mockReturnValue(new Promise(() => undefined))
+    const keys = xrangeOf(7)
+    const data = Object.fromEntries(
+      keys.map((key) => [key, Number(key) < 5 ? events(4) : stub]),
+    )
+    const { byId } = displayData(
+      {
+        ...displayData(undefined, { type: "" }),
+        timeSeries: { [TARGET]: entry(4, {}, {}) },
+      } as never,
+      getTimeSeriesInitData.fulfilled(
+        { data, xrange: xrangeOf(4), std: {} },
+        "",
+        {
+          path: TARGET,
+          itemId: TARGET_ID,
+        },
+      ),
+    ).timeSeries[TARGET]
+
+    const store = renderPlot(
+      4,
+      {},
+      {},
+      [],
+      { [TARGET_ID]: item(TARGET, [], null) },
+      data,
+      byId,
+    )
+
+    const target = store.getState().visualaizeItem.items[TARGET_ID]
+    expect((target as { drawOrderList: string[] }).drawOrderList).toEqual(
+      keys.slice(0, 5),
+    )
+    expect(requested()).toEqual([])
   })
 
   it("leaves an emptied selection alone when the plot mounts again", () => {

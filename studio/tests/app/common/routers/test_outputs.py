@@ -1,8 +1,13 @@
+import json
 import os
 import shutil
 
 import numpy as np
+import pytest
 
+from studio.app.common.dataclass import TimeSeriesData
+from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
+from studio.app.common.routers import outputs
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.dataclass import BehaviorData
 
@@ -39,7 +44,7 @@ def test_inittimedata(client):
     assert len(data["data"]["0"]) > 1
 
     for key, value in data["data"].items():
-        if key == "0":
+        if key in {"0", "1", "2", "3", "4"}:
             assert len(value) == 1000
         else:
             assert len(value) == 1
@@ -100,7 +105,7 @@ def test_behaviour_output_previews_one_trace_per_column(client):
 
     assert sorted(init["data"]) == ["0", "1"]
     assert len(init["xrange"]) == 50 and len(init["data"]["0"]) == 50
-    assert len(init["data"]["1"]) == 1
+    assert len(init["data"]["1"]) == 50
     assert [second["data"]["1"][str(t)] for t in range(50)] == list(table[:, 1])
 
 
@@ -113,6 +118,59 @@ def test_empty_time_range_output_initialises_with_its_records(client):
     assert response.status_code == 200, response.text
     assert response.json()["xrange"] == []
     assert response.json()["data"] == {"0": {}, "1": {}}
+
+
+def full_records(init):
+    return sorted(k for k, v in init["data"].items() if len(v) > 1)
+
+
+@pytest.mark.parametrize(
+    "params, max_points, full",
+    [
+        ({}, 500_000, ["0", "1", "2"]),
+        ({"isFull": True}, 500_000, ["0"]),
+        ({}, 10, ["0", "1"]),
+    ],
+)
+def test_init_returns_the_first_chunks_records_in_full(
+    client, monkeypatch, params, max_points, full
+):
+    monkeypatch.setattr(TimeSeriesChunkHandler, "CHUNK_SIZE", 3)
+    monkeypatch.setattr(outputs, "INIT_FULL_POINTS", max_points)
+    node_dir = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/chunked_node"
+    traces = np.arange(28, dtype=float).reshape(7, 4)
+    TimeSeriesData(traces, std=traces / 10, file_name="seven").save_json(node_dir)
+
+    response = client.get(
+        f"/api/visualizations/inittimedata/{node_dir}/seven", params=params
+    )
+    init = response.json()
+
+    assert response.status_code == 200, response.text
+    assert len(init["data"]) == 7
+    assert full_records(init) == full
+    assert sorted(k for k, v in init["std"].items() if len(v) > 1) == full
+    assert init["data"]["1"].get("3") == (7.0 if "1" in full else None)
+
+
+@pytest.mark.parametrize("corrupt, full", [(None, list("01234")), ("2", ["0", "1"])])
+def test_init_returns_legacy_records_in_full_until_one_fails(client, corrupt, full):
+    dirpath = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/legacy_node/rois"
+    shutil.rmtree(dirpath, ignore_errors=True)
+    os.makedirs(dirpath)
+    for i in range(7):
+        with open(os.path.join(dirpath, f"{i}.json"), "w") as f:
+            if str(i) == corrupt:
+                f.write("{not json")
+            else:
+                json.dump({"data": {str(t): float(i * 10 + t) for t in range(3)}}, f)
+
+    response = client.get(f"/api/visualizations/inittimedata/{dirpath}")
+    init = response.json()
+
+    assert response.status_code == 200, response.text
+    assert len(init["data"]) == 7
+    assert full_records(init) == full
 
 
 # Test data for image test
