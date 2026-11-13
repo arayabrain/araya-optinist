@@ -1,7 +1,7 @@
 """Standalone cleanup worker for free-tier instances.
 
 Runs ``DataCleanupJob`` in its own process so that the cleanup scheduler
-is decoupled from the multi-worker uvicorn (UVICORN_WORKERS=5) FastAPI
+is decoupled from the multi-worker uvicorn (UVICORN_WORKERS > 1) FastAPI
 application.  This avoids the need for leader-election or distributed
 locking among API workers.
 

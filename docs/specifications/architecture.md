@@ -64,6 +64,7 @@ Following is the summary of directory structure.
   - test_data: test data for unit tests.
   - tests: unit tests.
   - `__main__.py`: entry point of backend in production.
-  - `__main_unit__.py`: core main unit. called by `studio/__main__.py` and `main.py`.
+  - `__main_unit__.py`: core main unit: the app, which uvicorn's workers import.
+  - `server.py`: starts uvicorn on the app. called by `studio/__main__.py` and `main.py`.
 - `main.py`: entry point of backend in development.
 - `run_cluster.py`: entry point for CLI run.

@@ -2,49 +2,99 @@ from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.dataclass import Suite2pData
-from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
+from studio.app.optinist.dataclass.suite2p import suite2p_movie
+from studio.app.optinist.wrappers.suite2p.utils import (
+    FrameCopies,
+    load_settings,
+    pair,
+    positive,
+    tiff_path,
+    writable_tiff,
+)
 
 logger = AppLogger.get_logger()
 
 
 def suite2p_registration(
     ops: Suite2pData, output_dir: str, params: dict = None, **kwargs
-) -> dict(ops=Suite2pData, mc_images=ImageData):
-    from suite2p import default_ops, io, registration
+) -> dict(ops=Suite2pData, mc_images=ImageData, meanImg=ImageData, refImg=ImageData):
+    from suite2p import default_settings, pipeline
+    from suite2p.run_s2p import _assign_torch_device
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start suite2p registration: %s", function_id)
 
-    flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
-    params = flattened_params
-
     ops = ops.data
-    refImg = ops["meanImg"]
+    settings = load_settings(default_settings(), "suite2p_registration", params)
+    settings["run"]["do_detection"] = False
+    reg = settings["registration"]
+    # suite2p slices with it
+    reg["bidiphase"] = int(reg["bidiphase"])
+    reg["block_size"] = pair(reg["block_size"], "registration.block_size")
+    if reg["nonrigid"] and any(
+        size >= frame for size, frame in zip(reg["block_size"], (ops["Ly"], ops["Lx"]))
+    ):
+        # one block along an axis gives suite2p an empty shift field to interpolate
+        logger.warning(
+            "block_size %s is not below the %sx%s frame: rigid registration only",
+            reg["block_size"],
+            ops["Ly"],
+            ops["Lx"],
+        )
+        reg["nonrigid"] = False
+    if reg["smooth_sigma_time"] > 0:
+        # 1.1.0 smooths in numpy and hands the result to torch.argmax
+        raise ValueError(
+            "suite2p 1.1.0 cannot smooth in time: set smooth_sigma_time to 0"
+        )
+    for key in ("nimg_init", "batch_size", "smooth_sigma", "spatial_taper"):
+        positive(reg[key], f"registration.{key}")
+    device = _assign_torch_device(settings["torch_device"])
 
-    # REGISTRATION
-    if len(refImg.shape) == 3:
-        refImg = refImg[0]
+    logger.info("registering in batches of %s frames", reg["batch_size"])
 
-    ops = {**default_ops(), **ops, **params}
+    # Registers the input movie (file conversion's binary, or an upstream
+    # registration's mc_images) into this node's mc_images.tif, the one copy
+    # of its result, and writes reg_outputs.npy into output_dir. The input is
+    # left as it was.
+    movie = suite2p_movie(ops)
+    with writable_tiff(output_dir, "mc_images", movie.shape) as f_reg:
+        reg_outputs = pipeline(
+            output_dir,
+            f_reg,
+            f_raw=FrameCopies(movie),
+            run_registration=True,
+            settings=settings,
+            device=device,
+        )[0]
+        # the map closes here, before writable_tiff renames the file
+        del f_reg
+    del movie
+    registered_tiff = tiff_path(output_dir, "mc_images")
+    mc_images = ImageData(
+        [registered_tiff], output_dir=output_dir, file_name="mc_images"
+    )
 
-    # register binary
-    ops = registration.register_binary(ops, refImg=refImg)
-
-    # compute metrics for registration
-    if ops.get("do_regmetrics", True) and ops["nframes"] >= 1500:
-        ops = registration.get_pc_metrics(ops)
-
-    mv = io.BinaryFile(
-        Lx=ops["Lx"], Ly=ops["Ly"], read_filename=ops["reg_file"]
-    ).data.copy()
+    ops = {
+        **ops,
+        **reg_outputs,
+        "settings": settings,
+        "registered_tiff": registered_tiff,
+    }
+    if "reg_file" in ops:
+        # an earlier release reads reg_file as the registered movie: renamed,
+        # its nodes stop with a KeyError instead of reading unregistered frames
+        ops["raw_file"] = ops.pop("reg_file")
 
     info = {
+        "meanImg": ImageData(
+            ops["meanImg"], output_dir=output_dir, file_name="meanImg"
+        ),
         "refImg": ImageData(ops["refImg"], output_dir=output_dir, file_name="refImg"),
         "meanImgE": ImageData(
             ops["meanImgE"], output_dir=output_dir, file_name="meanImgE"
         ),
-        "mc_images": ImageData(mv, output_dir=output_dir, file_name="mc_images"),
+        "mc_images": mc_images,
         "ops": Suite2pData(ops, file_name="ops"),
     }
 

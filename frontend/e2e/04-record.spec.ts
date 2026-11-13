@@ -191,12 +191,8 @@ test.describe("Record Management", () => {
   test("REC-06 - Download Snakemake file", async ({ page }) => {
     const row = await firstRecordRow(page)
 
-    // The testid anchor is hidden; the visible IconButton next to it triggers
-    // the download
     const downloadPromise = page.waitForEvent("download", { timeout: 30_000 })
-    await row
-      .locator('td:has([data-testid="snakemake-download-link"]) button')
-      .click()
+    await row.locator('[data-testid="snakemake-download-button"]').click()
     const download = await downloadPromise
     expect(download.suggestedFilename()).toMatch(/^snakemake_.*\.yaml$/)
 
@@ -224,7 +220,7 @@ test.describe("Record Management", () => {
       .locator('tr:has([data-testid="reproduce-button"])')
       .filter({ has: page.getByText("Tutorial1", { exact: true }) })
       .first()
-      .locator('td:has([data-testid="nwb-download-link"]) button')
+      .locator('[data-testid="nwb-download-button"]')
     // The record's nwb flag lands after "Workflow finished", and the table only
     // reads it when the tab mounts
     await expect(async () => {
@@ -238,9 +234,8 @@ test.describe("Record Management", () => {
     })
     const downloadPromise = page.waitForEvent("download", { timeout: 60_000 })
     await nwbButton.click()
-    // The button being enabled is not evidence the file exists: the imported
-    // tutorial metadata declares an nwb section but ships no .nwb, so the
-    // button enables for records that were never run and the route 404s.
+    // The button only enables once a run sets hasNWB, but that flag is not
+    // proof the file was written, so check the route answers 200.
     expect((await nwbResponse).status()).toBe(200)
 
     const download = await downloadPromise

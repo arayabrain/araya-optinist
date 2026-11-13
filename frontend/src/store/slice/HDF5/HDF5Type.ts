@@ -2,9 +2,13 @@ import { HDF5TreeDTO } from "api/hdf5/HDF5"
 
 export const HDF5_SLICE_NAME = "hdf5"
 
-export interface HDF5Tree {
+export interface StructureTreeState<T> {
   isLoading: boolean
-  tree: HDF5TreeNodeType[]
+  tree: T[]
+}
+
+export interface HDF5Tree {
+  trees: Record<string, StructureTreeState<HDF5TreeNodeType>>
 }
 
 export type HDF5TreeNodeType = HDF5TreeDTO

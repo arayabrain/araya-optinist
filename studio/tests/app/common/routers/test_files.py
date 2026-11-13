@@ -1,11 +1,40 @@
+import asyncio
+import dataclasses
+import fcntl
+import json
+import os
+import threading
+import time
+from glob import glob
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import tifffile
+from fastapi import BackgroundTasks
+
+from studio.app.common.core.storage.mock_storage_controller import MockStorageController
+from studio.app.common.core.storage.remote_storage_controller import InputFileLock
+from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
+from studio.app.common.routers import files as files_module
+from studio.app.common.routers import workflow as workflow_module
 from studio.app.common.routers.files import (
     DirTreeGetter,
+    _build_tree_from_remote_files,
+    get_files,
     get_hdf5_structure_dict,
+    get_image_shape_dict,
     get_mat_structure_dict,
+    read_image_shape,
+    update_image_shape,
 )
 from studio.app.common.schemas.files import SyncStatus, TreeNode
+from studio.app.const import ACCEPT_FILE_EXT, MetadataCacheFile
+from studio.app.dir_path import DIRPATH
 
 workspace_id = "1"
+TIFF = ACCEPT_FILE_EXT.TIFF_EXT.value
+FIXTURE_INPUT_DIR = DIRPATH.INPUT_DIR
 
 
 def test_create_files(client):
@@ -15,6 +44,177 @@ def test_create_files(client):
     assert response.status_code == 200
     assert isinstance(data, list)
     assert len(data) > 0
+
+
+def test_upload_tiff_without_user(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")  # as a standalone deployment
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    tiff = tmp_path / "src.tif"
+    tifffile.imwrite(tiff, np.zeros((2, 4, 4), dtype=np.uint16))
+
+    with open(tiff, "rb") as f:
+        response = client.post(
+            f"/files/{workspace_id}/upload/upload.tif",
+            files={"file": ("upload.tif", f, "image/tiff")},
+        )
+
+    assert response.status_code == 200, response.text
+    assert (tmp_path / workspace_id / "upload.tif").read_bytes() == tiff.read_bytes()
+
+
+def _disk_full(seen):
+    from studio.app.common.core.storage.local_disk_guard import LocalDiskFullError
+
+    def guard(extra_bytes=0):
+        seen["extra_bytes"] = extra_bytes
+        raise LocalDiskFullError(3 * 1024**3, 8 * 1024**3 + extra_bytes)
+
+    return guard
+
+
+def test_upload_refused_before_anything_is_written_when_the_disk_is_full(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    seen = {}
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", _disk_full(seen))
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 507, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith("Cannot upload file: ")
+    assert "not your storage quota" in detail
+    assert "Delete records you no longer need" in detail
+    # The spool and the copy, from Content-Length, before the body is spooled
+    assert seen["extra_bytes"] == 2 * int(response.request.headers["content-length"])
+    assert seen["extra_bytes"] > 32
+    assert not (tmp_path / workspace_id).exists()
+
+
+def test_upload_checks_the_destination_copy_after_parsing(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    checked = []
+    monkeypatch.setattr(
+        files_module, "ensure_local_disk_headroom", lambda n=0: checked.append(n)
+    )
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert checked == [2 * int(response.request.headers["content-length"]), 16]
+
+
+def test_upload_refused_when_only_the_destination_copy_does_not_fit(
+    client, tmp_path, monkeypatch
+):
+    """The body is already read by then, so the 507 is raised without draining"""
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    seen = {}
+    full = _disk_full(seen)
+    monkeypatch.setattr(
+        files_module,
+        "ensure_local_disk_headroom",
+        lambda n=0: full(n) if n == 16 else None,
+    )
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 507, response.text
+    assert response.json()["detail"].startswith("Cannot upload file: ")
+    assert seen["extra_bytes"] == 16
+    assert not (tmp_path / workspace_id).exists()
+
+
+def test_a_refused_upload_reads_the_body_out_before_answering():
+    """A response sent while the client is still sending arrives as a reset."""
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    chunks = [b"abc", b"def"]
+    received = []
+
+    async def receive():
+        chunk = chunks.pop(0)
+        received.append(chunk)
+        return {"type": "http.request", "body": chunk, "more_body": bool(chunks)}
+
+    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    with pytest.raises(HTTPException) as info:
+        asyncio.run(files_module._refuse_upload(request, 507, "full"))
+    assert info.value.status_code == 507
+    assert received == [b"abc", b"def"]
+
+
+def test_a_malformed_multipart_body_is_400_not_500(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", lambda n=0: None)
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        content=b"not multipart",
+        headers={"content-type": "multipart/form-data"},
+    )
+    assert response.status_code == 400, response.text
+
+
+def test_a_disk_that_fills_while_receiving_is_507(client, tmp_path, monkeypatch):
+    import errno
+
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", lambda n=0: None)
+
+    async def enospc(self):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(files_module.Request, "form", enospc)
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+    assert response.status_code == 507, response.text
+    assert "filled while receiving" in response.json()["detail"]
+
+
+def test_upload_without_a_file_field_is_422(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif", data={"other": "x"}
+    )
+    assert response.status_code == 422
+    assert not (tmp_path / workspace_id).exists()
+
+
+def test_url_download_refused_and_the_response_closed_when_the_disk_is_full(
+    client, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    res = MagicMock(headers={"content-length": "1024"})
+    monkeypatch.setattr(files_module, "open_url", lambda url, public_only: res)
+    seen = {}
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", _disk_full(seen))
+
+    response = client.post(
+        f"/files/{workspace_id}/download", json={"url": "https://example.com/a.tif"}
+    )
+
+    assert response.status_code == 507, response.text
+    assert response.json()["detail"].startswith("Cannot download file: ")
+    assert seen["extra_bytes"] == 1024
+    res.close.assert_called_once()
 
 
 def test_DirTreeGetter_tif():
@@ -65,3 +265,534 @@ def test_mat_structure_caching():
     # Using a non-existent workspace to ensure no cache
     result = get_mat_structure_dict("non_existent_workspace_12345")
     assert result == {}
+
+
+@pytest.fixture
+def ws(tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    root = tmp_path / "ws"
+    root.mkdir()
+    return root
+
+
+def _tif(path, shape, **kwargs):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(
+        path, np.zeros(shape, dtype=np.uint8), photometric="minisblack", **kwargs
+    )
+    return path
+
+
+def _as_dicts(nodes):
+    return [dataclasses.asdict(n) for n in nodes]
+
+
+def _cache(root):
+    return json.loads((root / MetadataCacheFile.IMAGE_SHAPE).read_text())
+
+
+def _glob_has_match(path, exts):
+    """Reference implementation: one recursive glob per extension."""
+    return any(glob(os.path.join(path, "**", f"*{e}"), recursive=True) for e in exts)
+
+
+@pytest.mark.parametrize(
+    "shape,kwargs",
+    [
+        ((4, 5), {}),
+        ((3, 4, 5), {}),
+        ((3, 4, 5), {"bigtiff": True}),
+        ((2, 3, 4, 5), {"imagej": True}),
+        ((2, 3, 4, 5), {"ome": True}),
+    ],
+)
+def test_read_image_shape_matches_imread(tmp_path, shape, kwargs):
+    p = _tif(tmp_path / "a.tif", shape, **kwargs)
+    assert read_image_shape(str(p)) == list(tifffile.imread(str(p)).shape)
+
+
+def test_read_image_shape_fixture_files():
+    sample = os.path.join(FIXTURE_INPUT_DIR, workspace_id, "test.tif")
+    empty = os.path.join(FIXTURE_INPUT_DIR, workspace_id, "files", "test1.tif")
+    assert read_image_shape(sample) == list(tifffile.imread(sample).shape)
+    assert read_image_shape(empty) == []
+    assert read_image_shape(os.path.join(FIXTURE_INPUT_DIR, "missing.tif")) == []
+
+
+def test_has_accepted_file_agrees_with_glob(tmp_path):
+    root = tmp_path / "tree"
+    (root / "empty" / "deeper").mkdir(parents=True)
+    _tif(root / "deep" / "a" / "b" / "c" / "d" / "x.TIF", (2, 2))
+    _tif(root / "mixed" / "y.tiff", (2, 2))
+    (root / "none").mkdir()
+    (root / "none" / "z.csv").write_text("a,b\n")
+    _tif(root / "hidden" / ".h.tif", (2, 2))
+    _tif(root / "hiddendir" / ".d" / "q.tif", (2, 2))
+    (root / "dirnamed" / "foo.tif").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    _tif(outside / "o.tif", (2, 2))
+    (root / "linked").mkdir()
+    os.symlink(outside, root / "linked" / "nas")
+    (root / "broken").mkdir()
+    os.symlink(tmp_path / "nowhere", root / "broken" / "dangling.tif")
+    (root / "loop").mkdir()
+    os.symlink(root / "loop", root / "loop" / "self")
+    (root / "micro").mkdir()
+    (root / "micro" / "a.thor.zip").write_bytes(b"")
+
+    for sub in sorted(os.listdir(root)):
+        path = str(root / sub)
+        for exts in (TIFF, ACCEPT_FILE_EXT.MICROSCOPE_EXT.value):
+            expected = _glob_has_match(path, exts)
+            assert DirTreeGetter.has_accepted_file(path, exts) is expected, (sub, exts)
+
+
+def test_has_accepted_file_ignores_glob_metacharacters(tmp_path):
+    _tif(tmp_path / "br[ack]et" / "a.tif", (2, 2))
+    assert DirTreeGetter.has_accepted_file(str(tmp_path / "br[ack]et"), TIFF)
+
+
+def test_has_accepted_file_visits_symlink_cycle_once(tmp_path, monkeypatch):
+    (tmp_path / "loop" / "inner").mkdir(parents=True)
+    os.symlink(tmp_path / "loop", tmp_path / "loop" / "inner" / "back")
+    scanned = []
+    real_scandir = os.scandir
+    monkeypatch.setattr(
+        os, "scandir", lambda p: (scanned.append(p), real_scandir(p))[1]
+    )
+
+    assert DirTreeGetter.has_accepted_file(str(tmp_path / "loop"), TIFF) is False
+    assert len(scanned) <= 2, scanned
+
+
+def test_has_accepted_file_stops_at_first_match(tmp_path, monkeypatch):
+    for i in range(20):
+        (tmp_path / f"d{i}" / "deep" / "deeper").mkdir(parents=True)
+    _tif(tmp_path / "top.tif", (2, 2))
+    scanned = []
+    real_scandir = os.scandir
+    monkeypatch.setattr(
+        os, "scandir", lambda p: (scanned.append(p), real_scandir(p))[1]
+    )
+
+    assert DirTreeGetter.has_accepted_file(str(tmp_path), TIFF) is True
+    assert len(scanned) == 1, scanned
+
+
+def test_get_tree_response_shape(ws):
+    _tif(ws / "b.tif", (2, 3))
+    _tif(ws / "sub" / "a.tif", (4, 5, 6))
+    (ws / "empty").mkdir()
+    (ws / "other").mkdir()
+    (ws / "other" / "c.csv").write_text("a\n")
+
+    assert _as_dicts(DirTreeGetter.get_tree("ws", TIFF)) == [
+        {
+            "path": "sub",
+            "name": "sub",
+            "isdir": True,
+            "shape": None,
+            "nodes": [
+                {
+                    "path": "sub/a.tif",
+                    "name": "a.tif",
+                    "isdir": False,
+                    "nodes": [],
+                    "shape": [4, 5, 6],
+                }
+            ],
+        },
+        {
+            "path": "b.tif",
+            "name": "b.tif",
+            "isdir": False,
+            "nodes": [],
+            "shape": [2, 3],
+        },
+    ]
+    assert _as_dicts(DirTreeGetter.get_tree("ws", ACCEPT_FILE_EXT.CSV_EXT.value)) == [
+        {
+            "path": "other",
+            "name": "other",
+            "isdir": True,
+            "shape": None,
+            "nodes": [
+                {
+                    "path": "other/c.csv",
+                    "name": "c.csv",
+                    "isdir": False,
+                    "nodes": [],
+                    "shape": None,
+                }
+            ],
+        }
+    ]
+    assert not (ws / "other" / MetadataCacheFile.IMAGE_SHAPE).exists()
+
+
+def test_get_tree_follows_symlinked_directory(ws, tmp_path):
+    outside = tmp_path / "nas"
+    _tif(outside / "o.tif", (2, 3))
+    os.symlink(outside, ws / "link")
+
+    tree = _as_dicts(DirTreeGetter.get_tree("ws", TIFF))
+    assert tree == [
+        {
+            "path": "link",
+            "name": "link",
+            "isdir": True,
+            "shape": None,
+            "nodes": [
+                {
+                    "path": "link/o.tif",
+                    "name": "o.tif",
+                    "isdir": False,
+                    "nodes": [],
+                    "shape": [2, 3],
+                }
+            ],
+        }
+    ]
+
+
+def test_get_tree_never_decodes_pixels(ws, monkeypatch):
+    _tif(ws / "a.tif", (2, 3))
+
+    def boom(*args, **kwargs):
+        raise AssertionError("tifffile.imread called during tree walk")
+
+    monkeypatch.setattr(tifffile, "imread", boom)
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [2, 3]
+
+
+def test_get_tree_writes_cache_once_per_request(ws, monkeypatch):
+    for i in range(5):
+        _tif(ws / f"d{i}" / f"f{i}.tif", (2, i + 1))
+    writes = []
+    real = files_module._write_json_atomic
+    monkeypatch.setattr(
+        files_module,
+        "_write_json_atomic",
+        lambda p, d: (writes.append(p), real(p, d)),
+    )
+
+    DirTreeGetter.get_tree("ws", TIFF)
+    assert len(writes) == 1
+    cache = _cache(ws)
+    assert sorted(cache) == [f"d{i}/f{i}.tif" for i in range(5)]
+    assert all({"shape", "mtime", "size"} <= set(v) for v in cache.values())
+
+    DirTreeGetter.get_tree("ws", TIFF)
+    assert len(writes) == 1
+
+
+def test_get_tree_merges_into_entries_written_during_walk(ws, monkeypatch):
+    _tif(ws / "a.tif", (2, 3))
+    _tif(ws / "late.tif", (4, 5))
+    (ws / MetadataCacheFile.IMAGE_SHAPE).write_text(
+        json.dumps({"late.tif": {"shape": [4, 5]}, "gone.tif": {"shape": [1]}})
+    )
+    real = files_module.read_image_shape
+
+    def read_and_interleave(path):
+        if path.endswith("a.tif"):
+            update_image_shape("ws", "late.tif")
+        return real(path)
+
+    monkeypatch.setattr(files_module, "read_image_shape", read_and_interleave)
+    DirTreeGetter.get_tree("ws", TIFF)
+    cache = _cache(ws)
+    assert cache["a.tif"]["shape"] == [2, 3]
+    assert cache["gone.tif"] == {"shape": [1]}
+    assert cache["late.tif"]["shape"] == [4, 5] and "mtime" in cache["late.tif"]
+
+
+def test_get_tree_does_not_overwrite_entry_replaced_during_walk(ws, monkeypatch):
+    p = _tif(ws / "a.tif", (2, 3))
+    real = files_module.read_image_shape
+
+    def read_then_replace(path):
+        shape = real(path)
+        monkeypatch.setattr(files_module, "read_image_shape", real)
+        _tif(p, (7, 8, 9))
+        update_image_shape("ws", "a.tif")
+        return shape
+
+    monkeypatch.setattr(files_module, "read_image_shape", read_then_replace)
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [2, 3]
+    assert _cache(ws)["a.tif"]["shape"] == [7, 8, 9]
+
+
+def test_get_tree_survives_cache_write_failure(ws, monkeypatch):
+    _tif(ws / "a.tif", (2, 3))
+
+    def fail(*args, **kwargs):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(files_module, "_write_json_atomic", fail)
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [2, 3]
+    assert not (ws / MetadataCacheFile.IMAGE_SHAPE).exists()
+    assert list(ws.glob("*.tmp")) == []
+
+
+def test_get_tree_persists_shapes_read_before_a_failure(ws, monkeypatch):
+    _tif(ws / "aa" / "a.tif", (2, 3))
+    _tif(ws / "zz" / "b.tif", (4, 5))
+    real = os.listdir
+    monkeypatch.setattr(
+        os,
+        "listdir",
+        lambda p: (_ for _ in ()).throw(OSError("stale handle"))
+        if p.endswith("zz")
+        else real(p),
+    )
+
+    with pytest.raises(OSError):
+        DirTreeGetter.get_tree("ws", TIFF)
+    assert _cache(ws)["aa/a.tif"]["shape"] == [2, 3]
+
+
+def test_get_tree_detects_same_size_replacement(ws):
+    p = _tif(ws / "a.tif", (2, 6))
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [2, 6]
+    size = p.stat().st_size
+
+    _tif(p, (3, 4))
+    assert p.stat().st_size == size
+    os.utime(p, (p.stat().st_atime, p.stat().st_mtime + 10))
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [3, 4]
+
+
+def test_get_tree_detects_same_mtime_replacement(ws):
+    p = _tif(ws / "a.tif", (2, 3))
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [2, 3]
+    st = p.stat()
+
+    _tif(p, (4, 5))
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [4, 5]
+
+
+def test_concurrent_cache_updates_are_serialized(ws, monkeypatch):
+    real = files_module._write_json_atomic
+    monkeypatch.setattr(
+        files_module,
+        "_write_json_atomic",
+        lambda p, d: (time.sleep(0.2), real(p, d))[1],
+    )
+    threads = [
+        threading.Thread(
+            target=files_module._atomic_json_update,
+            args=("ws", MetadataCacheFile.IMAGE_SHAPE, {k: {"shape": [i]}}),
+        )
+        for i, k in enumerate(("a.tif", "b.tif", "c.tif"))
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(_cache(ws)) == ["a.tif", "b.tif", "c.tif"]
+    assert os.path.exists(InputFileLock._lock_path("ws", MetadataCacheFile.IMAGE_SHAPE))
+
+
+@pytest.mark.asyncio
+async def test_cache_write_waits_for_the_input_file_lock(ws):
+    _tif(ws / "a.tif", (2, 3))
+    writer = threading.Thread(target=update_image_shape, args=("ws", "a.tif"))
+
+    async with InputFileLock.acquire("ws", MetadataCacheFile.IMAGE_SHAPE):
+        writer.start()
+        await asyncio.sleep(0.3)
+        assert writer.is_alive()
+        assert not (ws / MetadataCacheFile.IMAGE_SHAPE).exists()
+
+    writer.join(timeout=5)
+    assert not writer.is_alive()
+    assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+
+
+CACHE_EDITORS = {
+    "set_shape": lambda name: files_module.set_shape("ws", name),
+    "delete_file": lambda name: files_module.delete_file(
+        "ws", name, BackgroundTasks(), None
+    ),
+    "sample_import": lambda name: workflow_module.import_sample_data(
+        "ws", "tiny", None
+    ),
+    "workflow_runner": lambda name: WorkflowRunner._update_and_upload_metadata(
+        SimpleNamespace(
+            workspace_id="ws", remote_bucket_name=None, logger=files_module.logger
+        ),
+        {(name, files_module._metadata_cache_for(name)[1])},
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entry, name",
+    [("set_shape", "a.tif"), ("delete_file", "a.tif")]
+    + [
+        (entry, name)
+        for entry in ("sample_import", "workflow_runner")
+        for name in ("a.tif", "a.h5", "a.mat")
+    ],
+)
+async def test_cache_editors_wait_for_the_lock_off_the_event_loop(
+    tmp_path, monkeypatch, caplog, entry, name
+):
+    """Waiting on the loop would stall the worker, the lock holder's release
+    with it, until the wait gives up and the edit goes ahead unlocked."""
+    import logging
+
+    monkeypatch.setattr(InputFileLock, "LOCK_WAIT_MAX_SECONDS", 2)
+    monkeypatch.setattr(DIRPATH, "ROOT_DIR", str(tmp_path))
+    monkeypatch.setattr(DIRPATH, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path / "input"))
+    monkeypatch.setattr(MockStorageController, "MOCK_INPUT_DIR", str(tmp_path / "s3"))
+    sample = tmp_path / "sample_data" / "tiny"
+    (sample / "output").mkdir(parents=True)
+    for d in (sample / "input", tmp_path / "input" / "ws"):
+        _tif(d / "a.tif", (2, 3))
+        (d / "a.h5").touch()
+        (d / "a.mat").touch()
+    cache_name = files_module._metadata_cache_for(name)[1]
+    cache = tmp_path / "input" / "ws" / cache_name
+    cache.write_text(json.dumps({name: "stale"}))
+
+    with caplog.at_level(logging.WARNING):
+        async with InputFileLock.acquire("ws", cache_name):
+            route = asyncio.create_task(CACHE_EDITORS[entry](name))
+            await asyncio.sleep(0.3)
+            assert not route.done()
+            assert json.loads(cache.read_text()) == {name: "stale"}
+        await route
+    assert json.loads(cache.read_text()).get(name) != "stale"
+    assert not any("InputFileLock acquire timeout" in r.message for r in caplog.records)
+
+
+def test_cache_write_gives_up_on_a_wedged_lock(ws, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(InputFileLock, "LOCK_WAIT_MAX_SECONDS", 0.1)
+    _tif(ws / "a.tif", (2, 3))
+    lock_path = InputFileLock._lock_path("ws", MetadataCacheFile.IMAGE_SHAPE)
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    holder = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    try:
+        writer = threading.Thread(target=update_image_shape, args=("ws", "a.tif"))
+        with caplog.at_level(logging.WARNING):
+            writer.start()
+            writer.join(timeout=5)
+        assert not writer.is_alive()
+    finally:
+        os.close(holder)
+    assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+    assert any("InputFileLock acquire timeout" in r.message for r in caplog.records)
+
+
+def test_write_json_atomic_cleans_up_on_failure(tmp_path, monkeypatch):
+    target = tmp_path / "cache.json"
+    target.write_text("{}")
+    monkeypatch.setattr(
+        os, "replace", lambda *a: (_ for _ in ()).throw(OSError("no space"))
+    )
+
+    with pytest.raises(OSError):
+        files_module._write_json_atomic(str(target), {"a": 1})
+    assert target.read_text() == "{}"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_get_tree_trusts_legacy_cache_entries(ws, monkeypatch):
+    _tif(ws / "a.tif", (2, 3))
+    (ws / MetadataCacheFile.IMAGE_SHAPE).write_text(
+        json.dumps({"a.tif": {"shape": [9, 9]}, "gone.tif": {"shape": [1]}})
+    )
+    monkeypatch.setattr(
+        files_module, "_merge_image_shape_dict", lambda *a: pytest.fail("rewrote")
+    )
+
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [9, 9]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["{not json", "[]", '{"a.tif": "shape"}', '{"a.tif": {"shape": "x"}}'],
+)
+def test_get_tree_repairs_malformed_cache(ws, payload):
+    _tif(ws / "a.tif", (2, 3))
+    (ws / MetadataCacheFile.IMAGE_SHAPE).write_text(payload)
+
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [2, 3]
+    assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+
+
+def test_update_image_shape_repairs_non_dict_cache(ws):
+    _tif(ws / "a.tif", (2, 3))
+    (ws / MetadataCacheFile.IMAGE_SHAPE).write_text("[]")
+
+    assert update_image_shape("ws", "a.tif") == [2, 3]
+    assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+
+
+def test_remote_only_node_ignores_malformed_shape_entry():
+    nodes = _build_tree_from_remote_files(
+        {"a.tif": {"size": 1}, "b.tif": {"size": 1}},
+        set(),
+        "image",
+        {"a.tif": "shape", "b.tif": {"shape": [2, 3]}},
+    )
+    assert [(n.path, n.shape) for n in nodes] == [("a.tif", None), ("b.tif", [2, 3])]
+
+
+def test_update_image_shape_entry_is_accepted_by_tree(ws, monkeypatch):
+    _tif(ws / "a.tif", (2, 3))
+    assert update_image_shape("ws", "a.tif") == [2, 3]
+    assert {"shape", "mtime", "size"} <= set(get_image_shape_dict("ws")["a.tif"])
+
+    monkeypatch.setattr(
+        files_module, "_merge_image_shape_dict", lambda *a: pytest.fail("rewrote")
+    )
+    assert DirTreeGetter.get_tree("ws", TIFF)[0].shape == [2, 3]
+
+
+def test_update_image_shape_missing_file_writes_nothing(ws):
+    assert update_image_shape("ws", "nope.tif") == []
+    assert not (ws / MetadataCacheFile.IMAGE_SHAPE).exists()
+
+
+@pytest.mark.asyncio
+async def test_get_files_does_not_block_event_loop(monkeypatch):
+    def slow(*args, **kwargs):
+        time.sleep(0.5)
+        return []
+
+    monkeypatch.setattr(DirTreeGetter, "get_tree", slow)
+    task = asyncio.create_task(get_files("ws", "image"))
+    t0 = time.monotonic()
+    await asyncio.sleep(0.05)
+    assert time.monotonic() - t0 < 0.3
+    assert await task == []
+
+
+@pytest.mark.asyncio
+async def test_get_files_walks_on_the_dedicated_pool(monkeypatch):
+    names = []
+    monkeypatch.setattr(
+        DirTreeGetter,
+        "get_tree",
+        lambda *a: names.append(threading.current_thread().name) or [],
+    )
+    assert await get_files("ws", "image") == []
+    assert names[0].startswith("filetree"), names
+
+
+@pytest.mark.asyncio
+async def test_get_files_unknown_type(monkeypatch):
+    monkeypatch.setattr(
+        DirTreeGetter, "get_tree", lambda *a, **k: pytest.fail("walked")
+    )
+    assert await get_files("ws", "bogus") == []
+    assert await get_files("ws", None) == []

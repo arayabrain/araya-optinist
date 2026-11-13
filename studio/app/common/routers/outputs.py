@@ -1,17 +1,28 @@
+import asyncio
+import contextvars
+import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, fields, is_dataclass
 from typing import Optional
 
 import h5py
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse, JSONResponse, Response
+from sqlmodel import Session
 
-from studio.app.common.core.auth.auth_dependencies import get_outputs_remote_bucket_name
+from studio.app.common.core.auth.auth_dependencies import (
+    get_current_user_with_dataview_outputs_check,
+    get_outputs_remote_bucket_name,
+)
 from studio.app.common.core.dataview.dataview import DatasetPaths
 from studio.app.common.core.dataview.thumbnail_generator import ThumbnailGenerator
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.rules.file_writer import hdf5_dataset
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteExperimentNotFoundError,
@@ -23,19 +34,31 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageSimpleWriter,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
 from studio.app.common.core.utils.file_reader import JsonReader, Reader
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
     normalize_output_path,
 )
-from studio.app.common.core.utils.json_writer import JsonWriter, save_tiff2json
+from studio.app.common.core.utils.json_writer import (
+    JsonWriter,
+    TiffPreviewTooLargeError,
+    save_tiff2json,
+)
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
 from studio.app.common.dataclass.timeseries_chunk_handler import TimeSeriesChunkHandler
-from studio.app.common.schemas.outputs import JsonTimeSeriesData, OutputData
+from studio.app.common.db.database import get_db, release_request_session
+from studio.app.common.schemas.outputs import (
+    ImageOutputData,
+    JsonTimeSeriesData,
+    OutputData,
+    PlotMetaData,
+)
+from studio.app.common.schemas.users import User
 from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.routers.mat import MatGetter
@@ -43,6 +66,58 @@ from studio.app.optinist.routers.mat import MatGetter
 router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
+
+
+async def workspace_access(
+    workspace_id: str,
+    current_user: Optional[User] = Depends(
+        get_current_user_with_dataview_outputs_check
+    ),
+    db: Session = Depends(get_db),
+) -> None:
+    """The caller must own or share the workspace; None is a vetted public read."""
+    if current_user is None:
+        return
+    try:
+        await is_workspace_available(workspace_id, current_user, db)
+    finally:
+        release_request_session(db)
+
+
+async def output_path_access(
+    request: Request,
+    current_user: Optional[User] = Depends(
+        get_current_user_with_dataview_outputs_check
+    ),
+    db: Session = Depends(get_db),
+) -> None:
+    path = request.path_params.get("filepath") or request.path_params["dirpath"]
+    await workspace_access(normalize_output_path(path).split("/")[0], current_user, db)
+
+
+# One TIFF preview at a time per process, built or read, keeps its memory
+# bounded; a request waiting longer than this is answered 429
+TIFF_PREVIEW_WAIT_SECONDS = 30
+_tiff_preview_lock = asyncio.Lock()
+# Also held by the thread, which outlives a cancelled request's await
+_tiff_preview_thread_lock = threading.Lock()
+
+# A timeseries record is read by parsing its whole chunk, which holds the GIL
+# throughout. One read at a time per process holds one parsed chunk and keeps
+# the event loop's waits short; more at once would not finish sooner
+_timeseries_read_executor = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="timeseries-read"
+)
+# A timeseries read not started within this is dropped and answered 429, as a
+# TIFF preview is. Not 503: the frontend takes a 503 for an unreachable instance
+TIMESERIES_READ_WAIT_SECONDS = 30
+# This process's timeseries reads, queued or running
+_timeseries_reads_in_flight = 0
+# A stored image item is stripped line by line under the GIL too, so more reads
+# at once add memory, not speed; two let one read's disk wait overlap the other
+_image_read_executor = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="image-read"
+)
 
 
 async def get_or_generate_thumbnail(
@@ -232,7 +307,7 @@ async def _background_full_sync(
     response_model=bool,
     dependencies=[Depends(is_workspace_available)],
     description="""
-    Sync visualization files (JSON, TIFF)
+    Sync visualization files (VISUALIZATION_SYNC_PATTERNS)
     from remote storage for viewing experiment results.
     Call this before loading visualization data to ensure files are available locally.
     Only syncs files needed for visualization, not large PKL/NWB files.
@@ -244,10 +319,26 @@ async def sync_visualization_files(
     unique_id: str,
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
+    db: Session = Depends(get_db),
+) -> bool:
+    try:
+        return await _sync_visualization_files(
+            workspace_id, unique_id, background_tasks, remote_bucket_name
+        )
+    finally:
+        # The full sync outlives the request; do not hold the guards' connection
+        release_request_session(db)
+
+
+async def _sync_visualization_files(
+    workspace_id: str,
+    unique_id: str,
+    background_tasks: BackgroundTasks,
+    remote_bucket_name: str,
 ) -> bool:
     """
     Lazy-load visualization files from remote storage.
-    Downloads only JSON and TIFF files needed for viewing results.
+    Downloads only the files needed for viewing results.
     Then triggers background download of PKL/NWB files for Edit ROI.
     """
     if not RemoteStorageController.is_available():
@@ -320,6 +411,7 @@ async def sync_visualization_files(
     Returns:
         PNG image file
     """,
+    dependencies=[Depends(workspace_access)],
 )
 async def get_thumbnail(
     workspace_id: str,
@@ -512,7 +604,7 @@ async def _ensure_visualization_synced(dirpath: str, remote_bucket_name: str) ->
     path_parts = relative_path.split(os.sep)
     if len(path_parts) < 2:
         return
-    trimmed_path = os.path.join(DIRPATH.OUTPUT_DIR, *path_parts[:2])
+    trimmed_path = join_filepath([DIRPATH.OUTPUT_DIR, *path_parts[:2]])
 
     # Extract IDs from path
     path_ids = ExptOutputPathIds(trimmed_path)
@@ -574,6 +666,23 @@ def get_initial_timeseries_data(dirpath) -> JsonTimeSeriesData:
     )
 
 
+def _require_output_file(filepath: str) -> None:
+    """404 for an output missing after the sync attempt, 503 while still syncing."""
+    if os.path.exists(filepath):
+        return
+    if RemoteStorageController.is_available():
+        logger.warning(f"File not found after sync attempt: {filepath}")
+        experiment_dir = os.path.dirname(os.path.dirname(filepath))
+        if os.path.exists(experiment_dir):
+            raise HTTPException(
+                status_code=404,
+                detail="Output file not found. "
+                "Analysis may not have generated this file.",
+            )
+        raise HTTPException(status_code=503, detail="Data syncing. Please retry.")
+    raise HTTPException(status_code=404, detail="Output file not found")
+
+
 def _load_timeseries_record(dirpath: str, record_id: str) -> JsonTimeSeriesData:
     """
     Load a single timeseries record from either chunked or legacy format.
@@ -600,7 +709,11 @@ def _load_timeseries_record(dirpath: str, record_id: str) -> JsonTimeSeriesData:
         )
 
 
-@router.get("/inittimedata/{dirpath:path}", response_model=JsonTimeSeriesData)
+@router.get(
+    "/inittimedata/{dirpath:path}",
+    response_model=JsonTimeSeriesData,
+    dependencies=[Depends(output_path_access)],
+)
 async def get_inittimedata(
     dirpath: str,
     isFull: Optional[bool] = None,
@@ -613,6 +726,60 @@ async def get_inittimedata(
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
+    return await _read_timeseries(_init_timeseries_data, abs_dirpath, isFull)
+
+
+async def _read_timeseries(read, *args) -> Response:
+    """
+    read(*args) on the timeseries read thread, encoded there as the response
+    model would: the response model validates and encodes on the event loop.
+    429 if the read does not start within TIMESERIES_READ_WAIT_SECONDS.
+    """
+    global _timeseries_reads_in_flight
+    context = contextvars.copy_context()
+    future = _timeseries_read_executor.submit(
+        context.run, _timeseries_body, read, *args
+    )
+    _timeseries_reads_in_flight += 1
+    try:
+        try:
+            async with asyncio.timeout(TIMESERIES_READ_WAIT_SECONDS):
+                body = await asyncio.wrap_future(future)
+        except TimeoutError:
+            # A started read cannot be stopped, so it is answered
+            if not future.cancel():
+                body = await asyncio.wrap_future(future)
+            else:
+                logger.warning(
+                    "Timeseries read not started in %s s; %d in flight",
+                    TIMESERIES_READ_WAIT_SECONDS,
+                    _timeseries_reads_in_flight,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Other timeseries are being read. Please retry.",
+                    headers={"Retry-After": "5"},
+                )
+    finally:
+        _timeseries_reads_in_flight -= 1
+    return Response(content=body, media_type="application/json")
+
+
+def _timeseries_body(read, *args) -> bytes:
+    data = read(*args)
+    # One level only: asdict would copy every value of every record
+    body = {field.name: getattr(data, field.name) for field in fields(data)}
+    if is_dataclass(data.meta):
+        body["meta"] = asdict(data.meta)
+    return json.dumps(
+        body, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    ).encode()
+
+
+def _init_timeseries_data(
+    abs_dirpath: str, isFull: Optional[bool]
+) -> JsonTimeSeriesData:
+    """The first record in full and the first point of every other."""
     full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         abs_dirpath = full_json_dirpath
@@ -622,7 +789,8 @@ async def get_inittimedata(
     # Handle empty case
     if not file_numbers:
         return_data = get_initial_timeseries_data(abs_dirpath)
-        return_data.meta = {"title": "0 ROIs found"}  # Set informative message
+        # Informative title; as a PlotMetaData every meta field stays in the body
+        return_data.meta = PlotMetaData(title="0 ROIs found")
         return return_data
 
     # Get first cell data
@@ -632,16 +800,11 @@ async def get_inittimedata(
     # Load first record using common helper
     json_data = _load_timeseries_record(abs_dirpath, str_index)
 
-    data = {
-        str(i): {json_data.xrange[0]: json_data.data[json_data.xrange[0]]}
-        for i in file_numbers
-    }
+    first = json_data.xrange[:1]  # empty for a zero-length time range
+    data = {str(i): {x: json_data.data[x] for x in first} for i in file_numbers}
 
     if json_data.std is not None:
-        std = {
-            str(i): {json_data.xrange[0]: json_data.data[json_data.xrange[0]]}
-            for i in file_numbers
-        }
+        std = {str(i): {x: json_data.data[x] for x in first} for i in file_numbers}
 
     return_data = get_initial_timeseries_data(abs_dirpath)
     return_data.xrange = json_data.xrange
@@ -656,7 +819,11 @@ async def get_inittimedata(
     return return_data
 
 
-@router.get("/timedata/{dirpath:path}", response_model=JsonTimeSeriesData)
+@router.get(
+    "/timedata/{dirpath:path}",
+    response_model=JsonTimeSeriesData,
+    dependencies=[Depends(output_path_access)],
+)
 async def get_timedata(
     dirpath: str,
     index: int,
@@ -670,6 +837,12 @@ async def get_timedata(
     # On-demand sync if files don't exist
     await _ensure_visualization_synced(abs_dirpath, remote_bucket_name)
 
+    return await _read_timeseries(_timeseries_record_data, abs_dirpath, index, isFull)
+
+
+def _timeseries_record_data(
+    abs_dirpath: str, index: int, isFull: Optional[bool]
+) -> JsonTimeSeriesData:
     full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         abs_dirpath = full_json_dirpath
@@ -688,7 +861,11 @@ async def get_timedata(
     return return_data
 
 
-@router.get("/alltimedata/{dirpath:path}", response_model=JsonTimeSeriesData)
+@router.get(
+    "/alltimedata/{dirpath:path}",
+    response_model=JsonTimeSeriesData,
+    dependencies=[Depends(output_path_access)],
+)
 async def get_alltimedata(
     dirpath: str,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
@@ -749,7 +926,11 @@ async def get_alltimedata(
     return return_data
 
 
-@router.get("/data/{filepath:path}", response_model=OutputData)
+@router.get(
+    "/data/{filepath:path}",
+    response_model=OutputData,
+    dependencies=[Depends(output_path_access)],
+)
 async def get_file(
     filepath: str,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
@@ -762,19 +943,39 @@ async def get_file(
     await _ensure_visualization_synced(
         os.path.dirname(abs_filepath), remote_bucket_name
     )
+    _require_output_file(abs_filepath)
 
     return JsonReader.read_as_output(abs_filepath)
 
 
-@router.get("/html/{filepath:path}", response_model=OutputData)
-async def get_html(filepath: str):
+@router.get(
+    "/html/{filepath:path}",
+    response_model=OutputData,
+    dependencies=[Depends(output_path_access)],
+)
+async def get_html(
+    filepath: str,
+    remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
+):
     # Normalize and convert to absolute path for filesystem operations
     filepath = normalize_output_path(filepath)
     abs_filepath = join_filepath([DIRPATH.OUTPUT_DIR, filepath])
+
+    # On-demand sync if files don't exist
+    await _ensure_visualization_synced(
+        os.path.dirname(abs_filepath), remote_bucket_name
+    )
+    _require_output_file(abs_filepath)
+
     return Reader.read_as_output(abs_filepath)
 
 
-@router.get("/image/{filepath:path}", response_model=OutputData)
+@router.get(
+    "/image/{filepath:path}",
+    # Documents the body only: every branch returns a Response, which skips it
+    response_model=ImageOutputData,
+    dependencies=[Depends(workspace_access)],
+)
 async def get_image(
     filepath: str,
     workspace_id: str,
@@ -787,6 +988,15 @@ async def get_image(
     # Normalize filepath for backward compatibility with existing DB records
     # that may contain absolute paths like /app/studio_data/output/...
     filepath = normalize_output_path(filepath)
+    filename, ext = os.path.splitext(os.path.basename(filepath))
+
+    # Only a TIFF can be an input; anything else is read from OUTPUT_DIR
+    is_tiff = ext in ACCEPT_FILE_EXT.TIFF_EXT.value
+    if not is_tiff and not filepath.startswith(f"{workspace_id}/"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="filepath does not belong to the workspace",
+        )
 
     # Convert to absolute path for filesystem operations
     abs_filepath = join_filepath([DIRPATH.OUTPUT_DIR, filepath])
@@ -796,14 +1006,12 @@ async def get_image(
         os.path.dirname(abs_filepath), remote_bucket_name
     )
 
-    filename, ext = os.path.splitext(os.path.basename(filepath))
-
     if filename == "cell_roi" and isFull:
         full_cell_roi_filepath = abs_filepath + ORIGINAL_DATA_EXT
         if os.path.exists(full_cell_roi_filepath):
             abs_filepath = full_cell_roi_filepath
 
-    if ext in ACCEPT_FILE_EXT.TIFF_EXT.value:
+    if is_tiff:
         # Check if this is an input file (just filename)
         # vs output file (has workspace path)
         is_input_file = not filepath.startswith(f"{workspace_id}/")
@@ -836,35 +1044,77 @@ async def get_image(
         json_filepath = join_filepath(
             [save_dirpath, f"{filename}_{str(start_index)}_{str(end_index)}.json"]
         )
+        return await _read_tiff_preview(
+            abs_filepath, save_dirpath, json_filepath, start_index, end_index
+        )
+
+    _require_output_file(abs_filepath)
+    body = await run_in_executor_with_context(
+        _image_read_executor, JsonReader.read_as_output_bytes, abs_filepath
+    )
+    # Served as written: parsing and encoding it again would hold the event loop
+    return Response(content=body, media_type="application/json")
+
+
+def _tiff_preview_body(
+    tiff_filepath: str,
+    save_dirpath: str,
+    json_filepath: str,
+    start_index: int,
+    end_index: int,
+) -> bytes:
+    with _tiff_preview_thread_lock:
+        # A request queued behind the same window finds it written
         if not os.path.exists(json_filepath):
-            save_tiff2json(abs_filepath, save_dirpath, start_index, end_index)
-    else:
-        json_filepath = abs_filepath
-        # Check if output file exists after sync attempt
-        if not os.path.exists(json_filepath):
-            if remote_bucket_name:
-                logger.warning(f"File not found after sync attempt: {json_filepath}")
-                experiment_dir = os.path.dirname(os.path.dirname(json_filepath))
-                if os.path.exists(experiment_dir):
-                    raise HTTPException(
-                        status_code=404,
-                        detail="Output file not found. "
-                        "Analysis may not have generated this file.",
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Data syncing. Please retry.",
-                    )
-            raise HTTPException(
-                status_code=404,
-                detail="Output file not found",
-            )
-
-    return JsonReader.read_as_output(json_filepath)
+            save_tiff2json(tiff_filepath, save_dirpath, start_index, end_index)
+        return JsonReader.read_as_output_bytes(json_filepath)
 
 
-@router.get("/csv/{filepath:path}", response_model=OutputData)
+async def _read_tiff_preview(
+    tiff_filepath: str,
+    save_dirpath: str,
+    json_filepath: str,
+    start_index: int,
+    end_index: int,
+) -> Response:
+    """
+    A TIFF preview's JSON, built if missing, one at a time per process; 422 with
+    max_frames for a window too large.
+    """
+    try:
+        async with asyncio.timeout(TIFF_PREVIEW_WAIT_SECONDS):
+            await _tiff_preview_lock.acquire()
+    except TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Other image previews are being prepared. Please retry.",
+            headers={"Retry-After": "5"},
+        )
+    try:
+        body = await asyncio.to_thread(
+            _tiff_preview_body,
+            tiff_filepath,
+            save_dirpath,
+            json_filepath,
+            start_index,
+            end_index,
+        )
+    except TiffPreviewTooLargeError as e:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": e.detail, "max_frames": e.max_frames},
+        )
+    finally:
+        _tiff_preview_lock.release()
+    # Served as written: parsing and encoding it again would hold the event loop
+    return Response(content=body, media_type="application/json")
+
+
+@router.get(
+    "/csv/{filepath:path}",
+    response_model=OutputData,
+    dependencies=[Depends(workspace_access)],
+)
 async def get_csv(
     filepath: str,
     workspace_id: str,
@@ -901,7 +1151,10 @@ async def get_csv(
     return JsonReader.read_as_output(json_filepath)
 
 
-@router.get("/structured/{workspace_id}/{unique_id}/{node_id}")
+@router.get(
+    "/structured/{workspace_id}/{unique_id}/{node_id}",
+    dependencies=[Depends(workspace_access)],
+)
 async def get_structured_data(
     workspace_id: str,
     unique_id: str,
@@ -948,10 +1201,12 @@ async def get_structured_data(
     try:
         if hdf5_path is not None:
             with h5py.File(full_path, "r") as f:
-                dataset = f[hdf5_path]
+                dataset, field = hdf5_dataset(f, hdf5_path)
                 shape = dataset.shape
                 ndim = dataset.ndim
-                if ndim == 3:
+                if field is not None:
+                    data = dataset[field]
+                elif ndim == 3:
                     si = max(0, start_index)
                     ei = min(shape[0], end_index)
                     data = dataset[si:ei]

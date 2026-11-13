@@ -1,20 +1,25 @@
 """Tests for premium_manager Lambda function."""
 
+import ast
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pymysql
 import pytest
 from aws_constants import ECSTaskStatus, InstanceState, PremiumInstanceConfig
-from conftest import MockRow, setup_db_mock
+from terraform_source import TERRAFORM_DIR
+
+from conftest import FakeAssignClaimsDb, MockRow, setup_db_mock
 
 TEST_USER_ID = "test_user_12345"
 TEST_INSTANCE_ID = "i-testlambda123"
 
 
-def _always_acquired_lock():
-    """Mock distributed_lock that always grants the lock."""
+def _always_acquired_claim():
+    """Mock assign_claim that always grants the claim."""
     mock = MagicMock()
     mock.return_value.__enter__ = MagicMock(return_value=True)
     mock.return_value.__exit__ = MagicMock(return_value=False)
@@ -91,8 +96,8 @@ class TestPremiumManagerEvents:
         ) as mock_boto3, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
@@ -471,8 +476,8 @@ class TestEarlyCheckAndCleanup:
         ) as mock_get_existing, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_get_existing.return_value = existing_assignment
             mock_connection = setup_db_mock(fetchone_values=[None])
@@ -787,8 +792,8 @@ class TestEarlyCheckAndCleanup:
         ) as mock_boto3, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_connection = setup_db_mock(
                 fetchone_values=[
@@ -919,7 +924,11 @@ class TestEarlyCheckAndCleanup:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ) as mock_boto3, patch("premium_cleanup.get_db_connection") as mock_get_db:
+        ) as mock_boto3, patch(
+            "premium_cleanup.get_db_connection"
+        ) as mock_get_db, patch(
+            "premium_cleanup.get_assign_claimed_user_ids", return_value=set()
+        ):
             mock_cursor = MagicMock()
             mock_cursor.fetchall.return_value = [{"alb_rule_arn": valid_rule_arn}]
 
@@ -1030,8 +1039,8 @@ class TestEarlyCheckAndCleanup:
             ) as mock_boto3, patch(
                 "premium_manager.pymysql.connect"
             ) as mock_pymysql, patch(
-                "premium_manager.distributed_lock",
-                new=_always_acquired_lock(),
+                "premium_manager.assign_claim",
+                new=_always_acquired_claim(),
             ):
                 mock_get_existing.return_value = existing_autoscaling_assignment
                 mock_connection = setup_db_mock(fetchone_values=[None])
@@ -1080,8 +1089,8 @@ class TestEarlyCheckAndCleanup:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch("premium_manager.restore_pending_release") as mock_restore, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_restore.return_value = restored_assignment
 
@@ -1127,8 +1136,8 @@ class TestEarlyCheckAndCleanup:
         ) as mock_update_state, patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
@@ -1203,8 +1212,8 @@ class TestEarlyCheckAndCleanup:
         ), patch(
             "premium_manager.pymysql.connect"
         ) as mock_pymysql, patch(
-            "premium_manager.distributed_lock",
-            new=_always_acquired_lock(),
+            "premium_manager.assign_claim",
+            new=_always_acquired_claim(),
         ):
             mock_get_existing.return_value = existing_assignment
             mock_readiness.return_value = True
@@ -1299,8 +1308,8 @@ class TestEarlyCheckAndCleanup:
                 ) as mock_boto3, patch(
                     "pymysql.connect"
                 ) as mock_pymysql, patch(
-                    "premium_manager.distributed_lock",
-                    new=_always_acquired_lock(),
+                    "premium_manager.assign_claim",
+                    new=_always_acquired_claim(),
                 ):
                     mock_get_existing.return_value = existing_assignment
                     mock_pymysql.return_value = setup_db_mock(
@@ -1393,8 +1402,8 @@ class TestEarlyCheckAndCleanup:
                 ) as mock_boto3, patch(
                     "pymysql.connect"
                 ) as mock_pymysql, patch(
-                    "premium_manager.distributed_lock",
-                    new=_always_acquired_lock(),
+                    "premium_manager.assign_claim",
+                    new=_always_acquired_claim(),
                 ):
                     mock_get_existing.return_value = existing_assignment
                     mock_pymysql.return_value = setup_db_mock(
@@ -1442,25 +1451,25 @@ class TestEarlyCheckAndCleanup:
                     p.stop()
 
 
-class TestConcurrentAssignLock:
-    """Tests for per-user distributed lock on assign_premium_user."""
+class TestConcurrentAssignClaim:
+    """Tests for the per-user assign claim around assign_premium_user."""
 
     @staticmethod
-    def _lock_ctx(acquired: bool):
-        """Create a mock distributed_lock that returns *acquired*."""
+    def _claim_ctx(acquired: bool):
+        """Create a mock assign_claim that yields *acquired*."""
         mock = MagicMock()
         mock.return_value.__enter__ = MagicMock(return_value=acquired)
         mock.return_value.__exit__ = MagicMock(return_value=False)
         return mock
 
-    def test_lock_not_acquired_no_existing_returns_409(self, mock_env_vars_premium):
-        """When the per-user lock times out and no completed assignment
+    def test_claim_not_acquired_no_existing_returns_409(self, mock_env_vars_premium):
+        """When the claim wait times out and no completed assignment
         exists, the Lambda returns 409 so the caller retries."""
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch(
-            "premium_manager.distributed_lock",
-            new=self._lock_ctx(False),
+            "premium_manager.assign_claim",
+            new=self._claim_ctx(False),
         ), patch(
             "premium_manager.get_existing_user_assignment",
             return_value=None,
@@ -1474,8 +1483,8 @@ class TestConcurrentAssignLock:
             assert body["assigned"] is False
             assert "in progress" in body["message"].lower()
 
-    def test_lock_not_acquired_existing_found_returns_200(self, mock_env_vars_premium):
-        """When the per-user lock times out but the winning call stored
+    def test_claim_not_acquired_existing_found_returns_200(self, mock_env_vars_premium):
+        """When the claim wait times out but the winning call stored
         an assignment, return 200 with the existing assignment."""
         existing = {
             "instance_id": "i-winner",
@@ -1486,8 +1495,8 @@ class TestConcurrentAssignLock:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch(
-            "premium_manager.distributed_lock",
-            new=self._lock_ctx(False),
+            "premium_manager.assign_claim",
+            new=self._claim_ctx(False),
         ), patch(
             "premium_manager.get_existing_user_assignment",
             return_value=existing,
@@ -1501,10 +1510,9 @@ class TestConcurrentAssignLock:
             assert body["instance_id"] == "i-winner"
             assert body["assignment_source"] == "existing"
 
-    def test_lock_name_includes_user_id(self, mock_env_vars_premium):
-        """The lock name must include the user_id so different users
-        do not block each other."""
-        lock_mock = self._lock_ctx(True)
+    def test_claim_is_per_user(self, mock_env_vars_premium):
+        """The claim is keyed by user_id, so different users do not block each other."""
+        claim_mock = self._claim_ctx(True)
         impl_response = {
             "statusCode": 200,
             "body": json.dumps({"instance_id": "i-impl", "assigned": True}),
@@ -1513,35 +1521,25 @@ class TestConcurrentAssignLock:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch(
-            "premium_manager.distributed_lock",
-            new=lock_mock,
+            "premium_manager.assign_claim",
+            new=claim_mock,
         ), patch(
             "premium_manager._assign_premium_user_impl",
             return_value=impl_response,
         ):
-            from premium_manager import (
-                ASSIGN_LOCK_TIMEOUT_SECONDS,
-                ASSIGN_USER_LOCK_PREFIX,
-                assign_premium_user,
-            )
+            from premium_manager import assign_premium_user
 
             assign_premium_user(42, {"tier": "premium"}, "uid_42")
 
-            lock_mock.assert_called_once_with(
-                f"{ASSIGN_USER_LOCK_PREFIX}42",
-                timeout=ASSIGN_LOCK_TIMEOUT_SECONDS,
-            )
+            claim_mock.assert_called_once_with(42)
 
-    def test_lock_acquired_does_not_consult_the_existing_assignment(
+    def test_claim_acquired_does_not_consult_the_existing_assignment(
         self, mock_env_vars_premium
     ):
         """The winner assigns; only the loser reads back what the winner stored.
 
-        This case used to assert only ``mock_impl.assert_called_once()``, which
-        ``test_assign_impl_runs_inside_the_lock`` already covers more strictly.
-        The distinct claim is the branch: reading the existing assignment on the
-        acquired path would hand a stale row back as the fresh assignment and
-        skip the impl.
+        Reading the existing assignment on the acquired path would hand a
+        stale row back as the fresh assignment and skip the impl.
         """
         impl_response = {
             "statusCode": 200,
@@ -1550,8 +1548,8 @@ class TestConcurrentAssignLock:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
         ), patch(
-            "premium_manager.distributed_lock",
-            new=self._lock_ctx(True),
+            "premium_manager.assign_claim",
+            new=self._claim_ctx(True),
         ), patch(
             "premium_manager.get_existing_user_assignment"
         ) as mock_existing, patch(
@@ -1568,27 +1566,23 @@ class TestConcurrentAssignLock:
         assert mock_impl.call_args.args[:3] == (123, {"tier": "premium"}, "uid_123")
         mock_existing.assert_not_called()
 
-    def test_assign_impl_runs_inside_the_lock(self, mock_env_vars_premium):
+    def test_assign_impl_runs_inside_the_claim(self, mock_env_vars_premium):
         """The critical section (_assign_premium_user_impl) must execute strictly
-        BETWEEN lock acquire and release. Guards the lock's scope, not just its
-        presence: a refactor that keeps distributed_lock but moves the impl call
-        outside the `with` block would reorder these events and fail here (the
-        real-lock serialization is proven by the GET_LOCK integration test;
-        this pins that assign runs its work under the lock). It treats impl as
-        opaque, so work hoisted OUT of _assign_premium_user_impl to before the
-        lock is NOT caught here - only a full concurrent-assign-vs-real-DB race
-        (deferred) would."""
+        BETWEEN claim acquire and release. Guards the claim's scope, not just
+        its presence: moving the impl call outside the `with` block would
+        reorder these events and fail here. Serialization itself is proven by
+        TestAssignClaimRow, the differential test and the real-MySQL test."""
         from contextlib import contextmanager
 
         events = []
 
         @contextmanager
-        def tracking_lock(name, timeout=None):
-            events.append(("enter", name))
+        def tracking_claim(user_id):
+            events.append(("enter", user_id))
             try:
                 yield True
             finally:
-                events.append(("exit", name))
+                events.append(("exit", user_id))
 
         def impl_probe(*_args, **_kwargs):
             events.append(("impl", None))
@@ -1599,30 +1593,29 @@ class TestConcurrentAssignLock:
 
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "boto3.client"
-        ), patch("premium_manager.distributed_lock", new=tracking_lock), patch(
+        ), patch("premium_manager.assign_claim", new=tracking_claim), patch(
             "premium_manager._assign_premium_user_impl", side_effect=impl_probe
         ):
-            from premium_manager import ASSIGN_USER_LOCK_PREFIX, assign_premium_user
+            from premium_manager import assign_premium_user
 
             result = assign_premium_user(77, {"tier": "premium"}, "uid_77")
 
         assert result["statusCode"] == 200
         assert [e[0] for e in events] == ["enter", "impl", "exit"]
-        assert events[0][1] == f"{ASSIGN_USER_LOCK_PREFIX}77"
+        assert events[0][1] == 77
 
     def _assign_once(self, premium_manager, fake_elbv2, ec2, *, existing_return):
         """Run one assign_premium_user for user 77 against a shared stateful
         fake ELBv2. existing_return is what get_existing_user_assignment yields
         for this call.
 
-        NOTE: the lock is always granted here (both variants). These two tests
-        do NOT exercise serialization — that is covered by test_lock_* above
-        (lock timeout -> 409/200, lock name includes user_id, impl runs under
-        the lock). What they isolate is the DOWNSTREAM behavior the lock's
-        happens-before guarantees: whether the existing-assignment read observes
-        a prior assignment (existing_return) decides orphan-cleanup vs
+        NOTE: the claim is always granted here (both variants). These two tests
+        do NOT exercise serialization — that is covered by test_claim_* above
+        and TestAssignClaimRow. What they isolate is the DOWNSTREAM behavior the
+        claim's happens-before guarantees: whether the existing-assignment read
+        observes a prior assignment (existing_return) decides orphan-cleanup vs
         short-circuit. This documents the corruption mechanism (6204); it is
-        not itself proof the lock serializes."""
+        not itself proof the claim serializes."""
         from contextlib import ExitStack
 
         def boto3_client(service):
@@ -1663,7 +1656,7 @@ class TestConcurrentAssignLock:
                 patch("premium_manager.pymysql.connect", return_value=setup_db_mock())
             )
             stack.enter_context(
-                patch("premium_manager.distributed_lock", new=_always_acquired_lock())
+                patch("premium_manager.assign_claim", new=_always_acquired_claim())
             )
             stack.enter_context(patch("boto3.client", side_effect=boto3_client))
 
@@ -1673,10 +1666,10 @@ class TestConcurrentAssignLock:
 
     def test_stale_existing_read_orphans_target_group(self, mock_env_vars_premium):
         """Corruption mechanism (6204): when a second assign does not
-        observe the first's stored assignment (the stale read the per-user lock
+        observe the first's stored assignment (the stale read the per-user claim
         prevents), its orphan-cleanup deletes the first's live target group,
-        corrupting routing. This is what the lock exists to prevent; the lock
-        itself is asserted by test_lock_* above, not here."""
+        corrupting routing. This is what the claim exists to prevent; the claim
+        itself is asserted by test_claim_* above, not here."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
 
@@ -1697,10 +1690,10 @@ class TestConcurrentAssignLock:
         self, mock_env_vars_premium
     ):
         """Post-serialization outcome (6204): once the second assign
-        observes the first's stored assignment (what the lock's happens-before
+        observes the first's stored assignment (what the claim's happens-before
         guarantees), it short-circuits to 'existing', creating and deleting
         nothing, so exactly one target group survives. The serialization that
-        produces this read ordering is asserted by test_lock_* above, not
+        produces this read ordering is asserted by test_claim_* above, not
         here."""
         with patch.dict("os.environ", mock_env_vars_premium):
             import premium_manager
@@ -1729,6 +1722,229 @@ class TestConcurrentAssignLock:
         assert fake.deleted == []
         assert list(fake.live) == [first_tg]
         assert len(fake.created) == 1
+
+
+class TestAssignClaimRow:
+    """The real assign_claim against an in-memory premium_assign_claims."""
+
+    @pytest.fixture
+    def claims(self, mock_env_vars_premium):
+        db = FakeAssignClaimsDb()
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection", side_effect=db.get_db_connection
+        ):
+            yield db
+
+    def test_second_holder_is_refused_until_the_first_releases(self, claims):
+        from premium_manager import assign_claim
+
+        with assign_claim(7) as first:
+            assert first is True
+            with assign_claim(7, wait_seconds=0) as second:
+                assert second is False
+        assert claims.rows == {}
+        with assign_claim(7, wait_seconds=0) as third:
+            assert third is True
+
+    def test_claim_waits_for_a_previous_release_still_holding_the_session_lock(
+        self, claims
+    ):
+        """During a deploy an invocation of the previous release may still
+        run under GET_LOCK('assign_user_<id>'). The claim is given back while
+        that lock is in use, and taken once it is free."""
+        from premium_manager import LEGACY_ASSIGN_LOCK_PREFIX, assign_claim
+
+        claims.session_locks.add(f"{LEGACY_ASSIGN_LOCK_PREFIX}7")
+        with assign_claim(7, wait_seconds=0) as during_old_run:
+            assert during_old_run is False
+        assert claims.rows == {}
+
+        def old_run_finishes(seconds):
+            claims.session_locks.clear()
+
+        with patch("premium_manager.time.sleep", side_effect=old_run_finishes):
+            with assign_claim(7, wait_seconds=5) as after_old_run:
+                assert after_old_run is True
+
+    def test_claims_of_different_users_do_not_block(self, claims):
+        from premium_manager import assign_claim
+
+        with assign_claim(7) as a, assign_claim(8, wait_seconds=0) as b:
+            assert (a, b) == (True, True)
+
+    def test_expired_claim_is_reclaimed_and_its_late_release_is_harmless(self, claims):
+        """A crashed holder leaves its row; once expired, the next assign
+        takes it over, and the stale holder's release cannot delete it."""
+        from premium_manager import _release_assign_claim, assign_claim
+
+        claims.rows[7] = {"claim_token": "crashed", "expires_at": 100.0}
+        claims.now = 50.0
+        with assign_claim(7, wait_seconds=0) as live_refused:
+            assert live_refused is False
+        assert claims.rows[7]["claim_token"] == "crashed"
+
+        claims.now = 101.0
+        with assign_claim(7, wait_seconds=0) as reclaimed:
+            assert reclaimed is True
+            token = claims.rows[7]["claim_token"]
+            assert token != "crashed"
+            _release_assign_claim(7, "crashed")
+            assert claims.rows[7]["claim_token"] == token
+        assert claims.rows == {}
+
+    def test_waiter_acquires_once_the_holder_releases(self, claims):
+        """The loser polls within its bounded wait instead of failing at once."""
+        from premium_manager import assign_claim
+
+        claims.rows[7] = {"claim_token": "holder", "expires_at": 1e9}
+        sleeps = []
+
+        def holder_finishes(seconds):
+            sleeps.append(seconds)
+            claims.rows.pop(7, None)
+
+        with patch("premium_manager.time.sleep", side_effect=holder_finishes):
+            with assign_claim(7, wait_seconds=5) as acquired:
+                assert acquired is True
+        assert len(sleeps) == 1
+
+    def test_claim_is_released_when_the_block_raises(self, claims):
+        from premium_manager import assign_claim
+
+        with pytest.raises(RuntimeError):
+            with assign_claim(7):
+                raise RuntimeError("impl failed")
+        assert claims.rows == {}
+
+    def test_a_crashed_holder_blocks_the_user_only_for_the_short_ttl(self, claims):
+        """The row a hard-crashed holder leaves expires ASSIGN_CLAIM_TTL_SECONDS
+        after its last write, not after the whole invocation timeout."""
+        from premium_manager import ASSIGN_CLAIM_TTL_SECONDS, assign_claim
+
+        claims.now = 1000.0
+        with assign_claim(7):
+            assert claims.rows[7]["expires_at"] == 1000.0 + ASSIGN_CLAIM_TTL_SECONDS
+        assert ASSIGN_CLAIM_TTL_SECONDS <= 120
+
+    def test_a_held_claim_is_renewed_past_its_ttl(self, claims):
+        """A long assign keeps its claim: the background renewal moves
+        expires_at forward, so a contender cannot take it over."""
+        from premium_manager import ASSIGN_CLAIM_TTL_SECONDS, assign_claim
+
+        with patch("premium_manager.ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS", 0.01):
+            with assign_claim(7) as held:
+                assert held is True
+                claims.now = 10_000.0  # far past the first expiry
+                renewed_to = claims.now + ASSIGN_CLAIM_TTL_SECONDS
+                deadline = time.monotonic() + 5
+                while claims.rows[7]["expires_at"] != renewed_to:
+                    assert time.monotonic() < deadline, "claim was not renewed"
+                    time.sleep(0.01)
+                with assign_claim(7, wait_seconds=0) as contender:
+                    assert contender is False
+        assert claims.rows == {}
+
+    def test_a_failed_attempt_leaves_no_claim_behind(self, claims):
+        """The row is inserted before the session-lock check; if that check
+        fails, the attempt counts as not acquired and the exit still deletes
+        the row by token."""
+        claims.fail_on = (
+            "IS_FREE_LOCK",
+            pymysql.err.OperationalError(2013, "Lost connection"),
+        )
+        from premium_manager import assign_claim
+
+        with assign_claim(7, wait_seconds=0) as acquired:
+            assert acquired is False
+        assert claims.rows == {}
+
+    def test_a_transient_db_error_keeps_the_waiter_polling(self, claims):
+        """A dropped connection on one attempt is not a 500: the next attempt
+        inside the wait takes the claim."""
+        from premium_manager import assign_claim
+
+        claims.fail_on = ("INSERT", pymysql.err.OperationalError(2013, "Lost"))
+
+        def connection_recovers(seconds):
+            claims.fail_on = None
+
+        with patch("premium_manager.time.sleep", side_effect=connection_recovers):
+            with assign_claim(7, wait_seconds=5) as acquired:
+                assert acquired is True
+
+    def test_db_errors_through_the_whole_wait_answer_409(self, claims):
+        """If every attempt fails, assign answers 409 (retryable), not 500."""
+        claims.fail_on = ("INSERT", pymysql.err.OperationalError(2013, "Lost"))
+        with patch("boto3.client"), patch(
+            "premium_manager.ASSIGN_CLAIM_WAIT_SECONDS", 0
+        ), patch(
+            "premium_manager.get_existing_user_assignment", return_value=None
+        ), patch(
+            "premium_manager._assign_premium_user_impl"
+        ) as mock_impl:
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+        assert result["statusCode"] == 409
+        mock_impl.assert_not_called()
+
+    def test_only_a_missing_table_is_swallowed(self, claims):
+        """Any other ProgrammingError (here a syntax error) reaches the handler."""
+        claims.fail_on = ("INSERT", pymysql.err.ProgrammingError(1064, "syntax"))
+        from premium_manager import assign_claim
+
+        with pytest.raises(pymysql.err.ProgrammingError):
+            with assign_claim(7, wait_seconds=0):
+                pass
+
+    @pytest.mark.parametrize("lock_granted", [True, False])
+    def test_missing_claims_table_falls_back_to_the_session_lock(
+        self, mock_env_vars_premium, lock_granted
+    ):
+        """Before the migration lands (Lambdas are applied first), assign
+        serializes on the previous release's GET_LOCK, so deploy order does
+        not matter; the claim helpers write nothing."""
+        db = FakeAssignClaimsDb(missing_table=True)
+        lock = MagicMock()
+        lock.return_value.__enter__ = MagicMock(return_value=lock_granted)
+        lock.return_value.__exit__ = MagicMock(return_value=False)
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_db_connection", side_effect=db.get_db_connection
+        ), patch("premium_manager.distributed_lock", new=lock), patch(
+            "premium_manager.time.sleep"
+        ) as mock_sleep:
+            from premium_manager import (
+                ASSIGN_CLAIM_WAIT_SECONDS,
+                LEGACY_ASSIGN_LOCK_PREFIX,
+                assign_claim,
+            )
+
+            with assign_claim(7) as acquired:
+                assert acquired is lock_granted
+        lock.assert_called_once_with(
+            f"{LEGACY_ASSIGN_LOCK_PREFIX}7", timeout=ASSIGN_CLAIM_WAIT_SECONDS
+        )
+        lock.return_value.__exit__.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_assign_returns_409_while_another_invocation_holds_the_claim(self, claims):
+        """End to end through assign_premium_user: no impl runs for the loser."""
+        claims.rows[123] = {"claim_token": "winner", "expires_at": 1e9}
+        with patch("boto3.client"), patch(
+            "premium_manager.ASSIGN_CLAIM_WAIT_SECONDS", 0
+        ), patch(
+            "premium_manager.get_existing_user_assignment", return_value=None
+        ), patch(
+            "premium_manager._assign_premium_user_impl"
+        ) as mock_impl:
+            from premium_manager import assign_premium_user
+
+            result = assign_premium_user(123, {"tier": "premium"}, "uid_123")
+
+        assert result["statusCode"] == 409
+        mock_impl.assert_not_called()
+        assert claims.rows[123]["claim_token"] == "winner"
 
 
 class TestDictCursorFix:
@@ -2003,7 +2219,14 @@ class TestDatabaseCommits:
         with patch.dict("os.environ", mock_env_vars_premium), patch(
             "premium_manager" ".get_all_premium_instances_with_states"
         ) as mock_aws, patch("premium_manager.pymysql.connect") as mock_pymysql:
-            mock_aws.return_value = []
+            mock_aws.return_value = [
+                {
+                    "instance_id": "i-live",
+                    "instance_type": "t3.large",
+                    "state": "stopped",
+                    "launch_time": None,
+                }
+            ]
 
             mock_connection = setup_db_mock(
                 fetchall_values=[
@@ -2274,6 +2497,26 @@ class TestGetAllPremiumInstances:
             result = get_all_premium_instances_with_states()
             assert len(result) == 0
 
+    def test_ec2_error_raises_only_when_asked(self, mock_env_vars_premium):
+        """Callers that only count instances keep getting []; a sweep that
+        deletes on absence gets the error."""
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3:
+            mock_ec2 = MagicMock()
+            mock_boto3.return_value = mock_ec2
+            mock_ec2.describe_instances.side_effect = ClientError(
+                {"Error": {"Code": "AccessDenied"}}, "DescribeInstances"
+            )
+
+            from premium_manager import get_all_premium_instances_with_states
+
+            assert get_all_premium_instances_with_states() == []
+            with pytest.raises(ClientError):
+                get_all_premium_instances_with_states(raise_on_error=True)
+
 
 class TestStartStandbyInstance:
     """start_standby_instance tests."""
@@ -2521,8 +2764,8 @@ class TestStandbyReplenishmentAsync:
             ), patch(
                 "premium_manager.pymysql.connect"
             ) as mock_pymysql, patch(
-                "premium_manager.distributed_lock",
-                new=_always_acquired_lock(),
+                "premium_manager.assign_claim",
+                new=_always_acquired_claim(),
             ), patch(
                 "boto3.client"
             ) as mock_boto3:
@@ -5523,6 +5766,54 @@ class TestPremiumTgUnhealthyAlarm:
             )
             assert "[premium-alarm] action=delete" in capsys.readouterr().out
 
+    @pytest.mark.parametrize(
+        "delete_error, name_check, expected",
+        [
+            (None, Exception("TargetGroupNotFound"), ["tg", "alarm"]),
+            (None, {"TargetGroups": [{}]}, ["tg"]),
+            (None, Exception("Throttling"), ["tg"]),
+            (Exception("ResourceInUse"), None, ["tg"]),
+        ],
+        ids=["name-free", "name-taken-again", "name-unchecked", "delete-fails"],
+    )
+    def test_teardown_deletes_the_alarm_after_the_tg_once_the_name_is_free(
+        self, mock_env_vars_premium, delete_error, name_check, expected
+    ):
+        """A failed delete leaves a live TG that still needs its alarm, and a
+        same-named TG created since shares the alarm name."""
+        calls = []
+
+        def delete_tg(TargetGroupArn):
+            calls.append("tg")
+            if delete_error:
+                raise delete_error
+
+        elbv2 = MagicMock()
+        elbv2.delete_target_group.side_effect = delete_tg
+        if isinstance(name_check, Exception):
+            elbv2.describe_target_groups.side_effect = name_check
+        else:
+            elbv2.describe_target_groups.return_value = name_check
+        mock_cw = MagicMock()
+        mock_cw.delete_alarms.side_effect = lambda **k: calls.append("alarm")
+
+        with patch.dict("os.environ", self._env(mock_env_vars_premium)), patch(
+            "boto3.client", return_value=elbv2
+        ):
+            import premium_manager
+
+            with patch.object(
+                premium_manager, "_get_cloudwatch_client", return_value=mock_cw
+            ):
+                errors = premium_manager._teardown_alb_resources(7, None, self.TG_ARN)
+
+        assert calls == expected
+        assert bool(errors) is (delete_error is not None)
+        if delete_error is None:
+            elbv2.describe_target_groups.assert_called_once_with(
+                Names=["premium-6120-tg"]
+            )
+
 
 class TestAssignCascadeTiers:
     """Every reachable branch of the assign cascade emits the correct
@@ -5600,7 +5891,7 @@ class TestAssignCascadeTiers:
                 patch("premium_manager.pymysql.connect", return_value=setup_db_mock())
             )
             stack.enter_context(
-                patch("premium_manager.distributed_lock", new=_always_acquired_lock())
+                patch("premium_manager.assign_claim", new=_always_acquired_claim())
             )
             stack.enter_context(patch("boto3.client", side_effect=boto3_client))
 
@@ -5917,7 +6208,7 @@ class TestInlineMigrationOnAdoption:
             ) as mock_async, patch(
                 "premium_manager.pymysql.connect", return_value=setup_db_mock()
             ), patch(
-                "premium_manager.distributed_lock", new=_always_acquired_lock()
+                "premium_manager.assign_claim", new=_always_acquired_claim()
             ), patch(
                 "boto3.client", return_value=MagicMock()
             ):
@@ -6321,3 +6612,700 @@ class TestFinalizeExpiredPendingReleases:
             elbv2.delete_target_group.assert_called_once_with(
                 TargetGroupArn="arn:aws:tg/user-11"
             )
+
+
+class TestTerminateAgedStoppedInstances:
+    """terminate_aged_stopped_instances terminates only what EC2 reports stopped.
+
+    Standby rows' instance_state can be stale: on development, the dev
+    scheduler started a standby, its row still said stopped, the empty
+    StateTransitionReason sent the age check to the standby_created_at
+    fallback, and the running Terraform-managed base instance was terminated.
+    EC2 decides; the sweep neither reads nor writes instance_state (premium
+    cleanup's reconcile_instance_states() corrects it).
+    """
+
+    NOW = datetime.now(timezone.utc).replace(tzinfo=None)
+    AGED = NOW - timedelta(hours=10)
+    RECENT = NOW - timedelta(hours=1)
+
+    @staticmethod
+    def _row(instance_id, standby_created_at, instance_state=InstanceState.STOPPED):
+        return MockRow(
+            {
+                "instance_id": instance_id,
+                "instance_state": instance_state,
+                "standby_created_at": standby_created_at,
+            }
+        )
+
+    @staticmethod
+    def _instance(
+        instance_id, state=InstanceState.STOPPED, reason="", name="test-premium-standby"
+    ):
+        return {
+            "InstanceId": instance_id,
+            "State": {"Name": state},
+            "StateTransitionReason": reason,
+            "Tags": [{"Key": "Name", "Value": name}],
+        }
+
+    @staticmethod
+    def _stopped_reason(stopped_at):
+        return f"User initiated ({stopped_at:%Y-%m-%d %H:%M:%S} GMT)"
+
+    def _run(self, mock_env_vars_premium, rows, instances, unrequested=()):
+        """Run the sweep; returns (terminated ids, cursor, ec2).
+
+        `unrequested` instances are returned whatever the filter asks for,
+        as a malformed or empty filter could make EC2 do.
+        """
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.terminate_standby_instance", return_value=True
+        ) as mock_terminate:
+            mock_connection = setup_db_mock(fetchall_values=[rows])
+            mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+            ec2 = MagicMock()
+
+            def describe_instances(InstanceIds=None, Filters=None):
+                # As EC2 does: InstanceIds fails whole on a missing id; an
+                # instance-id filter just leaves it out.
+                known = {i["InstanceId"] for i in instances}
+                if InstanceIds is not None:
+                    if set(InstanceIds) - known:
+                        raise ClientError(
+                            {"Error": {"Code": "InvalidInstanceID.NotFound"}},
+                            "DescribeInstances",
+                        )
+                    ids = InstanceIds
+                else:
+                    (id_filter,) = Filters
+                    assert id_filter["Name"] == "instance-id"
+                    assert id_filter["Values"]
+                    ids = id_filter["Values"]
+                matched = [i for i in instances if i["InstanceId"] in ids]
+                matched += list(unrequested)
+                return {"Reservations": [{"Instances": matched}] if matched else []}
+
+            ec2.describe_instances.side_effect = describe_instances
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_aged_stopped_instances
+
+            self.result = terminate_aged_stopped_instances()
+
+        terminated = [c[0][0] for c in mock_terminate.call_args_list]
+        return terminated, cursor, ec2
+
+    @staticmethod
+    def _updates(cursor):
+        return [
+            (" ".join(c[0][0].split()), c[0][1])
+            for c in cursor.execute.call_args_list
+            if c[0][0].strip().startswith("UPDATE")
+        ]
+
+    def test_running_instance_with_stale_stopped_row_is_not_terminated(
+        self, mock_env_vars_premium
+    ):
+        """The incident: running, empty StateTransitionReason, aged
+        standby_created_at. Skipped, and the row left to premium cleanup."""
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-started", self.AGED)],
+            [self._instance("i-started", state=InstanceState.RUNNING)],
+        )
+
+        assert terminated == []
+        assert self._updates(cursor) == []
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            InstanceState.PENDING,
+            InstanceState.STOPPING,
+            InstanceState.SHUTTING_DOWN,
+            InstanceState.TERMINATED,
+        ],
+    )
+    def test_state_other_than_stopped_is_skipped(self, mock_env_vars_premium, state):
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-other", self.AGED)],
+            [
+                self._instance(
+                    "i-other", state=state, reason=self._stopped_reason(self.AGED)
+                )
+            ],
+        )
+
+        assert terminated == []
+
+    def test_instance_ec2_returns_unasked_is_never_terminated(
+        self, mock_env_vars_premium
+    ):
+        """The loop acts only on ids it asked for: a malformed or empty filter
+        could return every instance, and on development the NAT and
+        background instances also stop every night with this env's prefix."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-standby", self.AGED)],
+            [self._instance("i-standby", reason=self._stopped_reason(self.AGED))],
+            unrequested=[
+                self._instance(
+                    "i-nat", reason=self._stopped_reason(self.AGED), name="test-nat"
+                )
+            ],
+        )
+
+        assert terminated == ["i-standby"]
+
+    def test_ec2_error_terminates_nothing(self, mock_env_vars_premium):
+        from botocore.exceptions import ClientError
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.terminate_standby_instance"
+        ) as mock_terminate:
+            mock_pymysql.return_value = setup_db_mock(
+                fetchall_values=[[self._row("i-standby", self.AGED)]]
+            )
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = ClientError(
+                {"Error": {"Code": "RequestLimitExceeded"}}, "DescribeInstances"
+            )
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_aged_stopped_instances
+
+            assert terminate_aged_stopped_instances() == 0
+
+        mock_terminate.assert_not_called()
+
+    def test_bad_max_age_value_does_not_raise(self, mock_env_vars_premium):
+        """A bad PREMIUM_STOPPED_MAX_AGE_HOURS must not raise out of the
+        monitor's step and skip the steps after it."""
+        env = {**mock_env_vars_premium, "PREMIUM_STOPPED_MAX_AGE_HOURS": "four"}
+        terminated, _, _ = self._run(
+            env,
+            [self._row("i-standby", self.AGED)],
+            [self._instance("i-standby", reason=self._stopped_reason(self.AGED))],
+        )
+
+        assert terminated == []
+        assert self.result == 0
+
+    def test_stale_running_row_of_a_stopped_instance_is_aged(
+        self, mock_env_vars_premium
+    ):
+        """The other direction: a timed-out start_standby_instance() leaves a
+        'running' row. The row's state is not read, so the instance ages like
+        any other stopped standby."""
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-stale-running", self.AGED, InstanceState.RUNNING)],
+            [self._instance("i-stale-running", reason=self._stopped_reason(self.AGED))],
+        )
+
+        assert terminated == ["i-stale-running"]
+        assert self._updates(cursor) == []
+
+    def test_base_instance_is_never_terminated(self, mock_env_vars_premium):
+        """PREMIUM_INSTANCE_IDS are Terraform-managed: never terminated, even
+        when stopped and aged."""
+        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row(base_id, self.AGED), self._row("i-dynamic", self.AGED)],
+            [
+                self._instance(base_id, reason=self._stopped_reason(self.AGED)),
+                self._instance("i-dynamic", reason=self._stopped_reason(self.AGED)),
+            ],
+        )
+
+        assert terminated == ["i-dynamic"]
+
+    def test_stopped_with_empty_reason_falls_back_to_standby_created_at(
+        self, mock_env_vars_premium
+    ):
+        """The fallback stays for a genuinely stopped instance."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-aged", self.AGED), self._row("i-fresh", self.RECENT)],
+            [self._instance("i-aged"), self._instance("i-fresh")],
+        )
+
+        assert terminated == ["i-aged"]
+
+    def test_stop_time_from_reason_takes_precedence(self, mock_env_vars_premium):
+        """An old standby row stopped again recently is not aged."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-restopped", self.AGED)],
+            [self._instance("i-restopped", reason=self._stopped_reason(self.RECENT))],
+        )
+
+        assert terminated == []
+
+    def test_instance_missing_from_ec2_does_not_block_the_rest(
+        self, mock_env_vars_premium
+    ):
+        """An instance-id filter returns nothing for a missing id instead of
+        raising InvalidInstanceID.NotFound for the whole call."""
+        terminated, _, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-gone", self.AGED), self._row("i-aged", self.AGED)],
+            [self._instance("i-aged", reason=self._stopped_reason(self.AGED))],
+        )
+
+        assert terminated == ["i-aged"]
+
+    def test_other_environment_instance_is_untouched_and_not_reported_missing(
+        self, mock_env_vars_premium, capsys
+    ):
+        terminated, cursor, _ = self._run(
+            mock_env_vars_premium,
+            [self._row("i-foreign", self.AGED, InstanceState.RUNNING)],
+            [
+                self._instance(
+                    "i-foreign",
+                    reason=self._stopped_reason(self.AGED),
+                    name="prod-premium-standby",
+                )
+            ],
+        )
+
+        assert terminated == []
+        assert self._updates(cursor) == []
+        out = capsys.readouterr().out
+        assert "does not match environment prefix" in out
+        assert "not found in EC2" not in out
+
+
+class TestBaseInstanceNeverTerminatedAsStandby:
+    """A base instance (PREMIUM_INSTANCE_IDS) can be a standby - premium manager
+    stops it as idle like any other - but terminating it leaves Terraform state
+    and the dev scheduler pointing at an instance that no longer exists."""
+
+    def test_terminate_standby_instance_refuses_a_base_instance(
+        self, mock_env_vars_premium
+    ):
+        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock()
+            mock_pymysql.return_value = mock_connection
+            cursor = mock_connection.cursor.return_value.__enter__.return_value
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_standby_instance
+
+            assert terminate_standby_instance(base_id) is False
+
+        ec2.terminate_instances.assert_not_called()
+        cursor.execute.assert_not_called()
+
+    def test_terminate_standby_instance_terminates_a_dynamic_instance(
+        self, mock_env_vars_premium
+    ):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import terminate_standby_instance
+
+            assert terminate_standby_instance("i-dynamic") is True
+
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-dynamic"])
+
+    def test_excess_trim_skips_a_base_instance_even_when_oldest(
+        self, mock_env_vars_premium
+    ):
+        """Oldest-first would pick the base instance every run; it is left out
+        of the candidates, so the next-oldest dynamic standby is trimmed."""
+        base_id = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")[0]
+        standbys = [
+            {"instance_id": base_id},
+            {"instance_id": "i-dynamic-old"},
+            {"instance_id": "i-dynamic-new"},
+        ]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_available_standby_instances", return_value=standbys
+        ), patch(
+            "premium_manager.terminate_standby_instance", return_value=True
+        ) as mock_terminate:
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(1) == 1
+
+        mock_terminate.assert_called_once_with("i-dynamic-old")
+
+    def test_excess_trim_with_only_base_candidates_trims_nothing(
+        self, mock_env_vars_premium
+    ):
+        base_ids = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "premium_manager.get_available_standby_instances",
+            return_value=[{"instance_id": i} for i in base_ids],
+        ), patch("premium_manager.terminate_standby_instance") as mock_terminate:
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(2) == 0
+
+        mock_terminate.assert_not_called()
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_without_base_ids_a_standby_is_terminated_normally(
+        self, mock_env_vars_premium, value
+    ):
+        """A Lambda without PREMIUM_INSTANCE_IDS (or with it empty) has no
+        base instances to protect - it must not refuse or fail."""
+        import os
+
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            if value is None:
+                os.environ.pop("PREMIUM_INSTANCE_IDS")
+            else:
+                os.environ["PREMIUM_INSTANCE_IDS"] = value
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            mock_boto3.return_value = ec2
+
+            from premium_manager import _base_instance_ids, terminate_standby_instance
+
+            assert _base_instance_ids() == set()
+            assert terminate_standby_instance("i-test1") is True
+
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-test1"])
+
+    def test_cleanup_all_dynamic_preserves_base_ids_missing_from_the_event(
+        self, mock_env_vars_premium
+    ):
+        """The handler defaults base_instance_ids to [] when the event omits
+        it; PREMIUM_INSTANCE_IDS is preserved regardless."""
+        base_ids = mock_env_vars_premium["PREMIUM_INSTANCE_IDS"].split(",")
+        instances = [{"InstanceId": i} for i in [*base_ids, "i-dynamic"]]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": instances}]
+            }
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_all_dynamic_instances
+
+            result = cleanup_all_dynamic_instances(base_instance_ids=[])
+
+        assert result["terminated"] == ["i-dynamic"]
+        ec2.terminate_instances.assert_called_once_with(InstanceIds=["i-dynamic"])
+
+    def test_cleanup_all_dynamic_preserves_ids_only_in_the_event(
+        self, mock_env_vars_premium
+    ):
+        instances = [{"InstanceId": i} for i in ["i-event-base", "i-dynamic"]]
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock()
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = {
+                "Reservations": [{"Instances": instances}]
+            }
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_all_dynamic_instances
+
+            result = cleanup_all_dynamic_instances(base_instance_ids=["i-event-base"])
+
+        assert result["terminated"] == ["i-dynamic"]
+
+    @pytest.mark.parametrize(
+        "value", ["i-a,i-b", "i-a, i-b", " i-a ,i-b ", "i-a,i-b,", ",i-a,,i-b"]
+    )
+    def test_base_ids_parsing_tolerates_spaces_and_empty_items(
+        self, mock_env_vars_premium, value
+    ):
+        env = {**mock_env_vars_premium, "PREMIUM_INSTANCE_IDS": value}
+        with patch.dict("os.environ", env):
+            from premium_manager import _base_instance_ids
+
+            assert _base_instance_ids() == {"i-a", "i-b"}
+
+    def test_excess_trim_never_terminates_a_running_standby(
+        self, mock_env_vars_premium
+    ):
+        """End to end through get_available_standby_instances(): a dynamic
+        standby that EC2 reports running (e.g. mid Tier 3 assignment) is not
+        a candidate, even when it is the oldest."""
+        rows = [
+            MockRow({"instance_id": "i-running-old", "standby_created_at": None}),
+            MockRow({"instance_id": "i-stopped-new", "standby_created_at": None}),
+        ]
+        reservations = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-running-old", "State": {"Name": "running"}},
+                        {"InstanceId": "i-stopped-new", "State": {"Name": "stopped"}},
+                    ]
+                }
+            ]
+        }
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3, patch(
+            "premium_manager.terminate_standby_instance", return_value=True
+        ) as mock_terminate:
+            mock_pymysql.return_value = setup_db_mock(fetchall_values=[rows])
+            ec2 = MagicMock()
+            ec2.describe_instances.return_value = reservations
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_excess_standby_instances
+
+            assert cleanup_excess_standby_instances(1) == 1
+
+        mock_terminate.assert_called_once_with("i-stopped-new")
+
+
+class TestGetAvailableStandbyInstances:
+    """get_available_standby_instances returns only standbys EC2 reports stopped.
+
+    Its list feeds the excess trim and Tier 3 assignment, so an unchecked
+    database list - which can include a running standby mid-assignment - must
+    never come back from it.
+    """
+
+    @staticmethod
+    def _get(mock_env_vars_premium, rows, describe):
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_pymysql.return_value = setup_db_mock(fetchall_values=[rows])
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = describe
+            mock_boto3.return_value = ec2
+
+            from premium_manager import get_available_standby_instances
+
+            return get_available_standby_instances(), ec2
+
+    @staticmethod
+    def _rows(*instance_ids):
+        return [
+            MockRow({"instance_id": i, "standby_created_at": None})
+            for i in instance_ids
+        ]
+
+    def test_returns_only_stopped_and_skips_a_missing_id(self, mock_env_vars_premium):
+        def describe(Filters):
+            # i-gone is left out, as an instance-id filter does
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"InstanceId": "i-stopped", "State": {"Name": "stopped"}},
+                            {"InstanceId": "i-running", "State": {"Name": "running"}},
+                        ]
+                    }
+                ]
+            }
+
+        standbys, ec2 = self._get(
+            mock_env_vars_premium,
+            self._rows("i-stopped", "i-running", "i-gone"),
+            describe,
+        )
+
+        assert [s["instance_id"] for s in standbys] == ["i-stopped"]
+        assert ec2.describe_instances.call_args.kwargs["Filters"] == [
+            {
+                "Name": "instance-id",
+                "Values": ["i-stopped", "i-running", "i-gone"],
+            }
+        ]
+
+    def test_ec2_error_returns_no_standbys(self, mock_env_vars_premium):
+        """Fails closed: on a throttle or any other error, nothing is offered
+        for trimming or assignment."""
+        from botocore.exceptions import ClientError
+
+        def describe(Filters):
+            raise ClientError(
+                {"Error": {"Code": "RequestLimitExceeded"}}, "DescribeInstances"
+            )
+
+        standbys, _ = self._get(
+            mock_env_vars_premium, self._rows("i-stopped", "i-running"), describe
+        )
+
+        assert standbys == []
+
+
+class TestCleanupFailedStandbyInstances:
+    """cleanup_failed_standby_instances deletes a standby row only for an
+    instance missing from a discovery that succeeded and found others."""
+
+    @staticmethod
+    def _run(mock_env_vars_premium, describe):
+        """Run the sweep through the real discovery over one standby row whose
+        instance is alive; return the DELETE statements it executed and the
+        connect mock."""
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "pymysql.connect"
+        ) as mock_pymysql, patch("boto3.client") as mock_boto3:
+            mock_connection = setup_db_mock(
+                fetchall_values=[[MockRow({"instance_id": "i-standby"})]]
+            )
+            mock_pymysql.return_value = mock_connection
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = describe
+            mock_boto3.return_value = ec2
+
+            from premium_manager import cleanup_failed_standby_instances
+
+            cleanup_failed_standby_instances()
+
+        cursor = mock_connection.cursor.return_value.__enter__.return_value
+        deletes = [
+            c.args
+            for c in cursor.execute.call_args_list
+            if c.args[0].lstrip().startswith("DELETE")
+        ]
+        return deletes, mock_pymysql
+
+    def test_ec2_error_deletes_nothing(self, mock_env_vars_premium):
+        """A failed DescribeInstances must not read as "no instance exists":
+        the sweep stops before the database is read, not at the empty-result
+        guard."""
+        from botocore.exceptions import ClientError
+
+        def describe(**kwargs):
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "DescribeInstances")
+
+        deletes, mock_pymysql = self._run(mock_env_vars_premium, describe)
+
+        assert deletes == []
+        mock_pymysql.assert_not_called()
+
+    def test_no_instances_discovered_deletes_nothing(self, mock_env_vars_premium):
+        """An empty discovery while standby rows exist skips the sweep."""
+        deletes, _ = self._run(
+            mock_env_vars_premium, lambda **kwargs: {"Reservations": []}
+        )
+
+        assert deletes == []
+
+
+class TestScalePremiumInstancesIfNeeded:
+    """scale_premium_instances_if_needed launches only for capacity it has
+    seen: a failed discovery must not read as "no instance is running"."""
+
+    @staticmethod
+    def _scale(mock_env_vars_premium, describe):
+        """Run a scale-up through the real discovery with two active users and
+        room to grow; return the result, the create mock and the EC2 mock."""
+        create = MagicMock(return_value=True)
+        with patch.dict("os.environ", mock_env_vars_premium), patch(
+            "boto3.client"
+        ) as mock_boto3, patch.multiple(
+            "premium_manager",
+            get_dynamic_max_capacity=MagicMock(return_value=5),
+            count_active_premium_users=MagicMock(return_value=2),
+            count_total_premium_users=MagicMock(return_value=2),
+            is_creation_lock_held=MagicMock(return_value=False),
+            _create_running_instances_locked=create,
+            invoke_migration_async=MagicMock(),
+            update_premium_service_desired_count=MagicMock(),
+        ):
+            ec2 = MagicMock()
+            ec2.describe_instances.side_effect = describe
+            mock_boto3.return_value = ec2
+
+            from premium_manager import scale_premium_instances_if_needed
+
+            return scale_premium_instances_if_needed(), create, ec2
+
+    def test_creates_the_missing_capacity(self, mock_env_vars_premium):
+        """One running instance for two active users: one is created."""
+
+        def describe(**kwargs):
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-running",
+                                "InstanceType": "t3.large",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {
+                                        "Key": "Name",
+                                        "Value": (
+                                            PremiumInstanceConfig.get_instance_name()
+                                        ),
+                                    },
+                                    {
+                                        "Key": "Tier",
+                                        "Value": (
+                                            PremiumInstanceConfig.INSTANCE_IDENTIFIER
+                                        ),
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+        scaled, create, _ = self._scale(mock_env_vars_premium, describe)
+
+        assert scaled is True
+        create.assert_called_once_with(1)
+
+    def test_ec2_error_launches_nothing(self, mock_env_vars_premium):
+        """A failed DescribeInstances starts and creates no instance."""
+        from botocore.exceptions import ClientError
+
+        def describe(**kwargs):
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "DescribeInstances")
+
+        scaled, create, ec2 = self._scale(mock_env_vars_premium, describe)
+
+        assert scaled is False
+        create.assert_not_called()
+        ec2.start_instances.assert_not_called()
+
+
+def test_only_delete_premium_tg_deletes_a_tg_or_its_alarm():
+    """The group-before-alarm order lives in ``_delete_premium_tg``; a direct
+    call anywhere else could put the alarm first again."""
+    tree = ast.parse(
+        (TERRAFORM_DIR / "premium_manager_package/premium_manager.py").read_text()
+    )
+    callers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and getattr(call.func, "attr", getattr(call.func, "id", None))
+        in {"delete_target_group", "_delete_premium_tg_unhealthy_alarm"}
+    }
+    assert callers == {"_delete_premium_tg"}

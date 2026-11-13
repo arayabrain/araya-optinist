@@ -1,5 +1,5 @@
-from studio.__main_unit__ import main
 from studio.app.common.core.logger import AppLogger
+from studio.server import main
 
 # Initialize the logger
 logger = AppLogger.get_logger()

@@ -1,0 +1,293 @@
+import os
+import sys
+import types
+import zlib
+
+import numpy as np
+import pytest
+import tifffile
+
+from studio.app.common.dataclass import ImageData
+from studio.app.optinist.wrappers.caiman.cnmf import (
+    util_get_image_memmap,
+    util_get_image_memmap_from_files,
+)
+
+
+@pytest.fixture(autouse=True)
+def caiman_names(monkeypatch):
+    """Both functions take the memmap's shape and name from caiman. Without
+    caiman (the app image), stand-ins for the two helpers let this run: both
+    functions use them, so the byte comparison still holds."""
+    try:
+        import caiman  # noqa: F401
+    except ImportError:
+        mmapping = types.ModuleType("caiman.mmapping")
+        mmapping.prepare_shape = lambda shape: tuple(np.uint64(n) for n in shape)
+        paths = types.ModuleType("caiman.paths")
+        paths.memmap_frames_filename = lambda base, dims, T, order: (
+            f"{base}_d1_{dims[0]}_d2_{dims[1]}_d3_{dims[2] if len(dims) == 3 else 1}"
+            f"_order_{order}_frames_{T}.mmap"
+        )
+        root = types.ModuleType("caiman")
+        root.mmapping, root.paths = mmapping, paths
+        for name, module in [
+            ("caiman", root),
+            ("caiman.mmapping", mmapping),
+            ("caiman.paths", paths),
+        ]:
+            monkeypatch.setitem(sys.modules, name, module)
+
+
+def write(path, frames, dtype, frame_shape=(9, 7), **kwargs):
+    rng = np.random.default_rng(zlib.crc32(os.path.basename(str(path)).encode()))
+    movie = rng.normal(300, 60, (frames, *frame_shape)).clip(0).astype(dtype)
+    tifffile.imwrite(path, movie, **kwargs)
+    return str(path)
+
+
+ZLIB = {"compression": "zlib"}
+VOLUME = {"frame_shape": (3, 9, 7), "compression": "zlib"}  # pages are planes
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [("mc_images.tif", 23, np.float32, {})],  # caiman_mc's output
+        [("a.tif", 11, np.uint16, {}), ("b.tif", 6, np.uint16, {})],  # inputs
+        [("c.tif", 5, np.uint8, {}), ("d.tif", 4, np.float32, {})],  # mixed dtypes
+        [("zlib.tif", 9, np.uint16, ZLIB)],  # decoded a batch of pages at a time
+        [("z.tif", 6, np.uint16, ZLIB), ("raw.tif", 3, np.uint16, {})],
+        [("volume.tif", 5, np.uint16, VOLUME)],  # read in full
+    ],
+)
+@pytest.mark.parametrize(
+    "block_bytes", [256 << 20, 1], ids=["mapped whole", "mapped a column at a time"]
+)
+def test_same_memmap_as_reading_the_whole_movie(
+    tmp_path, monkeypatch, files, block_bytes
+):
+    from studio.app.optinist.wrappers.caiman import cnmf
+
+    monkeypatch.setattr(cnmf, "FILL_BLOCK_BYTES", block_bytes)
+    paths = [write(tmp_path / name, n, dt, **kw) for name, n, dt, kw in files]
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+
+    expected, dims_e, path_e = util_get_image_memmap(
+        "fid", ImageData(paths).data, str(old_dir / os.path.basename(paths[0]))
+    )
+    # A batch size that does not divide the frame counts
+    actual, dims_a, path_a = util_get_image_memmap_from_files(
+        "fid", paths, str(new_dir / os.path.basename(paths[0])), batch_size=4
+    )
+
+    assert tuple(dims_a) == tuple(dims_e)
+    assert os.path.basename(path_a) == os.path.basename(path_e)
+    assert actual.shape == expected.shape
+    del actual, expected
+    assert open(path_a, "rb").read() == open(path_e, "rb").read()
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        lambda path: write(path, 4, np.uint16, frame_shape=(1, 7)),  # (T, 1, X)
+        lambda path: write(path, 4, np.uint16, frame_shape=(9, 1)),  # (T, Y, 1)
+        lambda path: tifffile.imwrite(path, np.zeros((9, 7), np.uint16)) or path,
+    ],
+    ids=["one-row frames", "one-column frames", "a single 2D frame"],
+)
+@pytest.mark.parametrize("batch_size", [4, 1024])
+def test_files_that_do_not_stack_are_rejected(tmp_path, second, batch_size):
+    # Concatenating these raises; assigning them per file would broadcast
+    first = write(tmp_path / "first.tif", 5, np.uint16)
+    other = str(second(str(tmp_path / "other.tif")))
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(ValueError, match="other.tif"):
+        util_get_image_memmap_from_files(
+            "fid", [first, other], str(out / "first.tif"), batch_size=batch_size
+        )
+    with pytest.raises(ValueError):
+        ImageData([first, other]).data  # as develop-main read them
+    assert list(out.iterdir()) == []  # no memmap allocated
+
+
+def test_a_single_2d_file_is_rejected(tmp_path):
+    path = str(tmp_path / "frame.tif")
+    tifffile.imwrite(path, np.zeros((9, 7), np.uint16))
+    with pytest.raises(ValueError, match="not a stack"):
+        util_get_image_memmap_from_files("fid", [path], path)
+
+
+def test_a_compressed_stack_is_never_read_whole(tmp_path, monkeypatch):
+    import imageio
+
+    path = write(tmp_path / "zlib.tif", 9, np.uint16, compression="zlib")
+    monkeypatch.setattr(imageio, "volread", lambda *a, **k: pytest.fail("read whole"))
+    out = tmp_path / "out"
+    out.mkdir()
+    images, _, _ = util_get_image_memmap_from_files(
+        "fid", [path], str(out / "zlib.tif"), batch_size=4
+    )
+    np.testing.assert_array_equal(images, tifffile.imread(path))
+
+
+def test_a_mapped_file_over_the_block_is_assigned_a_block_of_columns_at_a_time(
+    tmp_path,
+):
+    # assigned whole, it would be read once per image column, so it would have
+    # to fit the page cache; a block copied out reads it once per block
+    from studio.app.optinist.wrappers.caiman import cnmf
+
+    source = tifffile.memmap(write(tmp_path / "m.tif", 23, np.uint16), mode="r")
+    target = np.zeros(source.shape, np.float32)
+    assigned = []
+
+    class Recorder:
+        def __setitem__(self, key, value):
+            assigned.append((key[-1], type(value)))
+            target[key] = value
+
+    cnmf.assign_by_columns(Recorder(), source, block_bytes=3 * 23 * 9 * 2)
+
+    assert [key for key, _ in assigned] == [slice(0, 3), slice(3, 6), slice(6, 9)]
+    assert all(kind is np.ndarray for _, kind in assigned)  # copies, not the view
+    np.testing.assert_array_equal(target, source)
+
+
+@pytest.mark.parametrize("kwargs", [{}, ZLIB], ids=["mapped", "decoded"])
+def test_a_failed_fill_leaves_no_memmap_and_keeps_its_error(
+    tmp_path, monkeypatch, kwargs
+):
+    from studio.app.optinist.wrappers.caiman import cnmf
+
+    path = write(tmp_path / "a.tif", 9, np.uint16, **kwargs)
+
+    def fails_after_one_batch(path, frames, batch_size):
+        yield tifffile.imread(path)[:4]
+        raise OSError("read error")
+
+    def fails_after_one_column(target, source, block_bytes=None):
+        target[..., :1] = source[..., :1]
+        raise OSError("read error")
+
+    monkeypatch.setattr(cnmf, "iter_frame_batches", fails_after_one_batch)
+    monkeypatch.setattr(cnmf, "assign_by_columns", fails_after_one_column)
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(OSError, match="read error"):
+        util_get_image_memmap_from_files("fid", [path], str(out / "a.tif"), 4)
+    assert list(out.iterdir()) == []
+
+
+def test_caiman_cnmf_fills_the_memmap_from_every_file(tmp_path, monkeypatch):
+    from studio.app.optinist.wrappers.caiman import cnmf
+
+    for name in [
+        "caiman",
+        "caiman.source_extraction",
+        "caiman.source_extraction.cnmf",
+        "caiman.source_extraction.cnmf.params",
+    ]:
+        module = types.ModuleType(name)
+        module.local_correlations = module.cnmf = module.online_cnmf = None
+        module.CNMFParams = None
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(cnmf, "util_download_model_files", lambda: None)
+
+    class Called(Exception):
+        pass
+
+    def record(function_id, paths, file_path, *args, **kwargs):
+        raise Called(paths)
+
+    monkeypatch.setattr(cnmf, "util_get_image_memmap_from_files", record)
+    paths = [write(tmp_path / n, 3, np.uint16) for n in ("s1.tif", "s2.tif")]
+    output_dir = tmp_path / "output" / "default" / "uid" / "caiman_cnmf_x"
+    output_dir.mkdir(parents=True)
+    with pytest.raises(Called) as called:
+        cnmf.caiman_cnmf(ImageData(paths), str(output_dir), params={})
+    assert called.value.args[0] == paths
+
+
+def test_the_memmap_is_reserved_before_it_is_mapped(tmp_path, monkeypatch):
+    """A sparse memmap on a disk that fills mid-fill dies with SIGBUS; the
+    whole file is allocated before the first mapped write, and mapped "r+"
+    (numpy's "w+" would truncate the reservation)."""
+    from studio.app.optinist.wrappers.caiman import cnmf
+
+    seen = {}
+    real_memmap = np.memmap
+
+    def observe(filename, dtype=np.uint8, mode="r+", *args, **kwargs):
+        if str(filename).endswith(".mmap"):
+            st = os.stat(filename)
+            seen.update(mode=mode, size=st.st_size, allocated=st.st_blocks * 512)
+        return real_memmap(filename, dtype, mode, *args, **kwargs)
+
+    monkeypatch.setattr(cnmf.np, "memmap", observe)
+    path = write(tmp_path / "m.tif", 6, np.uint16)
+    out = tmp_path / "out"
+    out.mkdir()
+    util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
+    nbytes = 6 * 9 * 7 * 4
+    assert seen["mode"] == "r+"
+    if hasattr(os, "posix_fallocate"):
+        assert seen["size"] == nbytes
+        assert seen["allocated"] >= nbytes
+
+
+def test_a_full_disk_at_reservation_leaves_no_file(tmp_path, monkeypatch):
+    import errno
+
+    def enospc(fd, offset, length):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(os, "posix_fallocate", enospc, raising=False)
+    path = write(tmp_path / "m.tif", 6, np.uint16)
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(OSError) as info:
+        util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
+    assert info.value.errno == errno.ENOSPC
+    assert list(out.iterdir()) == []
+
+
+def test_an_unsupported_fallocate_stays_sparse(tmp_path, monkeypatch):
+    import errno
+
+    def unsupported(fd, offset, length):
+        raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+
+    monkeypatch.setattr(os, "posix_fallocate", unsupported, raising=False)
+    path = write(tmp_path / "m.tif", 6, np.uint16)
+    out = tmp_path / "out"
+    out.mkdir()
+    images, _, _ = util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
+    np.testing.assert_array_equal(images, tifffile.imread(path))
+
+
+def test_the_host_reserve_is_checked_before_any_file_is_created(tmp_path, monkeypatch):
+    """The movie would fit, but not without eating the host's headroom."""
+    import errno
+    from types import SimpleNamespace
+
+    from studio.app.common.core.storage import local_disk_guard as guard
+
+    monkeypatch.setenv(guard.MIN_FREE_DISK_ENV, "8")
+    monkeypatch.setattr(
+        guard.shutil,
+        "disk_usage",
+        lambda p: SimpleNamespace(free=8 * guard.GIB + 100, total=0, used=0),
+    )
+    path = write(tmp_path / "m.tif", 6, np.uint16)
+    out = tmp_path / "out"
+    out.mkdir()
+    with pytest.raises(OSError) as info:
+        util_get_image_memmap_from_files("fid", [path], str(out / "m.tif"))
+    assert info.value.errno == errno.ENOSPC
+    assert "must stay free" in str(info.value)
+    assert list(out.iterdir()) == []

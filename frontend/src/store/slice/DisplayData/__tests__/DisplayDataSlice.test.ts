@@ -27,6 +27,7 @@ describe("DisplayDataSlice", () => {
       temp_add_roi: [],
       temp_delete_roi: [],
       temp_merge_roi: [],
+      temp_promote_roi: [],
     },
     isEditRoiCommitting: false,
   }
@@ -571,6 +572,37 @@ describe("DisplayDataSlice", () => {
       expect(state.image["/test/image.tiff"].fulfilled).toBe(true)
       expect(state.image["/test/image.tiff"].error).toBe(null)
       expect(state.image["/test/image.tiff"].data).toHaveLength(1)
+    })
+  })
+
+  describe("getImageData results that arrive late", () => {
+    const path = "/test/image.tiff"
+    const arg = { path, workspaceId: 1, startIndex: 1, endIndex: 8 }
+    const frames = { data: [[[1]]] }
+
+    it("are not stored once the path's data was deleted", () => {
+      const fulfilled = reducer(
+        undefined,
+        getImageData.fulfilled(frames, "first", arg),
+      )
+      const rejected = reducer(
+        undefined,
+        getImageData.rejected(null, "first", arg, { message: "refused" }),
+      )
+
+      expect(fulfilled.image[path]).toBeUndefined()
+      expect(rejected.image[path]).toBeUndefined()
+    })
+
+    it("do not replace a later request's result", () => {
+      let state = reducer(undefined, getImageData.pending("first", arg))
+      state = reducer(state, getImageData.pending("second", arg))
+
+      state = reducer(state, getImageData.fulfilled(frames, "first", arg))
+      expect(state.image[path].pending).toBe(true)
+
+      state = reducer(state, getImageData.fulfilled(frames, "second", arg))
+      expect(state.image[path].fulfilled).toBe(true)
     })
   })
 })

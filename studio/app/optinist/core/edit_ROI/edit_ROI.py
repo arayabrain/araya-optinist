@@ -9,20 +9,19 @@ from fastapi import HTTPException, status
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.runner import Runner
-from studio.app.common.core.snakemake.snakemake_reader import SmkConfigReader
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageWriter,
-    RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.filepath_finder import find_recent_updated_files
 from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
-from studio.app.common.core.workflow.workflow import ProcessType
+from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
+from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.dataclass.base import BaseData
 from studio.app.dir_path import DIRPATH
-from studio.app.optinist.core.edit_ROI.utils import create_ellipse_mask
+from studio.app.optinist.core.edit_ROI.utils import ellipse_pixels
 from studio.app.optinist.core.nwb.nwb_creater import overwrite_nwb
 from studio.app.optinist.dataclass import EditRoiData, IscellData, RoiData
 from studio.app.optinist.schemas.roi import RoiStatus
@@ -36,14 +35,19 @@ class CellType:
     NON_ROI = 0
     TEMP_ADD = -1
     TEMP_DELETE = -2
+    TEMP_PROMOTE = -3
 
 
 class EditROI:
     def __init__(self, file_path):
+        """Construct only from a route that passed unlocked_roi_filepath, or from
+        the commit worker under its lock: the recovery below replaces the node
+        pickle and must not race a commit's publish."""
         self.node_dirpath = os.path.dirname(file_path)
         self.workflow_dirpath = os.path.dirname(self.node_dirpath)
         self.workflow_ids = ExptOutputPathIds(self.node_dirpath)
         self.function_id = self.workflow_ids.function_id
+        self.__finish_interrupted_publish()
 
         self.output_info: Dict = PickleReader.read(self.pickle_file_path)
         self.tmp_output_info: Dict = (
@@ -60,6 +64,9 @@ class EditROI:
         if not isinstance(self.tmp_data, EditRoiData):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
+        # With nothing pending tmp_data is the committed object itself, so the
+        # movie is kept here and dropped from what the pending pickle carries
+        self.images = self.data.images
         self.tmp_data.images = None
 
         self.tmp_iscell = self.tmp_output_info.get(
@@ -84,28 +91,40 @@ class EditROI:
 
     @property
     def shape(self):
-        return self.tmp_data.im.shape[1:]
+        return self.tmp_data.roi_masks.shape
 
     @property
     def num_cell(self):
-        return self.tmp_data.im.shape[0]
+        return len(self.tmp_data.roi_masks)
+
+    @property
+    def __cell_roi_im(self):
+        # A pending promotion stays out of cell_roi until commit resolves it.
+        drawn = ~np.isin(self.tmp_iscell, [CellType.NON_ROI, CellType.TEMP_PROMOTE])
+        return self.tmp_data.roi_masks.label_image(drawn)
 
     def get_status(self) -> RoiStatus:
-        return self.tmp_data.status()
+        roi_status = self.tmp_data.status()
+        roi_status.temp_promote_roi = np.where(
+            self.tmp_iscell == CellType.TEMP_PROMOTE
+        )[0].tolist()
+        return roi_status
 
     def add(self, roi_pos):
-        new_roi = create_ellipse_mask(self.shape, roi_pos)
-        new_roi = new_roi[np.newaxis, :, :] * self.num_cell
+        new_roi = ellipse_pixels(self.shape, roi_pos)
+        if new_roi.size == 0:  # drawn outside the field of view
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="the ROI covers no pixel",
+            )
 
         self.tmp_data.temp_add_roi[self.num_cell] = roi_pos
         self.tmp_iscell = np.append(self.tmp_iscell, CellType.TEMP_ADD)
-        self.tmp_data.im = np.vstack((self.tmp_data.im, new_roi))
+        self.tmp_data.roi_masks.append(new_roi)
 
         info = {
             "cell_roi": RoiData(
-                np.nanmax(
-                    self.tmp_data.im[self.tmp_iscell != CellType.NON_ROI], axis=0
-                ),
+                self.__cell_roi_im,
                 output_dir=self.node_dirpath,
                 file_name="cell_roi",
             ),
@@ -116,22 +135,33 @@ class EditROI:
         self.__save_json(info)
 
     def merge(self, ids: List[int]):
-        merging_rois = self.tmp_data.im[ids, :, :]
-        merging_rois[np.isnan(merging_rois)] = -np.inf
-        merged_roi = np.maximum.reduce(merging_rois)
-        merged_roi = np.where(merged_roi == -np.inf, np.nan, self.num_cell)
-
+        self.__check_ids(ids)
+        if len(set(ids)) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"a merge needs two ROIs or more: {ids}",
+            )
+        # a deleted or merged ROI, or a non-cell, is not merged again
+        not_cells = [
+            id
+            for id in ids
+            if self.tmp_iscell[id] not in (CellType.ROI, CellType.TEMP_ADD)
+        ]
+        if not_cells:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"ROIs are not cells: {not_cells}",
+            )
+        roi_masks = self.tmp_data.roi_masks
         self.tmp_data.temp_merge_roi[float(self.num_cell)] = ids
-        self.tmp_data.im = np.vstack((self.tmp_data.im, merged_roi[np.newaxis, :, :]))
+        roi_masks.append(roi_masks.union(ids))
 
         self.tmp_iscell[ids] = CellType.TEMP_DELETE
         self.tmp_iscell = np.append(self.tmp_iscell, CellType.TEMP_ADD)
 
         info = {
             "cell_roi": RoiData(
-                np.nanmax(
-                    self.tmp_data.im[self.tmp_iscell != CellType.NON_ROI], axis=0
-                ),
+                self.__cell_roi_im,
                 output_dir=self.node_dirpath,
                 file_name="cell_roi",
             ),
@@ -143,6 +173,20 @@ class EditROI:
         self.__save_json(info)
 
     def delete(self, ids: List[int]):
+        self.__check_ids(ids)
+        # Deleting a still pending merge undoes it: its sources go back to what
+        # they were before the merge marked them for deletion. The temp_merge_roi
+        # entry stays so commit still appends the merged ROI's trace and keeps
+        # fluorescence aligned with the ROIs - it just lands as a non-cell, and one
+        # that occludes nothing, since every projection is a max-index flatten.
+        for id in ids:
+            for parent in self.tmp_data.temp_merge_roi.get(float(id), []):
+                self.tmp_iscell[parent] = (
+                    CellType.TEMP_ADD
+                    if parent in self.tmp_data.temp_add_roi
+                    else CellType.ROI
+                )
+
         self.tmp_iscell[ids] = CellType.TEMP_DELETE
 
         for id in ids:
@@ -156,7 +200,48 @@ class EditROI:
         self.__update_pickle_for_roi_edition(self.tmp_pickle_file_path, info)
         self.__save_json(info)
 
+    def promote(self, ids: List[int]):
+        num_roi = len(self.tmp_iscell)
+        not_promotable = [
+            id
+            for id in ids
+            if not 0 <= id < num_roi or self.tmp_iscell[id] != CellType.NON_ROI
+        ]
+        if not_promotable:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"ROIs are not non-cell ROIs: {not_promotable}",
+            )
+
+        # Promoting an ROI the fluorescence output has no record for would put a
+        # cell in cell_roi with nothing to plot.
+        num_trace = len(self.output_info.get("fluorescence").data)
+        without_trace = [id for id in ids if id >= num_trace]
+        if without_trace:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"ROIs have no fluorescence record: {without_trace}",
+            )
+
+        self.tmp_iscell[ids] = CellType.TEMP_PROMOTE
+
+        info = {
+            "iscell": IscellData(self.tmp_iscell),
+            "edit_roi_data": self.tmp_data,
+        }
+
+        self.__update_pickle_for_roi_edition(self.tmp_pickle_file_path, info)
+        self.__save_json(info)
+
     async def commit(self):
+        self.__drop_deleted_pending_rows()
+        self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.ROI
+
+        # the run's NWB settings: the wrappers' series rate, and the ROI table's
+        # dense image_mask when the setting asks for one
+        nwb_input = self.output_info.get("nwbfile", {}).get("input", {})
+        rate = nwb_input.get("imaging_plane", {}).get("imaging_rate", 30)
+
         if "suite2p" in self.function_id:
             from studio.app.optinist.core.edit_ROI.wrappers.suite2p_edit_roi import (
                 commit_edit as suite2p_commit,
@@ -168,6 +253,7 @@ class EditROI:
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                nwb_settings=nwb_input,
             )
         elif "lccd" in self.function_id:
             from studio.app.optinist.core.edit_ROI.wrappers.lccd_edit_roi import (
@@ -175,12 +261,14 @@ class EditROI:
             )
 
             info = lccd_commit(
-                self.data.images,
+                self.images,
                 self.tmp_data,
                 self.output_info.get("fluorescence"),
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                rate=rate,
+                nwb_settings=nwb_input,
             )
 
         elif "vacant_roi" in self.function_id:
@@ -189,39 +277,57 @@ class EditROI:
             )
 
             info = vacant_roi_commit(
-                self.data.images,
+                self.images,
                 self.tmp_data,
                 self.output_info.get("fluorescence"),
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                rate=rate,
+                nwb_settings=nwb_input,
             )
 
-        elif "caiman" in self.function_id:
+        elif "caiman" in self.function_id or "cnmf_multisession" in self.function_id:
             from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi import (
                 commit_edit as caiman_commit,
             )
 
             info = caiman_commit(
-                self.data.images,
+                self.images,
                 self.tmp_data,
                 self.output_info.get("fluorescence"),
                 self.tmp_iscell,
                 self.node_dirpath,
                 self.function_id,
+                dff=self.output_info.get("dff"),
+                rate=rate,
+                nwb_settings=nwb_input,
             )
 
-        info["edit_roi_data"].images = self.data.images
+        iscell = info["iscell"].data
+        non_cell_roi_file_name = self.__non_cell_roi_file_name()
+        if non_cell_roi_file_name:
+            roi_masks = info["edit_roi_data"].roi_masks
+            # Only ROIs the fluorescence output has a record for: a node an
+            # older release committed can hold fewer traces than ROIs, and
+            # drawing those would offer a click that answers 500.
+            has_trace = np.arange(len(roi_masks)) < len(info["fluorescence"].data)
+            info["non_cell_roi"] = RoiData(
+                roi_masks.label_image((iscell == CellType.NON_ROI) & has_trace),
+                output_dir=self.node_dirpath,
+                file_name=non_cell_roi_file_name,
+            )
 
-        self.__update_pickle_for_roi_edition(self.pickle_file_path, info)
+        info["edit_roi_data"].images = self.images
+
+        # Every step before __publish can be redone from the pending edit, so a
+        # failure there leaves a retry the same work, never the edit applied twice
+        node_pickle_path = self.pickle_file_path
+        self.__apply_output_info(info)
         self.__save_json(info)
-        self.__update_whole_nwb(info)
-
-        (
-            os.remove(self.tmp_pickle_file_path)
-            if os.path.exists(self.tmp_pickle_file_path)
-            else None
-        )
+        self.__update_whole_nwb()
+        invalidated = self.__invalidate_downstream()
+        self.__publish(node_pickle_path)
 
         # Operate remote storage data.
         if RemoteStorageController.is_available():
@@ -229,9 +335,6 @@ class EditROI:
             ids = ExptOutputPathIds(self.node_dirpath)
             workspace_id = ids.workspace_id
             unique_id = ids.unique_id
-
-            # Delete lock file created at the start of workflow.
-            RemoteSyncLockFileUtil.delete_sync_lock_file(workspace_id, unique_id)
 
             # Get remote_bucket_name
             remote_bucket_name = RemoteSyncStatusFileUtil.get_remote_bucket_name(
@@ -250,24 +353,36 @@ class EditROI:
             )
 
             # upload update files
+            # The lock is this request's for the whole commit, upload included
             async with RemoteStorageWriter(
-                remote_bucket_name, workspace_id, unique_id
+                remote_bucket_name, workspace_id, unique_id, owns_lock=True
             ) as remote_storage_controller:
+                # The upload only propagates updates, and a stale descendant
+                # restored by a later sync would be newer than the ROI pickle
+                await remote_storage_controller.delete_experiment_files(
+                    workspace_id, unique_id, invalidated
+                )
                 await remote_storage_controller.upload_experiment(
                     workspace_id, unique_id, upload_target_files
                 )
 
     def cancel(self):
         original_num_cell = len(self.output_info.get("fluorescence").data)
-        self.tmp_data.im = self.tmp_data.im[:original_num_cell]
+        self.tmp_data.roi_masks = self.tmp_data.roi_masks.select(
+            slice(original_num_cell)
+        )
         self.tmp_iscell = self.tmp_iscell[:original_num_cell]
+        self.tmp_iscell[self.tmp_iscell == CellType.TEMP_PROMOTE] = CellType.NON_ROI
         self.tmp_data.cancel()
 
+        # a commit that failed before publishing may have written the edit's
+        # JSON outputs; put the committed ones back
+        for v in self.output_info.values():
+            if isinstance(v, BaseData):
+                v.save_json(self.node_dirpath)
         info = {
             "cell_roi": RoiData(
-                np.nanmax(
-                    self.tmp_data.im[self.tmp_iscell != CellType.NON_ROI], axis=0
-                ),
+                self.__cell_roi_im,
                 output_dir=self.node_dirpath,
                 file_name="cell_roi",
             ),
@@ -279,28 +394,119 @@ class EditROI:
             else None
         )
 
-    def __update_whole_nwb(self, output_info):
-        smk_config = SmkConfigReader.read(
-            self.workflow_ids.workspace_id, self.workflow_ids.unique_id
-        )
-
-        # get last_outputs
-        last_outputs = smk_config.get("last_output")
-
-        # delete data not to be processed from the list of last_output
-        excluded_last_output_keyword = f"/{ProcessType.POST_PROCESS.id}/"
-        effective_last_outputs = [
-            v for v in last_outputs if excluded_last_output_keyword not in v
-        ]
-
-        for last_output in effective_last_outputs:
-            last_output_path = join_filepath([DIRPATH.OUTPUT_DIR, last_output])
-            last_output_info = self.__update_pickle_for_roi_edition(
-                last_output_path, output_info
+    def __check_ids(self, ids: List[int]):
+        """Refuse ROI ids outside the node before the pending edit changes."""
+        unknown = [id for id in ids if not 0 <= id < self.num_cell]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"no such ROIs: {unknown}",
             )
-            whole_nwb_path = join_filepath([self.workflow_dirpath, "whole.nwb"])
 
-            Runner.save_all_nwb(whole_nwb_path, last_output_info["nwbfile"])
+    def __drop_deleted_pending_rows(self):
+        """A pending add or merge deleted before commit leaves no row behind.
+
+        Pending rows sit after the committed ones, so dropping them only renumbers
+        the pending tail: the ROI masks, iscell and the temp_* indices.
+        """
+        data = self.tmp_data
+        num_committed = len(self.output_info.get("fluorescence").data)
+        pending = np.arange(self.num_cell) >= num_committed
+        keep = ~(pending & (self.tmp_iscell == CellType.TEMP_DELETE))
+        # a source that a surviving pending merge still averages from must stay,
+        # and so must that source's own sources: a merge of a merge keeps all
+        changed = True
+        while changed:
+            changed = False
+            for merged, parents in data.temp_merge_roi.items():
+                if keep[int(merged)] and not keep[list(parents)].all():
+                    keep[list(parents)] = True
+                    changed = True
+        if keep.all():
+            return
+
+        new_index = np.cumsum(keep) - 1
+        data.roi_masks = data.roi_masks.select(keep)
+        self.tmp_iscell = self.tmp_iscell[keep]
+        data.temp_add_roi = {
+            int(new_index[i]): pos for i, pos in data.temp_add_roi.items() if keep[i]
+        }
+        data.temp_merge_roi = {
+            float(new_index[int(i)]): [int(new_index[p]) for p in parents]
+            for i, parents in data.temp_merge_roi.items()
+            if keep[int(i)]
+        }
+        data.temp_delete_roi = {
+            int(new_index[int(i)]): None for i in data.temp_delete_roi if keep[int(i)]
+        }
+
+    def __non_cell_roi_file_name(self):
+        for file_name in ("non_cell_roi", "noncell_roi"):
+            if os.path.exists(join_filepath([self.node_dirpath, f"{file_name}.json"])):
+                return file_name
+        return None
+
+    def __update_whole_nwb(self):
+        whole_nwb_path = join_filepath([self.workflow_dirpath, "whole.nwb"])
+        # save_all_nwb pops "input" from the dict it is given
+        Runner.save_all_nwb(whole_nwb_path, dict(self.output_info["nwbfile"]))
+
+    def __invalidate_downstream(self) -> List[str]:
+        """Delete downstream node results so the next RUN recomputes them.
+
+        Returns their pickle paths relative to the experiment, present or not.
+        """
+        workspace_id = self.workflow_ids.workspace_id
+        unique_id = self.workflow_ids.unique_id
+        workflow = WorkflowConfigReader.read(workspace_id, unique_id)
+        children = [
+            edge.target
+            for edge in workflow.edgeDict.values()
+            if edge.source == self.function_id
+        ]
+        deleted = delete_dependencies(
+            workspace_id, unique_id, children, workflow.nodeDict, workflow.edgeDict
+        )
+        experiment_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id])
+        return [os.path.relpath(path, experiment_dir) for path in deleted]
+
+    @property
+    def __staged_pickle_path(self):
+        return join_filepath([self.node_dirpath, "tmp_commit.pkl"])
+
+    def __publish(self, node_pickle_path):
+        """Replace the node pickle and retire the pending edit.
+
+        The pending edit goes first: a crash before the replace leaves the
+        staged pickle for __finish_interrupted_publish to apply, never the edit
+        applied twice on a retry.
+        """
+        PickleWriter.write(pickle_path=self.__staged_pickle_path, info=self.output_info)
+        # No directory fsync: the recovery validates the staged pickle anyway
+        with open(self.__staged_pickle_path, "rb+") as f:
+            os.fsync(f.fileno())
+        if os.path.exists(self.tmp_pickle_file_path):
+            os.remove(self.tmp_pickle_file_path)
+        os.replace(self.__staged_pickle_path, node_pickle_path)
+
+    def __finish_interrupted_publish(self):
+        """A staged pickle with no pending edit is a commit killed mid-publish:
+        apply it. One beside a pending edit never got that far, and one that
+        does not load never reached the disk: discard it."""
+        if not os.path.exists(self.__staged_pickle_path):
+            return
+        if os.path.exists(self.tmp_pickle_file_path):
+            os.remove(self.__staged_pickle_path)
+            return
+        try:
+            staged = PickleReader.read(self.__staged_pickle_path)
+        except Exception:
+            staged = None
+        if PickleReader.check_is_valid_node_pickle(staged):
+            os.replace(self.__staged_pickle_path, self.pickle_file_path)
+        else:
+            logger.warning("discarding unreadable staged pickle: %s", self.function_id)
+            os.remove(self.__staged_pickle_path)
 
     def __save_json(self, output_info):
         for k, v in output_info.items():
@@ -313,12 +519,14 @@ class EditROI:
                 if len(nwb_files) > 0:
                     overwrite_nwb(v, self.node_dirpath, os.path.basename(nwb_files[0]))
 
-    def __update_pickle_for_roi_edition(self, file_path, new_output_info):
+    def __apply_output_info(self, new_output_info):
         func_name = os.path.splitext(os.path.basename(self.pickle_file_path))[0]
         for k, v in new_output_info.items():
             if k == "nwbfile":
                 self.output_info[k][func_name] = v
             else:
                 self.output_info[k] = v
+
+    def __update_pickle_for_roi_edition(self, file_path, new_output_info):
+        self.__apply_output_info(new_output_info)
         PickleWriter.write(pickle_path=file_path, info=self.output_info)
-        return self.output_info

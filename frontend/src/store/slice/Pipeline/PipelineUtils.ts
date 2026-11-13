@@ -79,13 +79,12 @@ export function getInitialRunResult(runPostData: RunPostData) {
 export function convertToRunResult(dto: RunResultDTO) {
   const result: RunResult = {}
   Object.entries(dto).forEach(([nodeId, nodeResultDto]) => {
-    const outputPath = nodeResultDto.outputPaths
-    if (nodeResultDto.status === "success" && outputPath != null) {
+    if (nodeResultDto.status === "success") {
       result[nodeId] = {
         status: NODE_RESULT_STATUS.SUCCESS,
         message: nodeResultDto.message,
         name: nodeResultDto.name,
-        outputPaths: convertToOutputPath(outputPath),
+        outputPaths: convertToOutputPath(nodeResultDto.outputPaths ?? {}),
       }
     } else if (nodeResultDto.status === "running") {
       result[nodeId] = {
@@ -116,10 +115,25 @@ function convertToOutputPath(dto: OutputPathsDTO) {
 }
 
 // Handle workflow yaml error occurring when using v1.0 yaml in v2.0
+export const WORKFLOW_YAML_ERROR = "Workflow yaml error, see FAQ"
+// Matched as a prefix so rewording either side of the wire keeps the FAQ link.
+const WORKFLOW_YAML_ERROR_PREFIX = "Workflow yaml error"
+
 export function handleWorkflowYamlError(
   error: ApiError,
   enqueueSnackbar: (message: string, options?: OptionsObject) => SnackbarKey,
 ): void {
+  const detail = (error?.response?.data as { detail?: unknown } | undefined)
+    ?.detail
+  // 507: the analysis server's local disk is full; the detail says what to do
+  if (
+    (error?.response?.status === 422 || error?.response?.status === 507) &&
+    typeof detail === "string" &&
+    !detail.startsWith(WORKFLOW_YAML_ERROR_PREFIX)
+  ) {
+    enqueueSnackbar(detail, { variant: "warning", autoHideDuration: 30000 })
+    return
+  }
   // Catch workflow yaml parameter errors
   if (error?.response?.status === 422) {
     const snackbarOptions: OptionsObject = {
@@ -135,6 +149,7 @@ export function handleWorkflowYamlError(
               window.open(
                 "https://github.com/oist/optinist/wiki/FAQ#error-yaml-file-error",
                 "_blank",
+                "noopener,noreferrer",
               )
             },
             style: {
@@ -147,7 +162,10 @@ export function handleWorkflowYamlError(
         )
       },
     }
-    enqueueSnackbar("Workflow yaml error, see FAQ\n", snackbarOptions)
+    enqueueSnackbar(
+      `${typeof detail === "string" ? detail : WORKFLOW_YAML_ERROR}\n`,
+      snackbarOptions,
+    )
   } else {
     enqueueSnackbar("Failed to Run workflow", { variant: "error" })
   }

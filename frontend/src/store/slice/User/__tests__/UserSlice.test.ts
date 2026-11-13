@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals"
 
+import { ANNOUNCEMENT_DISMISSED_KEY } from "const/Announcement"
 import type { User } from "store/slice/User/UserType"
 import type { RootState } from "store/store"
 
@@ -19,7 +20,6 @@ const mockRemoveToken = jest.fn()
 const mockRemoveRefreshToken = jest.fn()
 const mockRemoveExToken = jest.fn()
 const mockSaveToken = jest.fn()
-const mockSaveRefreshToken = jest.fn()
 const mockSaveExToken = jest.fn()
 const mockClearRoutingInfo = jest.fn()
 const mockUpdateRoutingInfo = jest.fn()
@@ -33,7 +33,6 @@ jest.mock("utils/auth/AuthUtils", () => ({
   removeRefreshToken: mockRemoveRefreshToken,
   removeExToken: mockRemoveExToken,
   saveToken: mockSaveToken,
-  saveRefreshToken: mockSaveRefreshToken,
   saveExToken: mockSaveExToken,
 }))
 
@@ -256,13 +255,35 @@ describe("UserSlice", () => {
       expect(mockClearRoutingInfo).toHaveBeenCalledTimes(1)
       // tokens must be saved
       expect(mockSaveToken).toHaveBeenCalledWith("new_access_token")
-      expect(mockSaveRefreshToken).toHaveBeenCalledWith("new_refresh_token")
       expect(mockSaveExToken).toHaveBeenCalledWith("new_ex_token")
+      expect(mockRemoveRefreshToken).toHaveBeenCalledTimes(1)
 
       // clearRoutingInfo must be called BEFORE saveToken
       const clearOrder = mockClearRoutingInfo.mock.invocationCallOrder[0]
       const saveOrder = mockSaveToken.mock.invocationCallOrder[0]
       expect(clearOrder).toBeLessThan(saveOrder)
+    })
+
+    it("should clear the announcement dismissal so it shows again", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, loginFulfilledAction)
+
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith(
+        ANNOUNCEMENT_DISMISSED_KEY,
+      )
+    })
+
+    it("should drop a stale ex token when the backend issues none", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, {
+        ...loginFulfilledAction,
+        payload: { ...loginFulfilledAction.payload, ex_token: null },
+      })
+
+      expect(mockSaveExToken).not.toHaveBeenCalled()
+      expect(mockRemoveExToken).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -287,7 +308,6 @@ describe("UserSlice", () => {
 
       expect(mockClearRoutingInfo).toHaveBeenCalledTimes(1)
       expect(mockSaveToken).toHaveBeenCalledWith("proxy_access_token")
-      expect(mockSaveRefreshToken).toHaveBeenCalledWith("proxy_refresh_token")
       expect(mockSaveExToken).toHaveBeenCalledWith("proxy_ex_token")
 
       const clearOrder = mockClearRoutingInfo.mock.invocationCallOrder[0]

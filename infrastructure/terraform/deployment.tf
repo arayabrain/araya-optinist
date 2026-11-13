@@ -11,7 +11,10 @@ resource "null_resource" "build_and_deploy" {
     git_branch = var.git_branch
     # Force rebuild when ECR repo changes
     ecr_repo = local.ecr_repository_url
-    # Force rebuild when code changes
+    # Force rebuild when code changes. Without this the trigger set is
+    # constant across commits on a branch, so a routine apply skips the
+    # image build entirely.
+    source_revision = data.external.tf_build_info.result.git_commit
   }
 
   provisioner "local-exec" {
@@ -129,6 +132,70 @@ resource "aws_ssm_association" "app_setup" {
   compliance_severity = "HIGH"
 }
 
+# Docker hygiene: prune stopped containers and unused images on every ECS
+# host, so deploys cannot fill the root volume. The script is inlined (no S3
+# round trip, so it also runs on hosts whose download would fail). The ECS
+# agent's own cleanup forgets what it pulled whenever premium wipes its
+# checkpoint on boot, so this runs regardless.
+resource "aws_ssm_document" "docker_hygiene" {
+  name            = "${local.env_prefix}-docker-hygiene"
+  document_type   = "Command"
+  document_format = "YAML"
+
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Prune docker containers and images on OptiNiSt ECS hosts"
+    parameters    = {}
+    mainSteps = [
+      {
+        action = "aws:runShellScript"
+        name   = "runDockerHygiene"
+        inputs = {
+          timeoutSeconds = "600"
+          runCommand = [
+            "cat > /usr/local/sbin/docker_hygiene.sh <<'HYGIENE_EOF'",
+            file("${path.module}/../scripts/docker_hygiene.sh"),
+            "HYGIENE_EOF",
+            "chmod 0755 /usr/local/sbin/docker_hygiene.sh",
+            "/usr/local/sbin/docker_hygiene.sh",
+          ]
+        }
+      }
+    ]
+  })
+}
+
+# Keyed on the launch template ids: every host launched from one of the four
+# templates, the Lambda-created premium hosts included, carries this tag. A
+# replaced template (new id) drops hosts launched from the old id until they
+# are recycled. The NAT instance has no template and is left alone.
+resource "aws_ssm_association" "docker_hygiene" {
+  name = aws_ssm_document.docker_hygiene.name
+
+  targets {
+    key = "tag:aws:ec2launchtemplate:id"
+    values = [
+      aws_launch_template.ecs.id,
+      aws_launch_template.premium.id,
+      aws_launch_template.background.id,
+      aws_launch_template.public.id,
+    ]
+  }
+
+  schedule_expression = "rate(6 hours)"
+  max_concurrency     = "25%"
+  max_errors          = "100%"
+
+  # exit 2 (root still over 80 % after pruning) marks the host non-compliant:
+  # a flag on the State Manager dashboard, not an alarm
+  compliance_severity = "MEDIUM"
+}
+
+output "docker_hygiene_association_id" {
+  description = "SSM association that prunes docker on every ECS host; run it with start-associations-once after a deploy"
+  value       = aws_ssm_association.docker_hygiene.association_id
+}
+
 
 resource "null_resource" "deploy_to_ecs" {
   depends_on = [null_resource.build_and_deploy]
@@ -136,6 +203,11 @@ resource "null_resource" "deploy_to_ecs" {
   triggers = {
     git_branch = var.git_branch
     ecr_repo   = local.ecr_repository_url
+    # depends_on orders the two but does not force replacement, so without
+    # this the redeployment does not run after a freshly pushed image. The
+    # build's id changes whenever it is recreated, which is exactly when a
+    # new image exists to roll out.
+    build_id = null_resource.build_and_deploy.id
   }
 
   provisioner "local-exec" {
@@ -151,6 +223,10 @@ resource "null_resource" "deploy_to_ecs" {
         --cluster ${aws_ecs_cluster.main.name} \
         --region ${var.aws_region} \
         --query 'serviceArns[]' --output text)
+      if [ -z "$SERVICES" ]; then
+        echo "ERROR: no ECS services found in ${aws_ecs_cluster.main.name}"
+        exit 1
+      fi
       for svc in $SERVICES; do
         echo "  -> $${svc##*/}"
         aws ecs update-service \
@@ -160,13 +236,36 @@ resource "null_resource" "deploy_to_ecs" {
           --region ${var.aws_region} >/dev/null
       done
 
-      echo "Waiting for all services to stabilize..."
-      timeout 1800 aws ecs wait services-stable \
+      # One `aws ecs wait` stops at 10 minutes, shorter than a public rollout
+      echo "Waiting for all services to stabilize (up to about an hour)..."
+      DEADLINE=$(( $(date +%s) + 3700 ))
+      until aws ecs wait services-stable \
         --cluster ${aws_ecs_cluster.main.name} \
         --services $SERVICES \
-        --region ${var.aws_region} \
-        --cli-read-timeout 1800 \
-        --cli-connect-timeout 120 || echo "Warning: service stabilization timed out, but continuing..."
+        --region ${var.aws_region}; do
+        # Start another wait only if it and the sleep can finish by the deadline
+        if [ $(( $(date +%s) + 615 )) -gt "$DEADLINE" ]; then
+          echo "ERROR: services not stable within about an hour; the new image may not be serving."
+          aws ecs describe-services \
+            --cluster ${aws_ecs_cluster.main.name} \
+            --services $SERVICES \
+            --region ${var.aws_region} \
+            --query 'services[?!(length(deployments) == `1` && runningCount == desiredCount)].[serviceName, events[0].message]' \
+            --output text || true
+          echo "Check those services in the ECS console. deploy_to_ecs is marked tainted,"
+          echo "so the next terraform apply forces a new deployment on every service again."
+          exit 1
+        fi
+        echo "Still rolling out, waiting again..."
+        sleep 15
+      done
+
+      # Each host now holds the image this deploy replaced; prune it now
+      # rather than at the next scheduled run
+      echo "Triggering docker hygiene on all hosts..."
+      aws ssm start-associations-once \
+        --association-ids ${aws_ssm_association.docker_hygiene.association_id} \
+        --region ${var.aws_region} || echo "Warning: could not trigger docker hygiene; it runs on its 6 h schedule"
 
       echo "=== DEPLOYMENT COMPLETE ==="
       echo "Application is ready at: http://${aws_lb.autoscaling.dns_name}"

@@ -195,34 +195,40 @@ const Xrange: FC = () => {
     rangeUnit === "frames"
       ? setXrange(xrangeSelector)
       : setXrange({
-          left: Number(xrangeSelector.left) / frameRate,
-          right: Number(xrangeSelector.right) / frameRate,
+          left:
+            xrangeSelector.left === undefined
+              ? undefined
+              : xrangeSelector.left / frameRate,
+          right:
+            xrangeSelector.right === undefined
+              ? undefined
+              : xrangeSelector.right / frameRate,
         })
     //eslint-disable-next-line
   }, [JSON.stringify(rangeUnit), JSON.stringify(xrangeSelector)])
 
   const dispatch = useDispatch()
+  const toFrames = (value: string) =>
+    value === ""
+      ? undefined
+      : rangeUnit === "frames"
+        ? Number(value)
+        : Number(value) * frameRate
   const onChangeLeft = (event: ChangeEvent<HTMLInputElement>) => {
-    const newLeft = event.target.value === "" ? "" : Number(event.target.value)
-    if (typeof newLeft === "number") {
-      dispatch(
-        setTimeSeriesItemXrangeLeft({
-          itemId,
-          left: rangeUnit === "frames" ? newLeft : newLeft * frameRate,
-        }),
-      )
-    }
+    dispatch(
+      setTimeSeriesItemXrangeLeft({
+        itemId,
+        left: toFrames(event.target.value),
+      }),
+    )
   }
   const onChangeRight = (event: ChangeEvent<HTMLInputElement>) => {
-    const newRight = event.target.value === "" ? "" : Number(event.target.value)
-    if (typeof newRight === "number") {
-      dispatch(
-        setTimeSeriesItemXrangeRight({
-          itemId,
-          right: rangeUnit === "frames" ? newRight : newRight * frameRate,
-        }),
-      )
-    }
+    dispatch(
+      setTimeSeriesItemXrangeRight({
+        itemId,
+        right: toFrames(event.target.value),
+      }),
+    )
   }
 
   return (
@@ -231,9 +237,6 @@ const Xrange: FC = () => {
         <ParamTextField
           label="Left"
           type="number"
-          inputProps={{
-            min: 0,
-          }}
           style={{ width: 105 }}
           onChange={onChangeLeft}
           value={xrange.left ?? ""}

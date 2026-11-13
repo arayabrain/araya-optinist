@@ -1,3 +1,6 @@
+// Every reducer here is a default re-export, so jest.mock of a slice module must
+// keep __esModule (non-enumerable, dropped by { ...jest.requireActual(m) }) or
+// combineReducers silently loses that slice.
 export { default as algorithmListReducer } from "./AlgorithmList/AlgorithmListSlice"
 export { default as algorithmNodeReducer } from "./AlgorithmNode/AlgorithmNodeSlice"
 export { default as displayDataReducer } from "./DisplayData/DisplayDataSlice"

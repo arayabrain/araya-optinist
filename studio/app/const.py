@@ -34,15 +34,20 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 # Default organization ID for multi-user cloud deployment
 DEFAULT_ORGANIZATION_ID = 1
 
+# Per-workspace cache of HDF5 / MAT inputs converted to TIFF, under the output dir
+INPUT_TIFF_CACHE_DIRNAME = "input_tiff"
+
 # Default is set for local development, override with FRONTEND_URL environment variable
 FRONTEND_URL = get_env_var("FRONTEND_URL", default="http://localhost:3000")
 
 # File sync patterns for selective sync
 ESSENTIAL_SYNC_PATTERNS = (".yaml", ".yml", ".json")
-LARGE_FILE_PATTERNS = tuple(ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl", ".bin", ".npy"])
+LARGE_FILE_PATTERNS = tuple(
+    ACCEPT_FILE_EXT.ALL_EXT.value + [".pkl", ".pkl.staged", ".bin", ".npy"]
+)
 # Visualization mode: JSON for timeseries data, TIFF for images,
-# YAML for snakemake config
-VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml")
+# YAML for snakemake config, HTML for summary tables
+VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml", ".html")
 
 
 # Thumbnail type identifiers

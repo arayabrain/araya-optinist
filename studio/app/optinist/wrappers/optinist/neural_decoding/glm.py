@@ -21,7 +21,7 @@ def GLM(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(actual_predicted=ScatterData, params=BarData):
     # modules specific to function
     import numpy as np
     import pandas as pd

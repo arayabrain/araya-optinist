@@ -15,12 +15,14 @@ class HeatMapData(BaseData):
         self,
         data,
         columns=None,
+        index=None,
         file_name="heatmap",
         meta: Optional[PlotMetaData] = None,
     ):
         super().__init__(file_name)
         self.data = data
         self.meta = meta
+        self.index = index
 
         # indexを指定
         if columns is not None:
@@ -33,6 +35,7 @@ class HeatMapData(BaseData):
         df = pd.DataFrame(
             self.data,
             columns=self.columns,
+            index=self.index,
         )
         JsonWriter.write_as_split(self.json_path, df)
         JsonWriter.write_plot_meta(json_dir, self.file_name, self.meta)

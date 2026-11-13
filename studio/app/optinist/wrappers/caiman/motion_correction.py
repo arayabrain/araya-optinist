@@ -2,10 +2,19 @@ import os
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.local_disk_guard import (
+    caiman_temp_root,
+    require_free_bytes,
+)
 from studio.app.common.dataclass import ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import RoiData
-from studio.app.optinist.wrappers.caiman.caiman_utils import CaimanUtils
+from studio.app.optinist.wrappers.caiman.caiman_utils import (
+    CaimanUtils,
+    caiman_cluster,
+    distribute_params_to_groups,
+    needs_save_memmap,
+)
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
@@ -13,10 +22,9 @@ logger = AppLogger.get_logger()
 
 def caiman_mc(
     image: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(mc_images=ImageData):
+) -> dict(mc_images=ImageData, meanImg=ImageData, refImg=ImageData):
     import numpy as np
-    from caiman import load_memmap, save_memmap, stop_server
-    from caiman.cluster import setup_cluster
+    from caiman import load_memmap, save_memmap
     from caiman.motion_correction import MotionCorrect
     from caiman.source_extraction.cnmf.params import CNMFParams
 
@@ -25,104 +33,204 @@ def caiman_mc(
     logger.info(f"start caiman motion_correction: {function_id}")
 
     flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
+    recursive_flatten_params(params or {}, flattened_params)
     params = flattened_params
 
-    # Specify a unique CAIMAN_TEMPDIR
-    # *To avoid collisions of temporary files (memmap files)
+    # A unique CAIMAN_TEMPDIR per run, so memmap files cannot collide
     mc_unique_id = f"{unique_id}_{function_id}"
-    CaimanUtils.set_caimam_byid_tempdir(mc_unique_id)
+    mc = None
+    mmap_file_new = None
+    try:
+        CaimanUtils.set_caimam_byid_tempdir(mc_unique_id)
 
-    opts = CNMFParams()
+        opts = CNMFParams()
 
-    if params is not None:
-        opts.change_params(params_dict=params)
+        if params:
+            opts.change_params(
+                params_dict=distribute_params_to_groups(params, vars(opts))
+            )
 
-    # TODO: Add parameters for node
-    n_processes = 1
-    dview = None
-    # This process launches another process to run the CNMF algorithm,
-    # so this node use at least 2 core.
-    if n_processes == 1:
-        c, dview, n_processes = setup_cluster(
-            backend="single", n_processes=n_processes, single_thread=True
+        # Peak disk: MotionCorrect's float32 memmap and the float32 output TIFF,
+        # plus save_memmap's copy when the fallback can be taken
+        nbytes = _movie_float32_bytes(image.path)
+        if nbytes is not None:
+            copies = 3 if _may_need_save_memmap(image.path, opts) else 2
+            require_free_bytes(nbytes * copies, caiman_temp_root())
+        with caiman_cluster() as (dview, n_processes):
+            mc = MotionCorrect(image.path, dview=dview, **opts.get_group("motion"))
+
+            mc.motion_correct(save_movie=True)
+            border_to_0 = 0 if mc.border_nan == "copy" else mc.border_to_0
+
+            reason = needs_save_memmap(mc.mmap_file, border_to_0)
+            if reason:
+                logger.warning(
+                    "caiman.save_memmap converts the movie in memory: %s", reason
+                )
+                mmap_file_new = save_memmap(
+                    mc.mmap_file,
+                    base_name=function_id,
+                    order="C",
+                    border_to_0=border_to_0,
+                )
+            else:
+                mmap_file_new = None
+
+        if mmap_file_new is None:
+            # MotionCorrect's file plus C_ORDER_OFFSET is what save_memmap would write
+            Yr, dims, T = load_memmap(mc.mmap_file[0])
+            offset = C_ORDER_OFFSET
+            meanImg = mean_over_time(Yr, offset).reshape(dims, order="F")
+            frames = Yr.T.reshape((T,) + dims, order="F")
+        else:
+            Yr, dims, T = load_memmap(mmap_file_new)
+            offset = None
+            frames = np.array(Yr.T.reshape((T,) + dims, order="F"))
+            meanImg = frames.mean(axis=0)
+
+        rois = __extract_rois(meanImg)
+
+        pw_rigid = opts.get("motion", "pw_rigid")
+        xy_trans_data = (
+            (np.array(mc.x_shifts_els), np.array(mc.y_shifts_els))
+            if pw_rigid
+            else np.array(mc.shifts_rig)
         )
-    else:
-        c, dview, n_processes = setup_cluster(
-            backend="multiprocessing", n_processes=n_processes
+        refImg = mc.total_template_els if pw_rigid else mc.total_template_rig
+
+        mc_images = ImageData(
+            movie_to_tiff(frames, output_dir, "mc_images", offset=offset),
+            output_dir=output_dir,
+            file_name="mc_images",
         )
-    logger.debug(f"n_processes: {n_processes}")
 
-    mc = MotionCorrect(image.path, dview=dview, **opts.get_group("motion"))
+        # Release variables associated with memmap files when they are no longer needed.
+        # *Avoid lock errors when cleaning memmap files.
+        del frames, Yr, dims, T
 
-    mc.motion_correct(save_movie=True)
-    border_to_0 = 0 if mc.border_nan == "copy" else mc.border_to_0
-
-    # memory mapping
-    mmap_file_new = save_memmap(
-        mc.mmap_file, base_name=function_id, order="C", border_to_0=border_to_0
-    )
-    # In single-thread mode dview is None and there is no cluster to stop;
-    # stop_server() would shell out to a nonexistent `ipcluster` and log errors.
-    if dview is not None:
-        stop_server(dview=dview)
-
-    # now load the file
-    Yr, dims, T = load_memmap(mmap_file_new)
-
-    images = np.array(Yr.T.reshape((T,) + dims, order="F"))
-
-    # Release variables associated with memmap files when they are no longer needed.
-    # *Avoid lock errors when cleaning memmap files.
-    del Yr, dims, T
-
-    meanImg, rois = __process_images(images)
-
-    xy_trans_data = (
-        (np.array(mc.x_shifts_els), np.array(mc.y_shifts_els))
-        if params["pw_rigid"]
-        else np.array(mc.shifts_rig)
-    )
-
-    mc_images = ImageData(images, output_dir=output_dir, file_name="mc_images")
-
-    nwbfile = {}
-    nwbfile[NWBDATASET.MOTION_CORRECTION] = {
-        function_id: {
-            "mc_data": mc_images,
-            "xy_trans_data": xy_trans_data,
+        nwbfile = {}
+        nwbfile[NWBDATASET.MOTION_CORRECTION] = {
+            function_id: {
+                "mc_data": mc_images,
+                "xy_trans_data": xy_trans_data,
+            }
         }
-    }
 
-    info = {
-        "mc_images": mc_images,
-        "meanImg": ImageData(meanImg, output_dir=output_dir, file_name="meanImg"),
-        "rois": RoiData(rois, output_dir=output_dir, file_name="rois"),
-        "nwbfile": nwbfile,
-    }
+        info = {
+            "mc_images": mc_images,
+            "meanImg": ImageData(meanImg, output_dir=output_dir, file_name="meanImg"),
+            "refImg": ImageData(refImg, output_dir=output_dir, file_name="refImg"),
+            "rois": RoiData(rois, output_dir=output_dir, file_name="rois"),
+            "nwbfile": nwbfile,
+        }
 
-    # Clean up temporary files
-    try:
-        __handle_mmap_cleanup(mc, mmap_file_new)
-    except Exception as e:
-        logger.warning("caiman_mc: Failed to cleanup memmap files.")
-        logger.warning(e)
-
-    # Clean up unique CAIMAN_TEMPDIR
-    try:
-        CaimanUtils.cleanup_caiman_byid_tempdir(mc_unique_id)
-    except Exception as e:
-        logger.warning("caiman_mc: Failed to cleanup tempdir.")
-        logger.warning(e)
+    finally:
+        # Also on the error path: the temp dir holds a movie-sized memmap
+        try:
+            __handle_mmap_cleanup(mc, mmap_file_new)
+        except Exception as e:
+            logger.warning("caiman_mc: Failed to cleanup memmap files.")
+            logger.warning(e)
+        try:
+            CaimanUtils.cleanup_caiman_byid_tempdir(mc_unique_id)
+        except Exception as e:
+            logger.warning("caiman_mc: Failed to cleanup tempdir.")
+            logger.warning(e)
 
     return info
 
 
-def __process_images(images):
+# What CaImAn 1.11's save_memmap adds to each motion-corrected value
+C_ORDER_OFFSET = (0.0001, 0.0)
+# tifffile.imwrite switches to BigTIFF above this many bytes (its `bigsize`)
+BIGTIFF_BYTES = 2**32 - 2**25
+# rows per batch, bounded in bytes
+BATCH_BYTES = 64 << 20
+
+
+def batches(array, dtype, offset=None, batch_bytes=BATCH_BYTES):
+    """
+    C-contiguous copies of consecutive runs of array[i] of at most batch_bytes
+    each, as dtype, with each value of offset added in float32 in that order,
+    as save_memmap adds them.
+    """
+    import numpy as np
+
+    row_bytes = int(np.prod(array.shape[1:])) * dtype.itemsize
+    size = max(1, batch_bytes // row_bytes)
+    for i in range(0, array.shape[0], size):
+        batch = np.array(array[i : i + size], dtype=dtype, order="C")
+        for value in offset or ():
+            batch += np.float32(value)
+        yield batch
+
+
+def mean_over_time(Yr, offset, batch_bytes=BATCH_BYTES):
+    """
+    The mean over time of each pixel of a pixels x time movie plus offset, in
+    float32. Each batch of pixels is reduced along its contiguous time axis, as
+    the movie save_memmap writes in C order is, so the values are bit-identical.
+    """
+    import numpy as np
+
+    dtype = np.dtype(np.float32)
+    return np.concatenate(
+        [batch.mean(axis=1) for batch in batches(Yr, dtype, offset, batch_bytes)]
+    )
+
+
+def movie_to_tiff(movie, output_dir, file_name, offset=None, batch_bytes=BATCH_BYTES):
+    """
+    Write a (T, Ly, Lx) array-like to the TIFF path ImageData would use, one
+    batch of at most batch_bytes at a time, so a memory-mapped movie is never
+    copied into memory as a whole. The file is byte-identical to writing the
+    whole array: tifffile picks BigTIFF from data.nbytes, which a frame
+    iterator does not have, so the choice is made here the same way.
+
+    offset, when given, is a tuple of values added in float32 in that order,
+    as save_memmap adds them. The file is written beside the final path and
+    moved there when complete, so a failed write leaves no partial TIFF.
+    """
+    import os
+
+    import numpy as np
+    import tifffile
+
+    from studio.app.common.core.utils.filepath_creater import (
+        create_directory,
+        join_filepath,
+    )
+
+    tiff_dir = join_filepath([output_dir, "tiff", file_name])
+    create_directory(tiff_dir)
+    tiff_path = join_filepath([tiff_dir, f"{file_name}.tif"])
+    tmp_path = f"{tiff_path}.partial"
+
+    dtype = np.dtype(np.float32 if offset else movie.dtype)
+    frames = (
+        frame for batch in batches(movie, dtype, offset, batch_bytes) for frame in batch
+    )
+
+    try:
+        tifffile.imwrite(
+            tmp_path,
+            frames,
+            shape=movie.shape,
+            dtype=dtype,
+            bigtiff=int(np.prod(movie.shape)) * dtype.itemsize > BIGTIFF_BYTES,
+        )
+        os.replace(tmp_path, tiff_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+    return [tiff_path]
+
+
+def __extract_rois(meanImg):
     import numpy as np
     from caiman.base.rois import extract_binary_masks_from_structural_channel
 
-    meanImg = images.mean(axis=0)
     rois = (
         extract_binary_masks_from_structural_channel(
             meanImg, gSig=7, expand_method="dilation"
@@ -138,7 +246,32 @@ def __process_images(images):
     rois = np.nanmax(rois, axis=0)
     rois[rois == 0] = np.nan
     rois -= 1
-    return meanImg, rois
+    return rois
+
+
+def _movie_float32_bytes(paths):
+    """Bytes of the float32 memmap MotionCorrect writes for these TIFFs, from
+    their headers alone, or None when a header cannot be read (no check)."""
+    import numpy as np
+    import tifffile
+
+    total = 0
+    for path in paths if isinstance(paths, list) else [paths]:
+        try:
+            with tifffile.TiffFile(path) as tif:
+                total += int(np.prod(tif.series[0].shape))
+        except Exception as e:
+            logger.warning("caiman_mc: cannot size %s, disk check skipped: %s", path, e)
+            return None
+    return total * 4
+
+
+def _may_need_save_memmap(paths, opts) -> bool:
+    """needs_save_memmap as far as it is known before MotionCorrect runs:
+    border_to_0 is only known after it, so any border_nan but 'copy' counts."""
+    files = paths if isinstance(paths, list) else [paths]
+    border_to_0 = 0 if opts.get("motion", "border_nan") == "copy" else 1
+    return bool(needs_save_memmap([f"{f}.mmap" for f in files], border_to_0))
 
 
 def __handle_mmap_cleanup(mc, mmap_file_new):
@@ -148,9 +281,11 @@ def __handle_mmap_cleanup(mc, mmap_file_new):
 
     gc.collect()
 
-    for mmap_file in mc.mmap_file:
+    # mc is None when MotionCorrect was never built; mmap_file is unset when
+    # motion_correct did not get as far as saving
+    for mmap_file in getattr(mc, "mmap_file", None) or []:
         if os.path.isfile(mmap_file):
             os.remove(mmap_file)
 
-    if os.path.isfile(mmap_file_new):
+    if mmap_file_new and os.path.isfile(mmap_file_new):
         os.remove(mmap_file_new)

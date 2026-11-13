@@ -1,14 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import {
-  memo,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react"
+import { memo, useContext, useEffect, useMemo, useState } from "react"
 import PlotlyChart from "react-plotlyjs-ts"
-import { useSelector, useDispatch, shallowEqual } from "react-redux"
+import { useSelector, useDispatch, useStore, shallowEqual } from "react-redux"
 
 import createColormap from "colormap"
 import { LegendClickEvent } from "plotly.js"
@@ -22,19 +15,40 @@ import {
 } from "components/Workspace/FlowChart/Dialog/DialogContext"
 import { useBoxFilter } from "components/Workspace/FlowChart/Dialog/FilterContext"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import {
+  buildShadeShapes,
+  nextShadeKeys,
+  SHADE_COLORS,
+  SHADE_RECORD_CAP,
+  SHADE_TOTAL_CAP,
+} from "components/Workspace/Visualize/Plot/eventSpans"
+import { buildAnnotations } from "components/Workspace/Visualize/Plot/timeSeriesAnnotations"
+import {
+  errorBarArray,
+  frameAxisRange,
+} from "components/Workspace/Visualize/Plot/timeSeriesRange"
+import {
+  stackedTrace,
+  visibleTraceCount,
+} from "components/Workspace/Visualize/Plot/timeSeriesStack"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { selectAlgorithmDataFilterParam } from "store/slice/AlgorithmNode/AlgorithmNodeSelectors"
+import { TDim } from "store/slice/AlgorithmNode/AlgorithmNodeType"
 import {
   getTimeSeriesDataById,
+  getTimeSeriesDataByIdOnce,
   getTimeSeriesInitData,
+  retryRejectedTimeSeries,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectRoiUniqueList,
+  selectTimeSeriesById,
   selectTimeSeriesData,
   selectTimeSeriesDataError,
   selectTimeSeriesDataIsFulfilled,
   selectTimeSeriesDataIsInitialized,
   selectTimeSeriesDataIsPending,
+  selectTimeSeriesIdsWithStatus,
   selectTimeSeriesStd,
   selectTimeSeriesXrange,
   selectTimesSeriesMeta,
@@ -56,9 +70,12 @@ import {
   selectVisualizeSaveFilename,
   selectVisualizeSaveFormat,
   selectImageItemRangeUnit,
+  selectTimeSeriesShadeSourceItem,
+  selectTimeSeriesItemShadeSourceItemId,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import { setTimeSeriesItemDrawOrder } from "store/slice/VisualizeItem/VisualizeItemSlice"
-import { AppDispatch } from "store/store"
+import { AppDispatch, RootState } from "store/store"
+import { arrayEqualityFn } from "utils/EqualityUtils"
 
 export const TimeSeriesPlot = memo(function TimeSeriesPlot() {
   const { itemId, filePath: path } = useContext(DisplayDataContext)
@@ -155,32 +172,19 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     return xrangeSelector
   }, [dialogFilterNodeId, filterParam, xrangeSelector])
 
-  const isExistParamsRoi = useCallback(
-    (num: number) => {
-      return (
-        !isExistFilterRoi ||
-        filterParam?.roi?.some((roi) => {
-          const roiStart = roi.start || 0
-          return num >= roiStart && num < (roi.end || roiStart + 1)
-        })
-      )
-    },
-    [filterParam?.roi, isExistFilterRoi],
-  )
-
   const dataKeys = useMemo(() => {
     const keys = dataKeysSelector.filter(
       (e) =>
         (roiUniqueList?.includes(e) ||
           (!dialogFilterNodeId && (!isOutput || !isExistFilterRoi))) &&
-        isExistParamsRoi(Number(e)),
+        inRoiFilter(filterParam?.roi, Number(e)),
     )
     return keys
   }, [
     dataKeysSelector,
     dialogFilterNodeId,
+    filterParam?.roi,
     isExistFilterRoi,
-    isExistParamsRoi,
     isOutput,
     roiUniqueList,
   ])
@@ -238,6 +242,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
   }
 
   const data = useMemo(() => {
+    const traceCount = visibleTraceCount(drawOrderList, dataKeys)
     return Object.fromEntries(
       dataKeys.map((key) => {
         let y = newDataXrange.map((x) => newTimeSeriesData[key]?.[x])
@@ -248,11 +253,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
           : getRoiColor(Number(key))
         if (drawOrderList.includes(key) && !stdBool) {
           const activeIdx: number = drawOrderList.findIndex((v) => v === key)
-          const mean: number = y.reduce((a, b) => a + b) / y.length
-          const std: number =
-            span *
-            Math.sqrt(y.reduce((a, b) => a + Math.pow(b - mean, 2)) / y.length)
-          y = y.map((value) => (value - mean) / (std + 1e-10) + activeIdx)
+          y = stackedTrace(y, activeIdx, span, traceCount)
         }
 
         return [
@@ -267,7 +268,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
               type: "data",
               array:
                 stdBool && Object.keys(dataStd).includes(key)
-                  ? Object.values(dataStd[key])
+                  ? errorBarArray(dataXrange, dataStd[key])
                   : null,
               visible: true,
             },
@@ -281,6 +282,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     span,
     dataStd,
     dataKeys,
+    dataXrange,
     newDataXrange,
     dialogFilterNodeId,
     nshades,
@@ -288,23 +290,90 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     newTimeSeriesData,
   ])
 
-  const annotations = useMemo(() => {
-    const range = rangeUnit === "time" ? frameRate : 1
-    return drawOrderList.map((value) => {
-      return {
-        x:
-          Number((newDataXrange.length - 1) / range) +
-          newDataXrange.length / (10 * range),
-        y: data[value]?.y[newDataXrange.length - 1],
-        xref: "x",
-        yref: "y",
-        text: `cell: ${value}`,
-        arrowhead: 1,
-        ax: 0,
-        ay: -10,
-      }
-    })
-  }, [data, drawOrderList, newDataXrange, rangeUnit, frameRate])
+  const annotations = useMemo(
+    () => buildAnnotations(drawOrderList, newDataXrange, data),
+    [data, drawOrderList, newDataXrange],
+  )
+
+  const store = useStore<RootState>()
+  const shadeSourceId = useSelector(
+    selectTimeSeriesItemShadeSourceItemId(itemId),
+  )
+  const shadeSource = useSelector(selectTimeSeriesShadeSourceItem(itemId))
+  const shadePath = shadeSource?.filePath ?? null
+  const shadeSourceKeys = useSelector(
+    shadeSourceId != null && shadeSource != null
+      ? selectTimeSeriesItemKeys(shadeSourceId)
+      : () => [],
+    arrayEqualityFn,
+  )
+  const shadeRoiFilter = useSelector(
+    selectAlgorithmDataFilterParam(shadeSource?.nodeId),
+    shallowEqual,
+  )?.roi
+  // drawOrderList keeps selections the source plot's ROI filters hide
+  const shadeKeys = useMemo(
+    () =>
+      shadeSource?.drawOrderList.filter(
+        (key) =>
+          shadeSourceKeys.includes(key) &&
+          inRoiFilter(shadeRoiFilter, Number(key)),
+      ) ?? [],
+    [shadeSource?.drawOrderList, shadeSourceKeys, shadeRoiFilter],
+  )
+  const shadeData = useSelector(
+    selectTimeSeriesData(shadePath),
+    timeSeriesDataEqualityFn,
+  )
+  const shadeXrange = useSelector(
+    selectTimeSeriesXrange(shadePath),
+    arrayEqualityFn,
+  )
+
+  const loadedShadeKeys = useSelector(
+    selectTimeSeriesIdsWithStatus(shadePath, shadeKeys, "fulfilled"),
+    arrayEqualityFn,
+  )
+  const failedShadeCount = useSelector(
+    selectTimeSeriesIdsWithStatus(shadePath, shadeKeys, "rejected"),
+    arrayEqualityFn,
+  ).length
+
+  // one more try for records that failed, each time the box links a source
+  useEffect(() => {
+    if (shadePath != null)
+      dispatch(retryRejectedTimeSeries({ path: shadePath }))
+  }, [dispatch, shadePath, shadeSourceId])
+
+  const shade = useMemo(() => {
+    const loaded = new Set(loadedShadeKeys)
+    return buildShadeShapes(
+      shadeXrange,
+      shadeData,
+      shadeKeys,
+      rangeUnit === "time" ? frameRate : 1,
+      SHADE_COLORS,
+      (key) => loaded.has(key),
+    )
+  }, [shadeXrange, shadeData, shadeKeys, rangeUnit, frameRate, loadedShadeKeys])
+
+  // runs when a request settles; a pending write is read here, so it redraws nothing
+  useEffect(() => {
+    if (shadePath == null) return
+    const status = selectTimeSeriesById(shadePath)(store.getState())
+    nextShadeKeys(shadeKeys, shadeData, status, shade.full).forEach((key) =>
+      dispatch(getTimeSeriesDataByIdOnce({ path: shadePath, index: key })),
+    )
+  }, [
+    dispatch,
+    store,
+    shadePath,
+    shadeKeys,
+    shadeData,
+    loadedShadeKeys,
+    failedShadeCount,
+    shade.full,
+  ])
 
   const layout = useMemo(
     () => ({
@@ -333,10 +402,10 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
           size: 10,
           color: "black",
         },
-        range:
-          rangeUnit === "frames"
-            ? [xrange.left, xrange.right]
-            : [
+        ...(rangeUnit === "frames"
+          ? frameAxisRange(xrange.left, xrange.right)
+          : {
+              range: [
                 typeof xrange.left !== "undefined"
                   ? xrange.left / frameRate
                   : -2.5,
@@ -344,6 +413,7 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
                   ? (xrange.right || 0) / frameRate
                   : dataXrange.length / frameRate + 6.8,
               ],
+            }),
         showgrid: showgrid,
         showline: showline,
         showticklabels: showticklabels,
@@ -357,9 +427,11 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
         zeroline: zeroline,
       },
       annotations: annotations,
+      shapes: shade.shapes,
       showlegend: true,
     }),
     [
+      shade.shapes,
       meta,
       xrange,
       showgrid,
@@ -411,20 +483,62 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     return false
   }
 
+  // The output holds records, but none for the ROIs the linked image plot is
+  // showing - an empty chart reads as a broken plot rather than as "this
+  // analysis never covered these ROIs" (issue #472).
+  if (
+    !dialogFilterNodeId &&
+    dataKeys.length === 0 &&
+    Object.keys(timeSeriesData).length > 0
+  ) {
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
+        No time series in this output for the selected ROIs. Analyses that run
+        on cell ROIs only (ETA, PCA, correlation, ...) hold no non-cell traces;
+        link this box to the ROI node&apos;s fluorescence to see them.
+      </Typography>
+    )
+  }
+
   return (
-    <PlotlyChart
-      data={Object.values(data)}
-      layout={layout}
-      config={config}
-      onLegendClick={onLegendClick}
-    />
+    <>
+      <PlotlyChart
+        data={Object.values(data)}
+        layout={layout}
+        config={config}
+        onLegendClick={onLegendClick}
+      />
+      {shade.capped && (
+        <Typography variant="caption" color="text.secondary">
+          Too many events: shading shows at most {SHADE_RECORD_CAP} per trace
+          and {SHADE_TOTAL_CAP} in total.
+        </Typography>
+      )}
+      {failedShadeCount > 0 && (
+        <Typography variant="caption" color="error">
+          Shading could not load {failedShadeCount} trace(s) from the linked
+          box; relink it to try again.
+        </Typography>
+      )}
+    </>
   )
 })
+
+function inRoiFilter(roi: TDim[] | undefined, num: number) {
+  return (
+    !roi?.length ||
+    roi.some((r) => {
+      const start = r.start || 0
+      return num >= start && num < (r.end || start + 1)
+    })
+  )
+}
 
 function timeSeriesDataEqualityFn(
   a: TimeSeriesData | undefined,
   b: TimeSeriesData | undefined,
 ) {
+  if (a === b) return true
   if (a != null && b != null) {
     const aArray = Object.entries(a)
     const bArray = Object.entries(b)
@@ -449,6 +563,7 @@ function nestEqualityFun(
     [key: number]: number
   },
 ) {
+  if (a === b) return true
   const aArray = Object.entries(a)
   const bArray = Object.entries(b)
   return (

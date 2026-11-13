@@ -1,5 +1,6 @@
 import { createSlice, isAnyOf } from "@reduxjs/toolkit"
 
+import { ANNOUNCEMENT_DISMISSED_KEY } from "const/Announcement"
 import {
   deleteMe,
   getListUser,
@@ -20,7 +21,6 @@ import {
   removeRefreshToken,
   removeToken,
   saveExToken,
-  saveRefreshToken,
   saveToken,
 } from "utils/auth/AuthUtils"
 import { setLoggingOut } from "utils/axios"
@@ -90,10 +90,17 @@ export const userSlice = createSlice({
           // Prevents a new session from inheriting routing-id/premium_assigned
           // from a prior premium session that did not log out cleanly (#659).
           routingService.clearRoutingInfo()
+          // Show a dismissed site announcement again on each sign-in.
+          localStorage.removeItem(ANNOUNCEMENT_DISMISSED_KEY)
 
           saveToken(action.payload.access_token)
-          saveRefreshToken(action.payload.refresh_token)
-          saveExToken(action.payload.ex_token)
+          // The backend now holds the refresh token in a cookie
+          removeRefreshToken()
+          if (action.payload.ex_token) {
+            saveExToken(action.payload.ex_token)
+          } else {
+            removeExToken()
+          }
         },
       )
       .addMatcher(

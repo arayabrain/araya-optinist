@@ -15,7 +15,7 @@ def LDA(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(score=BarData):
     # modules specific to function
     import numpy as np
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA

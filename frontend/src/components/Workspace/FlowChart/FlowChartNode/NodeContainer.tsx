@@ -27,6 +27,7 @@ export const NodeContainer: FC<{
 
   return (
     <div
+      data-updated={updated ? "true" : undefined}
       style={{
         height: "100%",
         width: "100%",

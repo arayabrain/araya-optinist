@@ -8,8 +8,12 @@ export const selectMatlab = (state: RootState) => {
   }
 }
 
-export const selectMatlabNodes = () => (state: RootState) =>
-  selectMatlab(state)?.tree
+export const selectMatlabNodes =
+  (filePath: string | undefined) => (state: RootState) =>
+    filePath ? selectMatlab(state)?.trees[filePath]?.tree : undefined
 
-export const selectMatlabIsLoading = () => (state: RootState) =>
-  selectMatlab(state)?.isLoading ?? false
+export const selectMatlabIsLoading =
+  (filePath: string | undefined) => (state: RootState) =>
+    filePath
+      ? (selectMatlab(state)?.trees[filePath]?.isLoading ?? false)
+      : false

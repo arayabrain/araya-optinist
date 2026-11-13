@@ -12,6 +12,7 @@ import BackendUnavailable from "components/common/BackendUnavailable"
 import ErrorBoundary from "components/common/ErrorBoundary"
 import Loading from "components/common/Loading"
 import RouteChangeTracker from "components/common/RouteChangeTracker"
+import RouteHeadMetadata from "components/common/RouteHeadMetadata"
 import ScrollToTop from "components/common/ScrollToTop"
 import Layout from "components/Layout"
 import { RETRY_MAX_COUNT, RETRY_WAIT, RETRY_WAIT_LONG } from "const/Mode"
@@ -124,9 +125,10 @@ const App: FC = () => {
         <BrowserRouter>
           <ScrollToTop />
           <RouteChangeTracker />
+          <RouteHeadMetadata />
           <Routes>
             {/* Landing page - outside Layout */}
-            <Route path="/" element={<LandingPage />} />
+            {!isStandalone && <Route path="/" element={<LandingPage />} />}
 
             {/* All other routes wrapped in Layout */}
             <Route

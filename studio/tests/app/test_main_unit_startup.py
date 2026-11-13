@@ -7,6 +7,8 @@ Covers:
 """
 
 import os
+import subprocess
+import sys
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -168,3 +170,17 @@ class TestShouldRunStartupSync:
 
         # Even with instance_mode=public, standalone never runs the sync.
         assert _should_run_startup_sync("public", is_standalone=True) is False
+
+
+def test_standalone_resolves_the_outputs_bucket_without_a_user():
+    # a fresh process: the suite's conftest overrides this dependency itself
+    code = (
+        "from studio.app.common.core.mode import MODE\n"
+        "MODE.IS_TEST = MODE.IS_STANDALONE = True\n"
+        "from studio.__main_unit__ import app\n"
+        "from studio.app.common.core.auth.auth_dependencies import (\n"
+        "    get_outputs_remote_bucket_name, get_user_remote_bucket_name)\n"
+        "assert app.dependency_overrides[get_outputs_remote_bucket_name]"
+        " is get_user_remote_bucket_name\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

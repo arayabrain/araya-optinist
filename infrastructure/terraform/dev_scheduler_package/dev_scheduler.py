@@ -111,6 +111,17 @@ TRANSIENT_RDS_STATUSES = {
 PROXY_REGISTER_POLL_SECONDS = 90
 PROXY_REGISTER_POLL_INTERVAL = 10
 
+# On stop, wait this long for the scaled-down services' tasks to stop before
+# terminating the free ASG and stopping NAT. The ECS agent reports a stopped
+# task only through NAT (no ECS VPC endpoints); a task still RUNNING to ECS
+# keeps the managed-draining hook renewed until NAT is back next morning.
+# How much: ECS stops a load-balanced task only after its target group's
+# deregistration delay (the free target group declares none: the ALB default
+# 300 s), then the container stop (~110 s in #940's Test B), plus slack.
+# Pinned against compute.tf by test_dev_scheduler.py.
+TASK_STOP_WAIT_SECONDS = 480
+TASK_STOP_POLL_INTERVAL = 10
+
 rds = boto3.client("rds")
 ec2 = boto3.client("ec2")
 ecs = boto3.client("ecs")
@@ -410,9 +421,13 @@ def stop_environment(stop_mode="destroy"):
     results.update(toggle_event_rules(rules + delayed_rules, enable=False))
 
     # 3. Scale down ECS services (prevents failed placement noise when
-    #    instances are stopped and no capacity is available)
+    #    instances are stopped and no capacity is available). Their tasks are
+    #    captured first: once desiredCount is 0 a stopping task no longer
+    #    lists as RUNNING, and step 3c has to follow it to STOPPED.
     ecs_services = json.loads(os.environ.get("ECS_SERVICE_NAMES", "[]"))
+    service_tasks = {}
     if ecs_services:
+        service_tasks = list_service_tasks(os.environ["CLUSTER_NAME"], ecs_services)
         results.update(
             update_ecs_services(
                 os.environ["CLUSTER_NAME"], ecs_services, desired_count=0
@@ -427,6 +442,40 @@ def stop_environment(stop_mode="destroy"):
                 os.environ["CLUSTER_NAME"], [public_service], desired_count=0
             )
         )
+
+    # 3c. Wait for the step 3 services' tasks to stop while NAT is still up (see
+    #     TASK_STOP_WAIT_SECONDS). A timeout is logged, not fatal: the stop
+    #     carries on, and the drain then waits for NAT as before.
+    #     - Not the public service: its ASG has no capacity provider, so no
+    #       managed-draining hook holds its instances
+    #     - Skipped when NAT is known to be down (verify-stop, weekend manual
+    #       stop): the agent cannot report, so the tasks would never stop.
+    #       Run on "unknown": a wasted wait costs at most TASK_STOP_WAIT_SECONDS,
+    #       a skipped one with NAT up costs the overnight hold
+    #     - A service whose update failed still wants its task; the stop
+    #       already fails on that error, so it is not waited for
+    #     - A service whose tasks could not be listed cannot be waited for;
+    #       it is named in the result
+    if ecs_services:
+        if nat_state in ("running", "unknown"):
+            scaled_down = [
+                s
+                for s in ecs_services
+                if not str(results.get(f"ecs_{s}", "")).startswith("error")
+            ]
+            task_arns = [a for s in scaled_down for a in service_tasks.get(s) or []]
+            outcome = (
+                wait_for_tasks_stopped(os.environ["CLUSTER_NAME"], task_arns)
+                if task_arns
+                else "no_tasks"
+            )
+            uncaptured = [s for s in scaled_down if service_tasks.get(s) is None]
+            if uncaptured:
+                outcome += f"; not listed: {' '.join(uncaptured)}"
+            results["ecs_tasks_stopped"] = outcome
+        else:
+            print(f"NAT is {nat_state} — skipping the wait for ECS tasks to stop")
+            results["ecs_tasks_stopped"] = "skipped_nat_down"
 
     # 4. Scale down ASG (terminates free tier instances)
     results["asg"] = with_retry(
@@ -822,6 +871,65 @@ def update_ecs_services(cluster_name, service_names, desired_count):
             print(f"ECS service {service_name}: error - {e}")
             results[f"ecs_{service_name}"] = f"error: {e}"
     return results
+
+
+def list_service_tasks(cluster_name, service_names):
+    """Return {service: [running task ARNs]}, or None for a service whose
+    tasks could not be listed. One page: each service runs at most one task."""
+    tasks = {}
+    for service_name in service_names:
+        try:
+            resp = ecs.list_tasks(
+                cluster=cluster_name, serviceName=service_name, desiredStatus="RUNNING"
+            )
+            tasks[service_name] = resp["taskArns"]
+        except Exception as e:
+            print(f"ECS service {service_name}: listing tasks failed - {e}")
+            tasks[service_name] = None
+    return tasks
+
+
+def _not_stopped(statuses):
+    """Format {task ARN: lastStatus} as "<task id>=<status> ..."."""
+    return " ".join(f"{a.rsplit('/', 1)[-1]}={st}" for a, st in statuses.items())
+
+
+def wait_for_tasks_stopped(cluster_name, task_arns):
+    """Poll until every task's lastStatus is STOPPED.
+
+    Not the service counts: a task leaves runningCount as soon as it starts
+    DEACTIVATING (target deregistration) or STOPPING, while the agent still
+    has to report STOPPED. A task describe_tasks cannot return counts as not
+    stopped.
+
+    Returns "stopped", or "timeout: <task id>=<lastStatus> ..." after
+    TASK_STOP_WAIT_SECONDS. Never "error..." — the caller treats a timeout as
+    a warning so the rest of the stop still runs.
+    """
+    deadline = time.monotonic() + TASK_STOP_WAIT_SECONDS
+    while True:
+        try:
+            resp = ecs.describe_tasks(cluster=cluster_name, tasks=task_arns)
+            statuses = {t["taskArn"]: t["lastStatus"] for t in resp["tasks"]}
+            for f in resp.get("failures", []):
+                statuses[f["arn"]] = f"failure({f.get('reason')})"
+        except Exception as e:
+            print(f"describe_tasks failed while waiting for tasks: {e}")
+            statuses = {}
+        remaining = {
+            a: statuses.get(a, "unknown")
+            for a in task_arns
+            if statuses.get(a) != "STOPPED"
+        }
+        if not remaining:
+            print("ECS services: all tasks stopped")
+            return "stopped"
+        print(f"ECS services: waiting - {_not_stopped(remaining)}")
+        if time.monotonic() >= deadline:
+            detail = _not_stopped(remaining)
+            print(f"ECS services: tasks still running after wait - {detail}")
+            return f"timeout: {detail}"
+        time.sleep(TASK_STOP_POLL_INTERVAL)
 
 
 def cleanup_dynamic_premium_instances():

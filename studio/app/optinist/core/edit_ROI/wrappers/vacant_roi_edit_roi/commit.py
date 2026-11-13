@@ -1,10 +1,9 @@
 import numpy as np
 
 from studio.app.common.dataclass.image import ImageData
-from studio.app.optinist.core.edit_ROI.wrappers.vacant_roi_edit_roi.utils import (
-    set_nwbfile,
-)
+from studio.app.optinist.core.edit_ROI.wrappers.caiman_edit_roi.utils import set_nwbfile
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import open_edit_images
 
 
 def commit_edit(
@@ -14,30 +13,19 @@ def commit_edit(
     iscell,
     node_dirpath,
     function_id,
+    rate=30,
+    nwb_settings=None,
 ):
     from studio.app.optinist.core.edit_ROI.edit_ROI import CellType
 
     fluorescence = fluorescence.data
-    num_cell = data.im.shape[0]
-
-    # Special processing if saving with no ROIs
-    if all(i == CellType.TEMP_DELETE for i in iscell):
-        empty_fluorescences = np.zeros((0, fluorescence.shape[1]))  # Keep time dim
-        iscell[iscell == CellType.TEMP_DELETE] = CellType.NON_ROI
-        data.commit()
-
-        info = {
-            "cell_roi": RoiData(
-                np.full(data.im.shape[1:], np.nan),
-                output_dir=node_dirpath,
-                file_name="cell_roi",
-            ),
-            "fluorescence": FluoData(empty_fluorescences, file_name="fluorescence"),
-            "iscell": IscellData(iscell),
-            "edit_roi_data": data,
-            "nwbfile": set_nwbfile(data, iscell, function_id, empty_fluorescences),
-        }
-        return info
+    roi_masks = data.roi_masks
+    num_cell = len(roi_masks)
+    # Only new traces read the movie, so a commit that only deletes ROIs never
+    # opens it. A node without traces also takes its frame count from it
+    # (FluoData stores no traces as (0, 0)).
+    if num_cell > len(fluorescence) or fluorescence.size == 0:
+        images = open_edit_images(images, node_dirpath)
 
     if fluorescence.size > 0:
         new_fluorescences = np.zeros((num_cell, fluorescence.shape[1]))
@@ -46,23 +34,28 @@ def commit_edit(
         # If starting with no ROIs, initialize with correct time dimension
         new_fluorescences = np.zeros((num_cell, images.shape[0]))
 
+    num_committed = len(fluorescence)
+    added = iscell == CellType.TEMP_ADD
     iscell[iscell == CellType.TEMP_DELETE] = CellType.NON_ROI
-    for i in range(num_cell):
-        if iscell[i] == CellType.TEMP_ADD:
-            new_fluorescences[i] = np.mean(images[:, ~np.isnan(data.im[i])], axis=1)
+    for i in range(num_committed, num_cell):
+        rows, cols = roi_masks.coords(i)
+        new_fluorescences[i] = np.mean(images[:, rows, cols], axis=1)
+        if added[i]:
             iscell[i] = CellType.ROI
 
     data.commit()
 
     info = {
         "cell_roi": RoiData(
-            np.nanmax(data.im[iscell != CellType.NON_ROI], axis=0),
+            roi_masks.label_image(iscell != CellType.NON_ROI),
             output_dir=node_dirpath,
             file_name="cell_roi",
         ),
         "fluorescence": FluoData(new_fluorescences, file_name="fluorescence"),
         "iscell": IscellData(iscell),
         "edit_roi_data": data,
-        "nwbfile": set_nwbfile(data, iscell, function_id, new_fluorescences),
+        "nwbfile": set_nwbfile(
+            data, iscell, function_id, rate, new_fluorescences, nwb_settings
+        ),
     }
     return info

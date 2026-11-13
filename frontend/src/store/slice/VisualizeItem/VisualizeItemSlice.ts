@@ -19,6 +19,8 @@ import {
   TimeSeriesItem,
   RoiItem,
   HeatMapItem,
+  HeatMapZRange,
+  HeatMapZRangeMode,
   ScatterItem,
   VisualaizeItem,
   VISUALIZE_ITEM_TYPE_SET,
@@ -38,6 +40,7 @@ import {
   isDisplayDataItem,
   isHeatMapItem,
   isImageItem,
+  isRoiItem,
   isTimeSeriesItem,
   isCsvItem,
   isScatterItem,
@@ -87,6 +90,7 @@ const imageItemInitialValue: ImageItem = {
   roiAlpha: 1.0,
   duration: 500,
   showRoiLabels: false,
+  roiOutline: false,
 }
 const timeSeriesItemInitialValue: TimeSeriesItem = {
   ...displayDataCommonInitialValue,
@@ -105,16 +109,21 @@ const timeSeriesItemInitialValue: TimeSeriesItem = {
   maxIndex: 0,
   drawOrderList: [],
   refImageItemId: null,
+  shadeSourceItemId: null,
 }
 const heatMapItemInitialValue: HeatMapItem = {
   ...displayDataCommonInitialValue,
   dataType: DATA_TYPE_SET.HEAT_MAP,
   showscale: true,
+  refItemId: null,
   colors: [
     { rgb: "rgb(0, 0, 255)", offset: "0" },
     { rgb: "rgb(200, 200, 200)", offset: "0.5" },
     { rgb: "rgb(255, 0, 0)", offset: "1.0" },
   ],
+  zRangeMode: "auto",
+  zRangePercentile: 2,
+  zRange: null,
 }
 const csvItemInitialValue: CsvItem = {
   ...displayDataCommonInitialValue,
@@ -750,6 +759,30 @@ export const visualaizeItemSlice = createSlice({
         targetItem.refImageItemId = refImageItemId ?? null
       }
     },
+    setTimeSeriesItemShadeSource: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        shadeSourceItemId: number | null
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isTimeSeriesItem(targetItem)) {
+        targetItem.shadeSourceItemId = action.payload.shadeSourceItemId
+      }
+    },
+    setHeatMapRefItemId: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        refItemId: number | null
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isHeatMapItem(targetItem)) {
+        targetItem.refItemId = action.payload.refItemId
+      }
+    },
     setHeatMapItemShowScale: (
       state,
       action: PayloadAction<{
@@ -775,6 +808,36 @@ export const visualaizeItemSlice = createSlice({
       const targetItem = state.items[action.payload.itemId]
       if (isHeatMapItem(targetItem)) {
         targetItem.colors = action.payload.colors
+      }
+    },
+    setHeatMapItemZRangeMode: (
+      state,
+      action: PayloadAction<{ itemId: number; zRangeMode: HeatMapZRangeMode }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isHeatMapItem(targetItem)) {
+        targetItem.zRangeMode = action.payload.zRangeMode
+      }
+    },
+    setHeatMapItemZRangePercentile: (
+      state,
+      action: PayloadAction<{ itemId: number; zRangePercentile: number }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isHeatMapItem(targetItem)) {
+        targetItem.zRangePercentile = action.payload.zRangePercentile
+      }
+    },
+    setHeatMapItemZRange: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        zRange: HeatMapZRange | null
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isHeatMapItem(targetItem)) {
+        targetItem.zRange = action.payload.zRange
       }
     },
     setCsvItemTranspose: (
@@ -908,12 +971,32 @@ export const visualaizeItemSlice = createSlice({
         targetItem.showRoiLabels = action.payload.showRoiLabels
       }
     },
+    setImageItemRoiOutline: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        roiOutline: boolean
+      }>,
+    ) => {
+      const targetItem = state.items[action.payload.itemId]
+      if (isImageItem(targetItem)) {
+        targetItem.roiOutline = action.payload.roiOutline
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
       .addCase(deleteDisplayItem, (state, action) => {
         const itemId = action.payload.itemId
 
+        Object.values(state.items).forEach((item) => {
+          if (isHeatMapItem(item) && item.refItemId === itemId) {
+            item.refItemId = null
+          }
+          if (isTimeSeriesItem(item) && item.shadeSourceItemId === itemId) {
+            item.shadeSourceItemId = null
+          }
+        })
         if (isImageItem(state.items[itemId])) {
           Object.values(state.items).forEach((item) => {
             if (isTimeSeriesItem(item) && item.refImageItemId === itemId) {
@@ -947,6 +1030,28 @@ export const visualaizeItemSlice = createSlice({
               height: targetItem.height,
               filePath,
               nodeId,
+            }
+            const newItem = state.items[itemId]
+            const linkable =
+              isImageItem(newItem) ||
+              isRoiItem(newItem) ||
+              isTimeSeriesItem(newItem)
+            if (!linkable) {
+              Object.values(state.items).forEach((item) => {
+                if (isHeatMapItem(item) && item.refItemId === itemId) {
+                  item.refItemId = null
+                }
+              })
+            }
+            if (!isTimeSeriesItem(newItem)) {
+              Object.values(state.items).forEach((item) => {
+                if (
+                  isTimeSeriesItem(item) &&
+                  item.shadeSourceItemId === itemId
+                ) {
+                  item.shadeSourceItemId = null
+                }
+              })
             }
           } else {
             targetItem.filePath = filePath
@@ -1058,8 +1163,13 @@ export const {
   setTimeSeriesItemDrawOrder,
   setTimeSeriesItemMaxIndex,
   setTimeSeriesRefImageItemId,
+  setTimeSeriesItemShadeSource,
+  setHeatMapRefItemId,
   setHeatMapItemShowScale,
   setHeatMapItemColors,
+  setHeatMapItemZRangeMode,
+  setHeatMapItemZRangePercentile,
+  setHeatMapItemZRange,
   setCsvItemTranspose,
   setCsvItemSetHeader,
   setCsvItemSetIndex,
@@ -1071,6 +1181,7 @@ export const {
   setPolartemItemSelectedIndex,
   setClickedData,
   setImageItemShowRoiLabels,
+  setImageItemRoiOutline,
   resetAllOrderList,
   reset,
   resetVisualizeLayout,

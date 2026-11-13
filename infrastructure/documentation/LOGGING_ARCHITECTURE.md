@@ -244,7 +244,7 @@ frontend filtering).
 ECS Task Definition (LOG_LEVEL=INFO)
   -> cloud-startup.sh
     -> main.py --host --port --workers [--log-level DEBUG]
-      -> __main_unit__.main()
+      -> studio.server.main()
         -> AppLogger.get_logging_config()
           -> LoggingConfigHelper.load_and_configure_logging_config()
             -> Reads YAML file (base config: optinist=DEBUG, root=INFO)
@@ -422,7 +422,7 @@ Logs to `/var/log/app-setup.log` via tee:
 exec > >(tee -a "$LOGFILE") 2>&1
 ```
 
-Covers secrets retrieval, infrastructure discovery, config file creation, database initialization, and Firebase admin verification.
+Covers secrets retrieval, infrastructure discovery, database initialization, and Firebase admin verification.
 
 ### Container Startup
 
@@ -430,7 +430,7 @@ Covers secrets retrieval, infrastructure discovery, config file creation, databa
 
 Logs to stdout (captured by ECS awslogs driver). Covers:
 
-- DB connectivity wait loop (30 attempts, 2s intervals)
+- DB connectivity wait (`infrastructure/scripts/wait_for_database.sh`: up to 10 minutes, each attempt bounded to 10 s, 10 s apart)
 - Alembic migration execution
 - EC2 instance ID retrieval from ECS metadata
 - Uvicorn startup with worker count
@@ -481,7 +481,7 @@ The `client_id` is propagated across three execution boundaries:
 
 `ClientIdLoggingMiddleware` runs on every HTTP request:
 - Extracts uid from Firebase/JWT token
-- Generates `client_id` = first 16 chars of MD5(uid)
+- Generates `client_id` = first 16 chars of SHA-256(uid)
 - Stores in `ContextVar` for the request lifetime
 
 **File:** `studio/app/common/core/middleware/logging_middleware.py`
@@ -505,7 +505,7 @@ executor.submit(func, arg1, client_id=client_id)
 init_client_id_from_snakemake_config(snakemake.config)
 ```
 
-Used in: `rules/data.py`, `rules/func.py`, `rules/post_process.py`, `rules/run_edit_ROI.py`
+Used in: `rules/data.py`, `rules/func.py`, `rules/post_process.py`
 
 **File:** `studio/app/common/core/workflow/workflow_runner.py` - passes `client_id` into snakemake config
 
@@ -557,7 +557,7 @@ def get_logging_config():
     return logging_config
 ```
 
-The CLI `--log-level` argument is still applied in `__main_unit__.main()` for local development to override Python logging levels.
+The CLI `--log-level` argument is still applied in `studio.server.main()` for local development to override Python logging levels.
 
 ### Frontend Level Endpoint
 
@@ -682,8 +682,6 @@ The free manager also triggers on ASG lifecycle events (instance launch/terminat
 |------------------------------------|---------------------------|--------------|------------------------|
 | `subscr-optinist-cpu-high`         | CPUUtilization            | > 60%        | AWS/ECS                |
 | `subscr-optinist-memory-high`      | MemoryUtilization         | > 80%        | AWS/ECS                |
-| `subscr-optinist-cpu-low`          | CPUUtilization            | < 20%        | AWS/ECS                |
-| `subscr-optinist-memory-low`       | MemoryUtilization         | < 10%        | AWS/ECS                |
 | `subscr-optinist-load-average-high`| CPUUtilization            | > 80%        | AWS/EC2                |
 | `subscr-optinist-high-iowait`      | cpu_usage_iowait          | > 30%        | CWAgent                |
 | `subscr-optinist-ebs-queue-length-high` | diskio_iops_in_progress | > 8 (2/3 min) | CWAgent              |
@@ -697,6 +695,8 @@ The free manager also triggers on ASG lifecycle events (instance launch/terminat
 | `subscr-optinist-public-tg-response-time-high` | TargetResponseTime | p95 > 5s (25/30 min) | AWS/ApplicationELB |
 | `subscr-optinist-free-tg-unhealthy-hosts`   | UnHealthyHostCount  | > 0          | AWS/ApplicationELB     |
 | `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount  | > 0          | AWS/ApplicationELB     |
+| `subscr-optinist-free-serving-below-desired` | GroupDesiredCapacity - HealthyHostCount | > 0 (25/30 min, not while DeploymentCount > 1) | AWS/AutoScaling, ECS/ContainerInsights, AWS/ApplicationELB |
+| `subscr-optinist-public-serving-below-desired` | GroupDesiredCapacity - HealthyHostCount | > 0 (35/40 min, not while DeploymentCount > 1) | AWS/AutoScaling, ECS/ContainerInsights, AWS/ApplicationELB |
 | `subscr-premium-<user_id>-tg-unhealthy-hosts` | UnHealthyHostCount | > 0 (created per-user by the premium-manager Lambda) | AWS/ApplicationELB |
 | `subscr-background-task-stopped`   | RunningTaskCount          | < 1          | ECS/ContainerInsights  |
 | `subscr-background-cpu-high`       | CpuUtilized               | > 400 units  | ECS/ContainerInsights  |
@@ -849,7 +849,7 @@ poetry run python main.py --log-level DEBUG
 |----------|------|---------|
 | `AppLogger.get_logging_config()` | `studio/app/common/core/logger.py` | Loads YAML config, applies concurrent handler, adds ClientIdFilter |
 | `AppLogger.init_logger()` | `studio/app/common/core/logger.py` | One-time logging initialization via `dictConfig()` |
-| `AppLogger.generate_client_id()` | `studio/app/common/core/logger.py` | MD5 hash of uid, truncated to 16 chars |
+| `AppLogger.generate_client_id()` | `studio/app/common/core/logger.py` | SHA-256 hash of uid, truncated to 16 chars |
 | `LoggingConfigHelper._apply_log_level_override()` | `studio/app/common/core/logger.py` | Apply a level string to all loggers and handlers (used by `--log-level` CLI only) |
 | `LoggingConfigHelper.load_and_configure_logging_config()` | `studio/app/common/core/logger.py` | Unified config loading with path adjustment and concurrent handler setup |
 | `ClientIdLoggingMiddleware.__call__()` | `studio/app/common/core/middleware/logging_middleware.py` | Extracts uid from request, sets client_id in context |

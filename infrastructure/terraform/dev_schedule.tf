@@ -118,16 +118,20 @@ resource "aws_lambda_function" "dev_scheduler" {
       PREMIUM_MANAGER_FUNCTION_NAME = aws_lambda_function.premium_manager.function_name
       DEFAULT_STOP_MODE             = var.dev_schedule_stop_mode
 
-      # Rules enabled immediately on start
+      # Rules enabled immediately on start.
+      # ASG events only sync ECS to the ASG - no database, safe at boot.
       SCHEDULE_RULE_NAMES = jsonencode([
-        aws_cloudwatch_event_rule.free_manager_schedule.name,
         aws_cloudwatch_event_rule.free_manager_asg_events.name,
         aws_cloudwatch_event_rule.cost_tracker_schedule.name,
       ])
 
-      # Rules enabled only on verify-start (+15 min) to let instances boot
-      # before premium_manager starts monitoring
+      # Rules enabled only on verify-start (+15 min) to let instances boot.
+      # - premium_manager/cleanup: wait before monitoring instances
+      # - free_manager_schedule: its first runs cannot reach the RDS proxy, and
+      #   a database error now re-raises, so three of them would trip
+      #   free-manager-errors every weekday morning
       DELAYED_RULE_NAMES = jsonencode([
+        aws_cloudwatch_event_rule.free_manager_schedule.name,
         aws_cloudwatch_event_rule.premium_manager_schedule.name,
         aws_cloudwatch_event_rule.premium_cleanup_schedule.name,
       ])
@@ -347,6 +351,19 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           aws_ecs_service.background.id,
           aws_ecs_service.public.id,
         ]
+      },
+      # On stop, list the services' tasks before scaling down, then wait for
+      # them to reach STOPPED before NAT goes. Both scoped to this cluster:
+      # production shares the account
+      {
+        Effect   = "Allow"
+        Action   = ["ecs:ListTasks", "ecs:DescribeTasks"]
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = aws_ecs_cluster.main.arn
+          }
+        }
       },
     ]
   })

@@ -93,6 +93,8 @@ export type PlotMetaData = {
   xlabel?: string
   ylabel?: string
   title?: string
+  xaxis_type?: "category"
+  yaxis_type?: "category"
 }
 
 interface BaseDisplay<T extends DATA_TYPE, Data> {
@@ -109,6 +111,7 @@ export interface TimeSeriesDisplayData
   extends BaseDisplay<"timeSeries", TimeSeriesData> {
   xrange: string[]
   std: TimeSeriesData
+  byId?: { [index: string]: "pending" | "fulfilled" | "rejected" }
 }
 
 export interface HeatMapDisplayData
@@ -117,7 +120,10 @@ export interface HeatMapDisplayData
   index: string[]
 }
 
-export interface ImageDisplayData extends BaseDisplay<"image", ImageData> {}
+export interface ImageDisplayData extends BaseDisplay<"image", ImageData> {
+  // The latest request for the path; only its result is stored
+  requestId?: string
+}
 
 export interface CsvDisplayData extends BaseDisplay<"csv", CsvData> {
   // columns: string[]

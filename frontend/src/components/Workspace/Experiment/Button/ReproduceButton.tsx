@@ -14,6 +14,7 @@ import { reset } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { reproduceWorkflow } from "store/slice/Workflow/WorkflowActions"
 import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
 import { AppDispatch } from "store/store"
+import { notifyParamChanges } from "utils/param/ParamUtils"
 
 export const ReproduceButton = memo(function ReproduceButton() {
   const [open, setOpen] = useState(false)
@@ -32,8 +33,9 @@ export const ReproduceButton = memo(function ReproduceButton() {
     if (workspaceId) {
       dispatch(reproduceWorkflow({ workspaceId, uid }))
         .unwrap()
-        .then(() => {
+        .then((result) => {
           enqueueSnackbar("Successfully reproduced.", { variant: "success" })
+          notifyParamChanges(result?.paramChanges, enqueueSnackbar)
           dispatch(reset())
         })
         .catch(() => {

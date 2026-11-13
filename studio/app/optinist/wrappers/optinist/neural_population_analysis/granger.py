@@ -14,7 +14,7 @@ def Granger(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(Granger_fval_mat_heatmap=HeatMapData, Granger_fval_mat_scatter=ScatterData):
     # modules specific to function
     # from sklearn.preprocessing import StandardScaler
     import itertools
@@ -110,7 +110,7 @@ def Granger(
     # -> check this if ADF pval is large
     cit = {
         "cit_count_t": np.zeros([num_comb], dtype="float64"),
-        "cit_pvalue": np.zeros([num_comb], dtype="int"),
+        "cit_pvalue": np.zeros([num_comb], dtype="float64"),
         "cit_crit_value": np.zeros([num_comb, 3], dtype="float64"),
     }
 
@@ -139,11 +139,10 @@ def Granger(
         "gc_ssr_chi2test": np.zeros([num_comb, num_lag, 3], dtype="float64"),
         "gc_lrtest": np.zeros([num_comb, num_lag, 3], dtype="float64"),
         "gc_params_ftest": np.zeros([num_comb, num_lag, 4], dtype="float64"),
-        "gc_OLS_restricted": [[0] * num_lag for i in range(num_comb)],
-        "gc_OLS_unrestricted": [[0] * num_lag for i in range(num_comb)],
-        "gc_OLS_restriction_matrix": [[0] * num_lag for i in range(num_comb)],
         "Granger_fval_mat": [np.zeros([num_cell, num_cell]) for i in range(num_lag)],
     }
+    # tp[lag][1], each pair's fitted OLS models with their design matrices, is
+    # not kept: no output uses it, and it costs hundreds of kB per pair
 
     for i in tqdm(range(len(comb))):
         # The Null hypothesis for grangercausalitytests is
@@ -170,9 +169,6 @@ def Granger(
             GC["gc_params_ftest"][i, j, :] = tp[j + 1][0]["params_ftest"][
                 0:4
             ]  # parameter F test (F, pval, df_denom, df_num)
-            GC["gc_OLS_restricted"][i][j] = tp[j + 1][1][0]
-            GC["gc_OLS_unrestricted"][i][j] = tp[j + 1][1][1]
-            GC["gc_OLS_restriction_matrix"][i][j] = tp[j + 1][1][2]
 
             GC["Granger_fval_mat"][j][comb[i][0], comb[i][1]] = tp[j + 1][0][
                 "ssr_ftest"

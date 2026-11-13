@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import select
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.storage_scan import storage_scan_lock
 from studio.app.common.core.subscription.constants import (
     PlanName,
     StorageQuota,
@@ -193,9 +194,7 @@ def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
     try:
         with session_scope() as db:
             try:
-                # Existence is checked with a SELECT rather than the UPDATE
-                # rowcount: MySQL reports rows *changed*, so an update to an
-                # identical value returns 0 even though the row exists.
+                # SELECT, not UPDATE rowcount, so this never depends on FOUND_ROWS.
                 exists = (
                     db.execute(
                         select(UserStorageUsage.id).where(
@@ -453,8 +452,10 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
                     f"stale or missing, calculating live"
                 )
 
-        live_usage = await _calculate_live_storage_usage(user_id)
-        update_user_storage_usage(user_id, live_usage)
+        # A slower scan of the same user must not store over a newer total
+        async with storage_scan_lock(f"user:{user_id}"):
+            live_usage = await _calculate_live_storage_usage(user_id)
+            update_user_storage_usage(user_id, live_usage)
 
         return live_usage
 

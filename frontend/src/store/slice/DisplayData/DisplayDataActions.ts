@@ -1,6 +1,11 @@
 import { AxiosError } from "axios"
 
-import { createAsyncThunk } from "@reduxjs/toolkit"
+import {
+  AnyAction,
+  ThunkAction,
+  createAction,
+  createAsyncThunk,
+} from "@reduxjs/toolkit"
 
 import {
   TimeSeriesData,
@@ -10,6 +15,7 @@ import {
   BarData,
   HTMLData,
   ImageData,
+  ImagePreviewTooLarge,
   HeatMapData,
   HistogramData,
   LineData,
@@ -37,11 +43,13 @@ import {
   addRoiApi,
   mergeRoiApi,
   deleteRoiApi,
+  promoteRoiApi,
   commitRoiApi,
   getStatusRoi,
 } from "api/visualizations/Outputs"
 import { StatusROI } from "components/Workspace/Visualize/Plot/ImagePlot"
 import {
+  DisplayData,
   PlotMetaData,
   DISPLAY_DATA_SLICE_NAME,
 } from "store/slice/DisplayData/DisplayDataType"
@@ -49,6 +57,8 @@ import {
 export interface RejectPayload {
   message: string
   status?: number
+  // Frames that fit, when an image preview was refused as too large
+  maxFrames?: number
 }
 
 export const SYNC_IN_PROGRESS_MESSAGE = "Syncing from cloud storage..."
@@ -63,14 +73,38 @@ export function getDisplayErrorMessage(
   return payload?.message ?? fallback
 }
 
+export const EDIT_ROI_LOCKED_MESSAGE =
+  "Edit ROI is locked while a commit or a run finishes. Reopen the plot in a few minutes."
+
+// a refused ROI edit; 423 is the experiment lock a commit or a run holds
+export function getEditRoiErrorMessage(
+  payload: RejectPayload | undefined,
+  fallback: string,
+): string {
+  if (payload?.status === 423) {
+    return EDIT_ROI_LOCKED_MESSAGE
+  }
+  return getDisplayErrorMessage(payload, fallback)
+}
+
 function extractErrorPayload(e: unknown): RejectPayload {
   if (e instanceof AxiosError) {
     const status = e.response?.status
-    const detail = (e.response?.data as { detail?: string })?.detail
-    return {
-      message: detail ?? e.message ?? "Request failed",
+    const body = e.response?.data as
+      | Partial<Record<keyof ImagePreviewTooLarge, unknown>>
+      | undefined
+    const payload: RejectPayload = {
+      // a validation 422's detail is a list of errors, not a message
+      message:
+        typeof body?.detail === "string"
+          ? body.detail
+          : (e.message ?? "Request failed"),
       status,
     }
+    if (typeof body?.max_frames === "number") {
+      payload.maxFrames = body.max_frames
+    }
+    return payload
   }
   if (e instanceof Error) {
     return { message: e.message }
@@ -85,13 +119,62 @@ export const getTimeSeriesInitData = createAsyncThunk<
     std: TimeSeriesData
     meta?: PlotMetaData
   },
-  { path: string; itemId: number; isFull?: boolean }
+  { path: string; itemId: number; isFull?: boolean },
+  { state: { displayData: DisplayData } }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesInitData`,
   async ({ path, isFull }, thunkAPI) => {
     try {
       const response = await getTimeSeriesInitDataApi(path, isFull)
-      return response
+      const data = { ...response.data }
+      const std = { ...response.std }
+      const tried = new Set<string>()
+      const failed = new Set<string>()
+      // One point per record, so refetch the records another item holds in full,
+      // including any a by-id request filled while this one was in flight
+      for (;;) {
+        const entry = thunkAPI.getState().displayData.timeSeries[path]
+        const held = entry?.data ?? {}
+        const full = (key: string) => Object.keys(held[key] ?? {}).length > 1
+        // a failed refetch keeps the newest series held rather than a blank
+        failed.forEach((key) => {
+          if (!full(key)) return
+          data[key] = held[key]
+          if (entry?.std[key] !== undefined) std[key] = entry.std[key]
+        })
+        const reload = Object.keys(data).filter(
+          (key) =>
+            !tried.has(key) && full(key) && Object.keys(data[key]).length === 1,
+        )
+        if (reload.length === 0) break
+        // every record held in full (select all): one all-data request, which has
+        // no isFull; a sparser selection stays by id rather than load the output
+        const stubs = Object.keys(data).filter(
+          (key) => Object.keys(data[key]).length === 1,
+        )
+        const bulk =
+          !isFull && reload.length > 1 && reload.length === stubs.length
+        const records = await Promise.allSettled(
+          bulk
+            ? [getTimeSeriesAllDataApi(path)]
+            : reload.map((index) =>
+                getTimeSeriesDataByIdApi(path, index, isFull),
+              ),
+        )
+        const kept = { data: held, std: entry?.std ?? {} }
+        reload.forEach((key, i) => {
+          const record = records[bulk ? 0 : i]
+          tried.add(key)
+          const got =
+            record.status === "fulfilled" &&
+            record.value.data[key] !== undefined
+          if (!got) failed.add(key)
+          const source = got ? record.value : kept
+          data[key] = source.data[key]
+          if (source.std[key] !== undefined) std[key] = source.std[key]
+        })
+      }
+      return { ...response, data, std }
     } catch (e) {
       return thunkAPI.rejectWithValue(e)
     }
@@ -105,7 +188,8 @@ export const getTimeSeriesDataById = createAsyncThunk<
     std: TimeSeriesData
     meta?: PlotMetaData
   },
-  { path: string; index: string; isFull?: boolean }
+  // background: a request the user did not make, whose failure leaves the plot up
+  { path: string; index: string; isFull?: boolean; background?: boolean }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getTimeSeriesDataById`,
   async ({ path, index, isFull }, thunkAPI) => {
@@ -116,6 +200,25 @@ export const getTimeSeriesDataById = createAsyncThunk<
       return thunkAPI.rejectWithValue(e)
     }
   },
+)
+
+// Skips a record another plot already requested or loaded
+export const getTimeSeriesDataByIdOnce =
+  (arg: {
+    path: string
+    index: string
+  }): ThunkAction<void, { displayData: DisplayData }, unknown, AnyAction> =>
+  (dispatch, getState) => {
+    if (
+      getState().displayData.timeSeries[arg.path]?.byId?.[arg.index] == null
+    ) {
+      dispatch(getTimeSeriesDataById({ ...arg, background: true }))
+    }
+  }
+
+// Forgets the records whose request failed, so they are requested once more
+export const retryRejectedTimeSeries = createAction<{ path: string }>(
+  `${DISPLAY_DATA_SLICE_NAME}/retryRejectedTimeSeries`,
 )
 
 export const getTimeSeriesAllData = createAsyncThunk<
@@ -262,7 +365,7 @@ export const addRoi = createAsyncThunk<
       await dispatch(getRoiData({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -279,7 +382,7 @@ export const mergeRoi = createAsyncThunk<
       dispatch(getStatus({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -296,7 +399,24 @@ export const deleteRoi = createAsyncThunk<
       dispatch(getStatus({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
+    }
+  },
+)
+
+export const promoteRoi = createAsyncThunk<
+  { data: HTMLData; meta?: PlotMetaData },
+  { path: string; workspaceId: number; data: { ids: number[] } }
+>(
+  `${DISPLAY_DATA_SLICE_NAME}/promoteRoi`,
+  async ({ path, workspaceId, data }, thunkAPI) => {
+    const { dispatch } = thunkAPI
+    try {
+      const response = await promoteRoiApi(path, workspaceId, data)
+      dispatch(getStatus({ path, workspaceId }))
+      return response
+    } catch (e) {
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -313,7 +433,7 @@ export const commitRoi = createAsyncThunk<
       dispatch(getStatus({ path, workspaceId }))
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )
@@ -328,7 +448,7 @@ export const getStatus = createAsyncThunk<
       const response = await getStatusRoi(path, workspaceId)
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )

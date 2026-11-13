@@ -24,9 +24,27 @@ function:
     outputPaths: null
     started_at: null
     finished_at: null
+  suite2p_registration_1234:
+    unique_id: suite2p_registration_1234
+    name: suite2p_registration
+    success: running
+    hasNWB: false
+    message: null
+    outputPaths: null
+    started_at: null
+    finished_at: null
   suite2p_roi_1234:
     unique_id: suite2p_roi_1234
     name: suite2p_roi
+    success: running
+    hasNWB: false
+    message: null
+    outputPaths: null
+    started_at: null
+    finished_at: null
+  suite2p_spike_deconv_1234:
+    unique_id: suite2p_spike_deconv_1234
+    name: suite2p_spike_deconv
     success: running
     hasNWB: false
     message: null

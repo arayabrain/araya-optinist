@@ -8,8 +8,10 @@ export const selectHDF5 = (state: RootState) => {
   }
 }
 
-export const selectHDF5Nodes = () => (state: RootState) =>
-  selectHDF5(state)?.tree
+export const selectHDF5Nodes =
+  (filePath: string | undefined) => (state: RootState) =>
+    filePath ? selectHDF5(state)?.trees[filePath]?.tree : undefined
 
-export const selectHDF5IsLoading = () => (state: RootState) =>
-  selectHDF5(state)?.isLoading ?? false
+export const selectHDF5IsLoading =
+  (filePath: string | undefined) => (state: RootState) =>
+    filePath ? (selectHDF5(state)?.trees[filePath]?.isLoading ?? false) : false

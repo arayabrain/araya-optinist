@@ -1,10 +1,10 @@
 import { MatlabTreeDTO } from "api/matlab/Matlab"
+import { StructureTreeState } from "store/slice/HDF5/HDF5Type"
 
 export const MATLAB_SLICE_NAME = "matlab"
 
 export interface MatlabTree {
-  isLoading: boolean
-  tree: MatlabTreeNodeType[]
+  trees: Record<string, StructureTreeState<MatlabTreeNodeType>>
 }
 
 export type MatlabTreeNodeType = MatlabTreeDTO

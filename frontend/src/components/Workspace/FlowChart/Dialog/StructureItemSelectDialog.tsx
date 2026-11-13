@@ -3,7 +3,15 @@ import { useDispatch, useSelector } from "react-redux"
 
 import FolderIcon from "@mui/icons-material/Folder"
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined"
-import { Box, Checkbox, Typography, Tooltip, Divider } from "@mui/material"
+import {
+  Box,
+  Checkbox,
+  Typography,
+  Tooltip,
+  Divider,
+  FormControlLabel,
+  Switch,
+} from "@mui/material"
 import Button from "@mui/material/Button"
 import { CheckboxProps } from "@mui/material/Checkbox"
 import Dialog from "@mui/material/Dialog"
@@ -16,13 +24,18 @@ import { TreeItem } from "@mui/x-tree-view/TreeItem"
 import { TreeView } from "@mui/x-tree-view/TreeView"
 
 import {
+  FileNodeConfig,
+  useStructuredTree,
+} from "components/Workspace/FlowChart/FlowChartNode/BaseStructuredFileNode"
+import {
   TreeNodeType,
   TreeDirType,
   TreeFileType,
-  FileNodeConfig,
-} from "components/Workspace/FlowChart/FlowChartNode/BaseStructuredFileNode"
+} from "components/Workspace/FlowChart/FlowChartNode/StructuredFileTree"
 import { NodeIdProps } from "store/slice/FlowElement/FlowElementType"
-import { selectCurrentWorkspaceId } from "store/slice/Workspace/WorkspaceSelector"
+import { selectInputNodeParam } from "store/slice/InputNode/InputNodeSelectors"
+import { setStructuredInputNodeParam } from "store/slice/InputNode/InputNodeSlice"
+import { StructuredInputParamType } from "store/slice/InputNode/InputNodeType"
 import { AppDispatch } from "store/store"
 
 type StructureItemSelectProps = {
@@ -42,9 +55,27 @@ export const StructureItemSelectDialog = memo(
     const [fileSelect, setFileSelect] = useState("")
 
     const structureFileName = useSelector(config.selectStructurePath(nodeId))
+    const savedParam = useSelector(selectInputNodeParam(nodeId)) as
+      | Partial<StructuredInputParamType>
+      | undefined
+    const [transpose, setTranspose] = useState(false)
+    const [behavior, setBehavior] = useState(false)
+
+    useEffect(() => {
+      if (!open) return
+      setFileSelect(structureFileName ?? "")
+      setTranspose(savedParam?.transpose ?? false)
+      setBehavior(savedParam?.dataType === "behavior")
+    }, [open, savedParam, structureFileName])
 
     const onClickOk = () => {
       dispatch(config.setStructurePath({ nodeId, path: fileSelect }))
+      dispatch(
+        setStructuredInputNodeParam({
+          nodeId,
+          param: { transpose, dataType: behavior ? "behavior" : "auto" },
+        }),
+      )
       setOpen?.(false)
     }
 
@@ -68,6 +99,26 @@ export const StructureItemSelectDialog = memo(
             setFileSelect={setFileSelect}
             config={config}
           />
+          <Box sx={{ px: 3, py: 1 }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={transpose}
+                  onChange={(event) => setTranspose(event.target.checked)}
+                />
+              }
+              label="Transpose"
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={behavior}
+                  onChange={(event) => setBehavior(event.target.checked)}
+                />
+              }
+              label="Behavior data (rows are time)"
+            />
+          </Box>
           <DialogActions>
             <Button onClick={onClickCancel} color="primary" variant="outlined">
               cancel
@@ -128,7 +179,7 @@ const StructureTreeView = memo(function StructureTreeView({
   fileSelect: string
   setFileSelect: (value: string) => void
 }) {
-  const [tree, isLoading] = useStructuredTree(nodeId, config)
+  const [tree, isLoading] = useStructuredTree(nodeId, config, true)
   const [expanded, setExpanded] = useState<string[]>([])
 
   // Calculate paths to expand when fileSelect changes
@@ -337,27 +388,3 @@ const StructureTreeNode = memo(function TreeNode({
     )
   }
 })
-
-function useStructuredTree(
-  nodeId: string,
-  config: FileNodeConfig,
-): [TreeNodeType[] | undefined, boolean] {
-  const dispatch = useDispatch<AppDispatch>()
-  const tree = useSelector(config.selectTree())
-  const isLoading = useSelector(config.selectIsLoading())
-  const filePathRaw = useSelector(config.selectFilePath(nodeId))
-  const filePath = Array.isArray(filePathRaw) ? filePathRaw[0] : filePathRaw
-  const workspaceId = useSelector(selectCurrentWorkspaceId)
-  useEffect(() => {
-    if (workspaceId && !isLoading && filePath) {
-      dispatch(
-        config.getTree({
-          path: filePath as string,
-          workspaceId: Number(workspaceId),
-        }),
-      )
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, filePath])
-  return [tree, isLoading]
-}

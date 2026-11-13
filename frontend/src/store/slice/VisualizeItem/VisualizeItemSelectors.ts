@@ -41,6 +41,25 @@ export const selectVisualizeImageAndRoiItemIdList = (state: RootState) =>
       return !item.isWorkflowDialog && (isImageItem(item) || isRoiItem(item))
     })
 
+export const selectVisualizeHeatMapLinkItemIdList = (state: RootState) =>
+  Object.keys(state.visualaizeItem.items)
+    .map(Number)
+    .filter((itemId) => {
+      const item = selectVisualizeItemById(itemId)(state)
+      return (
+        !item.isWorkflowDialog &&
+        (isImageItem(item) || isRoiItem(item) || isTimeSeriesItem(item))
+      )
+    })
+
+export const selectVisualizeTimeSeriesItemIdList = (state: RootState) =>
+  Object.keys(state.visualaizeItem.items)
+    .map(Number)
+    .filter((itemId) => {
+      const item = selectVisualizeItemById(itemId)(state)
+      return !item.isWorkflowDialog && isTimeSeriesItem(item)
+    })
+
 export const selectVisualizeItems = (state: RootState) =>
   state.visualaizeItem.items
 
@@ -398,6 +417,24 @@ export const selectTimeSeriesItemRefImageItemId =
     }
   }
 
+export const selectTimeSeriesItemShadeSourceItemId =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isTimeSeriesItem(item)) {
+      return item.shadeSourceItemId ?? null
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectTimeSeriesShadeSourceItem =
+  (itemId: number) => (state: RootState) => {
+    const sourceId = selectTimeSeriesItemShadeSourceItemId(itemId)(state)
+    if (sourceId == null) return undefined
+    const source = selectVisualizeItemById(sourceId)(state)
+    return isTimeSeriesItem(source) ? source : undefined
+  }
+
 export const selectTimeSeriesItemRefRoiUniqueList =
   (itemId: number) => (state: RootState) => {
     const item = selectVisualizeItemById(itemId)(state)
@@ -478,6 +515,26 @@ export const selectRoiItemMaxNumber = (roiFilePath: string) =>
     },
   )
 
+export const selectHeatMapItemRefItemId =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isHeatMapItem(item)) {
+      return item.refItemId
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectHeatMapLinkedDrawOrderList =
+  (itemId: number) => (state: RootState) => {
+    const refItemId = selectHeatMapItemRefItemId(itemId)(state)
+    const refItem =
+      refItemId != null ? selectVisualizeItems(state)[refItemId] : undefined
+    return refItem != null && isTimeSeriesItem(refItem)
+      ? refItem.drawOrderList
+      : undefined
+  }
+
 export const selectHeatMapItemShowScale =
   (itemId: number) => (state: RootState) => {
     const item = selectVisualizeItemById(itemId)(state)
@@ -493,6 +550,37 @@ export const selectHeatMapItemColors =
     const item = selectVisualizeItemById(itemId)(state)
     if (isHeatMapItem(item)) {
       return item.colors
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+// Items saved before the colour range existed fall back to the full data range.
+export const selectHeatMapItemZRangeMode =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isHeatMapItem(item)) {
+      return item.zRangeMode ?? "auto"
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectHeatMapItemZRangePercentile =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isHeatMapItem(item)) {
+      return item.zRangePercentile ?? 2
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectHeatMapItemZRange =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isHeatMapItem(item)) {
+      return item.zRange ?? null
     } else {
       throw new Error("invalid VisualaizeItemType")
     }
@@ -645,6 +733,16 @@ export const selectImageItemShowRoiLabels =
     const item = selectVisualizeItemById(itemId)(state)
     if (isImageItem(item)) {
       return item.showRoiLabels
+    } else {
+      throw new Error("invalid VisualaizeItemType")
+    }
+  }
+
+export const selectImageItemRoiOutline =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    if (isImageItem(item)) {
+      return item.roiOutline
     } else {
       throw new Error("invalid VisualaizeItemType")
     }

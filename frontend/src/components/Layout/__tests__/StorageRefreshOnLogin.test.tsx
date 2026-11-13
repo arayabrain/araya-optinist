@@ -20,6 +20,7 @@ import { render, act } from "@testing-library/react"
 import { refreshAllWorkspacesStorageApi } from "api/workspace"
 import Layout from "components/Layout"
 import { AppDispatch } from "store/store"
+import { saveToken } from "utils/auth/AuthUtils"
 
 jest.mock("api/workspace")
 
@@ -94,9 +95,8 @@ describe("Auto storage refresh throttle", () => {
   beforeEach(() => {
     jest.clearAllMocks()
     sessionStorage.clear()
-    // What `getToken()` reads; a token plus no user in the store is the state a
-    // real login lands in
-    localStorage.setItem("access_token", "token")
+    // A token plus no user in the store is the state a real login lands in
+    saveToken("token")
     mockRefreshAll.mockResolvedValue({ refreshed_workspaces: 1 } as never)
   })
 

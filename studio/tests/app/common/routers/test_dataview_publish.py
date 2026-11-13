@@ -445,6 +445,7 @@ class TestPublicDataviewReproduceWorkflow:
 
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.error.value
+        mock_record.hidden_outputs = None
 
         mock_remote_controller = MagicMock()
         mock_remote_controller.download_experiment = AsyncMock(return_value=True)
@@ -495,6 +496,7 @@ class TestPublicDataviewReproduceWorkflow:
 
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.synced.value
+        mock_record.hidden_outputs = None
 
         mock_remote_controller = MagicMock()
         # Use AsyncMock for async method
@@ -555,6 +557,7 @@ class TestPublicDataviewReproduceWorkflow:
 
         mock_record = MagicMock()
         mock_record.local_sync_status = LocalSyncStatus.error.value
+        mock_record.hidden_outputs = None
 
         mock_remote_controller = MagicMock()
         mock_remote_controller.download_experiment = AsyncMock(return_value=True)

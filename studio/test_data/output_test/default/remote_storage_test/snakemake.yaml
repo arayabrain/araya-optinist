@@ -47,11 +47,8 @@ rules:
     nwbfile: null
     output: test_data/snakemake/1/suite2p_file_convert.pkl
     params:
-      batch_size: 500
-      do_registration: 1
       force_sktiff: false
-      nchannels: 1
-      nplanes: 1
+      batch_size: 500
     path: suite2p/suite2p_file_convert
     return_arg:
       '0': image
@@ -65,22 +62,41 @@ rules:
     nwbfile: null
     output: test_data/snakemake/2/suite2p_roi.pkl
     params:
-      allow_overlap: false
-      fs: 10
-      high_pass: 100
-      inner_neuropil_radius: 2
-      max_iterations: 20
-      max_overlap: 0.75
-      min_neuropil_pixels: 350
-      nbinned: 5000
-      neucoeff: 0.7
-      preclassify: 0
-      soma_crop: true
-      sparse_mode: true
-      spatial_hp_detect: 25
-      spatial_scale: 0
-      tau: 1
-      threshold_scaling: 1
+      tau: 1.0
+      diameter:
+      - 12
+      - 12
+      detection:
+        algorithm: sparsery
+        highpass_time: 100
+        nbins: 5000
+        denoise: false
+        block_size:
+        - 64
+        - 64
+        threshold_scaling: 1.0
+        max_overlap: 0.75
+        soma_crop: true
+        npix_norm_min: 0.0
+        npix_norm_max: 100
+        sparsery_settings:
+          spatial_scale: 0
+          highpass_neuropil: 25
+          max_ROIs: 5000
+          active_percentile: 0.0
+        sourcery_settings:
+          max_iterations: 20
+          connected: true
+          smooth_masks: false
+      extraction:
+        allow_overlap: false
+        inner_neuropil_radius: 2
+        min_neuropil_pixels: 350
+        snr_threshold: 0.0
+        batch_size: 500
+      classification:
+        preclassify: 0.0
+        use_builtin_classifier: false
     path: suite2p/suite2p_roi
     return_arg:
       ops: ops

@@ -1,13 +1,12 @@
 import argparse
-import asyncio
 import os
 import sys
 from pathlib import Path
 
-import boto3
 import yaml
 
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
+from studio.app.common.core.storage.storage_scan import get_s3_client
 
 # Add the project root directory to the Python path
 project_root = Path(__file__).parent.parent.parent
@@ -41,74 +40,13 @@ logger = AppLogger.get_logger()
 class CloudWorkspaceDataCapacityService:
     """
     Enhanced workspace data capacity service that includes S3 storage usage
+
+    Blocking (S3 listings, file and database writes): async request code
+    runs it through run_storage_scan.
     """
 
     @classmethod
-    async def get_s3_workspace_size(cls, bucket_name: str, workspace_id: str) -> int:
-        """
-        Calculate total S3 storage size for a workspace.
-
-        Args:
-            bucket_name: S3 bucket name
-            workspace_id: Workspace ID to check storage for
-
-        Returns:
-            Total storage size in bytes for both input and output data
-        """
-        total_size = 0
-
-        try:
-            s3_client = boto3.client("s3")
-
-            # Check both input and output directories for the workspace
-            prefixes = [
-                f"{S3StorageController.S3_BASE_PATH}/input/{workspace_id}/",
-                f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/",
-            ]
-
-            logger.info(f"Calculating S3 usage for workspace {workspace_id}")
-
-            for prefix in prefixes:
-                try:
-                    # logger.debug(f"Scanning S3 prefix: {prefix}")
-                    paginator = s3_client.get_paginator("list_objects_v2")
-                    page_iterator = paginator.paginate(
-                        Bucket=bucket_name, Prefix=prefix
-                    )
-
-                    prefix_size = 0
-                    object_count = 0
-                    for page in page_iterator:
-                        if "Contents" in page:
-                            for obj in page["Contents"]:
-                                object_size = obj["Size"]
-                                total_size += object_size
-                                prefix_size += object_size
-                                object_count += 1
-
-                    # logger.debug(
-                    #     f"Prefix {prefix}: {object_count} objects, "
-                    #     f"{prefix_size:,} bytes"
-                    # )
-
-                except Exception as e:
-                    logger.warning(f"Failed to get size for prefix {prefix}: {e}")
-                    continue
-
-        except Exception as e:
-            logger.error(
-                f"Failed to calculate S3 storage size for "
-                f"workspace {workspace_id}: {e}"
-            )
-            return 0
-
-        logger.info(
-            f"S3 storage size for workspace {workspace_id}: {total_size:,} bytes"
-        )
-        return total_size
-
-    @classmethod
-    async def get_s3_experiment_size(
+    def get_s3_experiment_size(
         cls, bucket_name: str, workspace_id: str, unique_id: str
     ) -> int:
         """
@@ -125,10 +63,8 @@ class CloudWorkspaceDataCapacityService:
         total_size = 0
 
         try:
-            s3_client = boto3.client("s3")
-            prefix = (
-                f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/{unique_id}/"
-            )
+            s3_client = get_s3_client()
+            prefix = S3StorageController.make_s3_output_prefix(workspace_id, unique_id)
 
             # logger.debug(
             #     f"Calculating S3 usage for experiment {workspace_id}/{unique_id}"
@@ -159,43 +95,7 @@ class CloudWorkspaceDataCapacityService:
         return total_size
 
     @classmethod
-    async def update_experiment_data_usage_with_s3(
-        cls, bucket_name: str, workspace_id: str, unique_id: str
-    ):
-        """
-        Update experiment data usage including both local and S3 storage.
-        """
-        # Get local storage size
-        workflow_dir = join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id])
-        local_size = 0
-        if os.path.exists(workflow_dir):
-            local_size = get_folder_size(workflow_dir)
-
-        # Get S3 storage size
-        s3_size = await cls.get_s3_experiment_size(bucket_name, workspace_id, unique_id)
-
-        # Total data usage is the max of local and S3 (they are mirrored)
-        # Using max instead of sum to avoid double-counting synced files
-        total_data_usage = max(local_size, s3_size)
-
-        logger.info(
-            f"Experiment {workspace_id}/{unique_id} usage: "
-            f"local={local_size:,} bytes, S3={s3_size:,} bytes, "
-            f"total={total_data_usage:,} bytes (using max to avoid double-counting)"
-        )
-
-        # Update the yaml file and database
-        WorkspaceDataCapacityService._update_exp_data_usage_yaml(
-            workspace_id, unique_id, total_data_usage
-        )
-
-        if WorkspaceDataCapacityService.is_available():
-            WorkspaceDataCapacityService._update_exp_data_usage_db(
-                workspace_id, unique_id, total_data_usage
-            )
-
-    @classmethod
-    async def update_workspace_data_usage_with_s3(
+    def update_workspace_data_usage_with_s3(
         cls, db, bucket_name: str, workspace_id: str, auto_commit: bool = True
     ):
         """
@@ -209,8 +109,8 @@ class CloudWorkspaceDataCapacityService:
 
         # Get S3 input storage size
         try:
-            s3_client = boto3.client("s3")
-            prefix = f"{S3StorageController.S3_BASE_PATH}input/{workspace_id}/"
+            s3_client = get_s3_client()
+            prefix = S3StorageController.make_s3_input_prefix(workspace_id)
 
             paginator = s3_client.get_paginator("list_objects_v2")
             page_iterator = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
@@ -250,7 +150,7 @@ class CloudWorkspaceDataCapacityService:
             db.commit()
 
     @classmethod
-    async def recalculate_workspace_data_capacity_with_s3(
+    def recalculate_workspace_data_capacity_with_s3(
         cls, db, bucket_name: str, workspace_id: str, delete_existing: bool = False
     ):
         """
@@ -269,8 +169,8 @@ class CloudWorkspaceDataCapacityService:
         # Get all experiment folders from S3
         s3_experiments = set()
         try:
-            s3_client = boto3.client("s3")
-            prefix = f"{S3StorageController.S3_BASE_PATH}/output/{workspace_id}/"
+            s3_client = get_s3_client()
+            prefix = S3StorageController.make_s3_output_prefix(workspace_id)
 
             response = s3_client.list_objects_v2(
                 Bucket=bucket_name, Prefix=prefix, Delimiter="/"
@@ -306,7 +206,7 @@ class CloudWorkspaceDataCapacityService:
                     local_size = get_folder_size(local_exp_dir)
 
                 # Get S3 size
-                s3_size = await cls.get_s3_experiment_size(
+                s3_size = cls.get_s3_experiment_size(
                     bucket_name, workspace_id, unique_id
                 )
 
@@ -405,19 +305,19 @@ class CloudWorkspaceDataCapacityService:
         )
 
     @classmethod
-    async def sync_workspace_data_capacity_with_s3(
+    def sync_workspace_data_capacity_with_s3(
         cls, db, bucket_name: str, workspace_id: str, delete_existing: bool = False
     ):
         """
         Sync workspace data usage including S3 storage and recalculate data capacity.
         """
-        await cls.update_workspace_data_usage_with_s3(db, bucket_name, workspace_id)
-        await cls.recalculate_workspace_data_capacity_with_s3(
+        cls.update_workspace_data_usage_with_s3(db, bucket_name, workspace_id)
+        cls.recalculate_workspace_data_capacity_with_s3(
             db, bucket_name, workspace_id, delete_existing=delete_existing
         )
 
 
-async def main(args):
+def main(args):
     """
     Main function to sync workspace data capacity including S3 storage.
     """
@@ -460,7 +360,7 @@ async def main(args):
                     f"for workspace: [{workspace_id}]"
                 )
                 service = CloudWorkspaceDataCapacityService
-                await service.sync_workspace_data_capacity_with_s3(
+                service.sync_workspace_data_capacity_with_s3(
                     db,
                     bucket_name,
                     str(workspace_id),
@@ -470,7 +370,7 @@ async def main(args):
         logger.info("Single-user mode detected")
         # Single-user mode always uses delete_existing=True (default)
         service = CloudWorkspaceDataCapacityService
-        await service.recalculate_workspace_data_capacity_with_s3(
+        service.recalculate_workspace_data_capacity_with_s3(
             db=None,
             bucket_name=bucket_name,
             workspace_id="1",
@@ -497,4 +397,4 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    asyncio.run(main(args))
+    main(args)

@@ -1,3 +1,5 @@
+import { execSync } from "child_process"
+
 import { test, expect, request, Page } from "@playwright/test"
 
 import {
@@ -10,9 +12,11 @@ import {
   apiUrl,
   awsJson,
   cloudwatchHas,
+  devIsUp,
   disruptiveSkipReason,
   invokeMonitoringSweep,
   login,
+  nextScheduledStop,
   openWorkspace,
   premiumTargetHealth,
   progressLog,
@@ -57,6 +61,47 @@ function scaleService(service: string, desired: number): void {
   awsJson(
     `ecs update-service --cluster ${CLUSTER} --service ${service} ` +
       `--desired-count ${desired} --region ${AWS_REGION}`,
+  )
+}
+
+// The free-manager Lambda resyncs the free ECS service up to the ASG's desired
+// capacity on every scheduled run, so it would undo a deliberate scale to zero
+// within 5 minutes. The tests that take the tier to zero park the schedule for
+// their duration - the same thing dev_scheduler does when it manipulates
+// free-tier capacity. OUT-02 does not, since it only rolls the public tier and
+// can run for the better part of an hour.
+const FREE_MANAGER_SCHEDULE = "development-free-manager-schedule"
+
+// Only re-enable what this lane disabled, and only the tests that take the
+// free service to zero need it parked at all. dev_scheduler disables this rule
+// overnight, so enabling one it had parked would be a side effect of ours.
+// `disable-rule` succeeds on an already-disabled rule, so the prior state has
+// to be read rather than inferred from the call succeeding.
+let scheduleParkedByUs = false
+
+function parkFreeManagerSchedule(): void {
+  const state = awsJson<string>(
+    `events describe-rule --name ${FREE_MANAGER_SCHEDULE} --query State`,
+  )
+  if (state !== "ENABLED") {
+    console.log(`${FREE_MANAGER_SCHEDULE} is already ${state}; leaving it`)
+    return
+  }
+  execSync(
+    `aws events disable-rule --name ${FREE_MANAGER_SCHEDULE} ` +
+      `--region ${AWS_REGION}`,
+    { stdio: "pipe", timeout: 60_000 },
+  )
+  scheduleParkedByUs = true
+}
+
+function unparkFreeManagerSchedule(): void {
+  if (!scheduleParkedByUs) return
+  scheduleParkedByUs = false
+  execSync(
+    `aws events enable-rule --name ${FREE_MANAGER_SCHEDULE} ` +
+      `--region ${AWS_REGION}`,
+    { stdio: "pipe", timeout: 60_000 },
   )
 }
 
@@ -125,6 +170,8 @@ function guardDisruptive(): void {
     process.env.BASE_URL || "",
     "this lane only runs against the development environment",
   ).toContain("development-optinist")
+  // A retry re-does the mutation instead of re-observing it
+  expect(test.info().project.retries, "run this lane with --retries 0").toBe(0)
 }
 
 // The scheduler stops this environment at 13:00 UTC on weekdays and verifies
@@ -134,25 +181,17 @@ function guardDisruptive(): void {
 function skipIfTooCloseToScheduledStop(minutes: number): void {
   const now = new Date()
   const at = now.toISOString().slice(11, 16)
-  // Up = start cron(0 23 ? * SUN-THU) .. stop cron(0 13 ? * MON-FRI), so
-  // 23:00 -> 13:00 UTC on weekdays. Asked separately from the deadline below:
-  // outside the window there is no stop to be too close to, and a lane run
-  // against a scaled-to-zero environment reports ALB 503s as locator timeouts.
-  const day = now.getUTCDay()
-  const hour = now.getUTCHours()
+  // Asked separately from the deadline below: outside the window there is no
+  // stop to be too close to, and a lane run against a scaled-to-zero
+  // environment reports ALB 503s as locator timeouts.
   test.skip(
-    !((hour >= 23 && day <= 4) || (hour < 13 && day >= 1 && day <= 5)),
+    !devIsUp(now),
     `the dev environment is stopped at ${at} UTC; it runs 23:00 -> 13:00 UTC ` +
       `on weekdays`,
   )
   // The next 13:00 UTC, not today's: the environment starts at 23:00 UTC, so
-  // for most of a session today's stop is already behind us. Saturday and
-  // Sunday carry no stop at all -- the rule only fires Mon-Fri.
-  const stop = new Date(now)
-  stop.setUTCHours(13, 0, 0, 0)
-  while (stop <= now || stop.getUTCDay() === 0 || stop.getUTCDay() === 6) {
-    stop.setUTCDate(stop.getUTCDate() + 1)
-  }
+  // for most of a session today's stop is already behind us
+  const stop = nextScheduledStop(now)
   const left = Math.floor((stop.getTime() - now.getTime()) / 60_000)
   test.skip(
     left < minutes,
@@ -166,11 +205,19 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
 
   // A Playwright timeout aborts the test body without running its finally, so
   // the in-test restore is not the last line of defence it looks like. Back to
-  // one task: every test here refuses to start below that.
+  // one task, and the schedule back on: every test here refuses to start below
+  // that. The unpark is in a finally so a failure restoring one resource
+  // cannot strand the other.
   test.afterEach(async () => {
-    if (describeService(FREE_SERVICE).desiredCount === 0) {
-      scaleService(FREE_SERVICE, 1)
-      console.log(`restored ${FREE_SERVICE} to 1 task after an aborted outage`)
+    try {
+      if (describeService(FREE_SERVICE).desiredCount === 0) {
+        scaleService(FREE_SERVICE, 1)
+        console.log(
+          `restored ${FREE_SERVICE} to 1 task after an aborted outage`,
+        )
+      }
+    } finally {
+      unparkFreeManagerSchedule()
     }
   })
 
@@ -191,6 +238,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
     const anon = await request.newContext()
     const start = Date.now()
     try {
+      parkFreeManagerSchedule()
       scaleService(FREE_SERVICE, 0)
       await pollService(FREE_SERVICE, (s) => s.runningCount === 0, "0 tasks")
 
@@ -470,6 +518,7 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       ).toBeGreaterThan(0)
       const anon = await request.newContext()
       try {
+        parkFreeManagerSchedule()
         scaleService(FREE_SERVICE, 0)
         await pollService(FREE_SERVICE, (s) => s.runningCount === 0, "0 tasks")
 

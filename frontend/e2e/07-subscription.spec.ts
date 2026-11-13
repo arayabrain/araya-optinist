@@ -165,7 +165,13 @@ test.describe("Free plan state", () => {
       // so a free user never has it at any width
       ["/subscription", 'h3:has-text("Subscription Plans")'],
       ["/account", 'h2:has-text("Account Profile")'],
-      ["/subscription/manage", "text=Free Plan"],
+      // "Free Plan" is the pre-response default, so it cannot fail. The button
+      // is disabled until the page's three subscription requests settle, and
+      // an error swaps the page for an alert, so it only enables on a real load
+      [
+        "/subscription/manage",
+        'button:has-text("Subscribe Now"):not([disabled])',
+      ],
     ]
     const viewports = [
       { width: 375, height: 812 },
@@ -488,6 +494,10 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     page,
   }) => {
     await mockPremiumBilling(page)
+    const portalUrl = "https://billing.stripe.com/p/session/e2e-session"
+    await page.route("**/api/subsc/mgmts/portal-session", (route) =>
+      route.fulfill({ json: { url: portalUrl } }),
+    )
     await page.route("https://billing.stripe.com/**", (route) =>
       route.fulfill({ contentType: "text/html", body: "<h1>portal</h1>" }),
     )
@@ -495,11 +505,14 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     const manageBilling = page.locator('button:has-text("Manage Billing")')
     await expect(manageBilling).toBeVisible({ timeout: 30_000 })
 
-    // The button opens Stripe's hosted login link directly - no portal session
-    // is created, so the assertion is the destination host
-    const popup = page.waitForEvent("popup")
+    const sessionRequest = page.waitForRequest(
+      (r) =>
+        r.url().includes("/api/subsc/mgmts/portal-session") &&
+        r.method() === "POST",
+    )
     await manageBilling.click()
-    expect((await popup).url()).toContain("billing.stripe.com")
+    await sessionRequest
+    await expect(page).toHaveURL(portalUrl, { timeout: 30_000 })
   })
 
   test("SUB-17 - Browser Back out of checkout returns to a working page", async ({

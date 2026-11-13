@@ -22,10 +22,18 @@ REQUIREMENTS:
 - pytest-asyncio
 """
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+
+from studio.tests.app.common.db_pool_probe import (
+    asgi_client,
+    one_connection_pool,
+    stub_firebase_verify,
+)
 
 # Test data
 TEST_UID = "test_user_12345"
@@ -566,6 +574,59 @@ class TestLoggedOutUserTracking:
         assert result is False
 
 
+class TestFreeActivityUpdateKeepsAWorkflowHost:
+    """
+    ``instance_id`` follows the serving instance, except while the row has a
+    running workflow: then it names the host the workflow runs on, which the
+    free scale-in reads to spare that host. A request served elsewhere in the
+    meantime (a second tab, a new session after the sticky cookie lapsed)
+    must not move it.
+    """
+
+    def test_the_update_moves_instance_id_only_when_no_workflow_runs(self):
+        from unittest.mock import MagicMock, patch
+
+        from sqlalchemy.dialects import mysql
+
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _update_free_user_activity_sync,
+        )
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value.rowcount = 1
+
+        with patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.session_scope"
+        ) as mock_session_scope, patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware._get_instance_id",
+            return_value="i-0serving",
+        ), patch(
+            "studio.app.common.core.middleware."
+            "user_activity_middleware.is_user_logged_out",
+            return_value=False,
+        ):
+            mock_session_scope.return_value.__enter__.return_value = mock_session
+
+            result = _update_free_user_activity_sync(TEST_USER_ID)
+
+        assert result is True
+        compiled = (
+            mock_session.execute.call_args_list[0]
+            .args[0]
+            .compile(dialect=mysql.dialect())
+        )
+        sql = " ".join(str(compiled).split())
+        assert sql.startswith("UPDATE free_user_assignments SET ")
+        assert (
+            "instance_id=CASE WHEN (free_user_assignments.active_workflow_count > %s) "
+            "THEN free_user_assignments.instance_id ELSE %s END" in sql
+        )
+        assert "i-0serving" in compiled.params.values()
+        assert "last_activity=%s" in sql
+
+
 class TestClearFreeUserLoggedOutAt:
     """Test clearing logged_out_at on re-login"""
 
@@ -998,3 +1059,51 @@ class TestFreeUserActivityInstanceIdWrite:
 
         assert result is False
         mock_session.add.assert_not_called()  # no INSERT / no usage-log resurrect
+
+
+class TestTierLookupOffTheEventLoop:
+    """A tier cache miss on a real one-connection pool (db_pool_probe)."""
+
+    @pytest.mark.asyncio
+    async def test_a_tier_lookup_waiting_for_the_pool_leaves_the_loop_free(
+        self, tmp_path
+    ):
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            UserActivityMiddleware,
+            _user_tier_cache,
+        )
+        from studio.app.common.core.mode import MODE
+
+        app = FastAPI()
+
+        @app.get("/api/test")
+        async def endpoint():
+            return {}
+
+        @app.get("/health")
+        async def health_endpoint():
+            return {}
+
+        _user_tier_cache.clear()
+        with one_connection_pool(
+            tmp_path / "pool.db", timeout=3
+        ) as engine, stub_firebase_verify(TEST_UID), patch.object(
+            MODE, "IS_STANDALONE", False
+        ):
+            async with asgi_client(UserActivityMiddleware(app)) as client:
+                with engine.connect():
+                    request = asyncio.create_task(
+                        client.get(
+                            "/api/test",
+                            headers={"Authorization": f"Bearer {TEST_JWT_TOKEN}"},
+                        )
+                    )
+                    # Long enough for the lookup to reach the pool wait
+                    await asyncio.sleep(0.2)
+                    health = await asyncio.wait_for(client.get("/health"), timeout=1)
+                    request_was_waiting = not request.done()
+                response = await request
+
+        assert health.status_code == 200
+        assert request_was_waiting
+        assert response.status_code == 200

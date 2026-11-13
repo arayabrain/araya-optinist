@@ -4,6 +4,8 @@ Unit tests for data cleanup job.
 Tests cleanup logic with S3 verification and orphaned data handling.
 """
 
+import os
+import tempfile
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -308,6 +310,97 @@ class TestCleanupUserData:
 
         assert result == CleanupOutcome.ERROR
         mock_rmtree.assert_not_called()
+
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=True)
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_input_tiff_cache_is_removed_without_an_s3_check(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
+        """The cache is never uploaded, so verifying it against S3 would keep
+        the workspace (and report ERROR) forever."""
+        with patch.object(
+            DataCleanupJob, "_verify_s3_backup_exists", return_value=True
+        ) as verify:
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=True):
+                    with patch("os.listdir", return_value=["exp123", "input_tiff"]):
+                        with patch("shutil.rmtree") as mock_rmtree:
+                            result = DataCleanupJob._cleanup_user_data(
+                                "123", ["workspace1"]
+                            )
+
+        from studio.app.dir_path import DIRPATH
+
+        assert result == CleanupOutcome.CLEANED
+        assert [call.args[2] for call in verify.call_args_list] == ["exp123"]
+        deleted = [call[0][0] for call in mock_rmtree.call_args_list]
+        assert f"{DIRPATH.OUTPUT_DIR}/workspace1/exp123" in deleted
+        assert f"{DIRPATH.OUTPUT_DIR}/workspace1/input_tiff" in deleted
+
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=False)
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_input_tiff_cache_stays_while_an_experiment_is_kept(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
+        """A kept experiment's pickle and NWB point at the cached TIFF."""
+        with patch.object(
+            DataCleanupJob, "_verify_s3_backup_exists", return_value=False
+        ):
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=True):
+                    with patch("os.listdir", return_value=["exp123", "input_tiff"]):
+                        with patch("shutil.rmtree") as mock_rmtree:
+                            DataCleanupJob._cleanup_user_data("123", ["workspace1"])
+
+        assert [call[0][0] for call in mock_rmtree.call_args_list] == []
+
+    @patch.object(DataCleanupJob, "_verify_s3_input_backup_exists", return_value=False)
+    @patch.object(
+        DataCleanupJob, "_resolve_user_bucket_name", return_value="user-bucket"
+    )
+    @patch.object(DataCleanupJob, "_check_user_relogin", return_value=False)
+    def test_input_tiff_cache_stays_when_an_experiment_deletion_fails(
+        self, mock_relogin, mock_bucket, mock_input_verify
+    ):
+        with patch.object(
+            DataCleanupJob, "_verify_s3_backup_exists", return_value=True
+        ):
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=True):
+                    with patch("os.listdir", return_value=["input_tiff", "exp123"]):
+                        with patch(
+                            "shutil.rmtree", side_effect=OSError("busy")
+                        ) as mock_rmtree:
+                            result = DataCleanupJob._cleanup_user_data(
+                                "123", ["workspace1"]
+                            )
+
+        assert result == CleanupOutcome.ERROR
+        deleted = [call[0][0] for call in mock_rmtree.call_args_list]
+        assert [os.path.basename(p) for p in deleted] == ["exp123"]
+
+
+def test_input_verification_skips_caiman_memmaps(tmp_path, monkeypatch):
+    """A crashed CNMF run leaves `<input>.mmap` beside the input; it is never
+    uploaded, so it must not fail the backup check."""
+    from studio.app.dir_path import DIRPATH
+
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    ws = tmp_path / "ws1"
+    ws.mkdir()
+    (ws / "data.tif").write_bytes(b"x")
+    (ws / "data.tif.caiman_cnmf_d1_9_d2_7_d3_1_order_C_frames_5.mmap").write_bytes(b"x")
+    s3 = MagicMock()
+    with patch("boto3.client", return_value=s3):
+        assert DataCleanupJob._verify_s3_input_backup_exists("bucket", "ws1")
+    keys = [call.kwargs["Key"] for call in s3.head_object.call_args_list]
+    assert [k.rsplit("/", 1)[1] for k in keys] == ["data.tif"]
 
 
 class TestVerifyNoActiveWorkflows:
@@ -761,6 +854,36 @@ class TestVerifyS3InputBackup:
                         "user-bucket", "workspace1"
                     )
         assert result is False
+
+    def test_a_killed_uploads_temporary_file_does_not_need_a_backup(self):
+        """It is never uploaded, so requiring an S3 copy would keep the
+        workspace's input forever."""
+        from botocore.exceptions import ClientError
+
+        from studio.app.common.routers.files import _atomic_replace
+
+        with tempfile.TemporaryDirectory() as d:
+            with _atomic_replace(os.path.join(d, "a.h5")):
+                (orphan,) = os.listdir(d)
+
+        def head_object(Bucket, Key):
+            if Key.endswith("/a.h5"):
+                return {}
+            raise ClientError({"Error": {"Code": "404"}}, "head_object")
+
+        with patch("boto3.client") as mock_boto:
+            mock_s3 = MagicMock()
+            mock_boto.return_value = mock_s3
+            mock_s3.head_object.side_effect = head_object
+            with patch("os.path.isdir", return_value=True):
+                with patch(
+                    "os.walk", return_value=[("/in/workspace1", [], ["a.h5", orphan])]
+                ):
+                    result = DataCleanupJob._verify_s3_input_backup_exists(
+                        "user-bucket", "workspace1"
+                    )
+        assert result is True
+        assert mock_s3.head_object.call_count == 1
 
     def test_empty_input_dir_returns_true(self):
         """Nothing to verify (no files) → safe to delete the empty dir."""

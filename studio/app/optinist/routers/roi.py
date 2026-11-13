@@ -1,4 +1,5 @@
 import os
+from typing import Callable, TypeVar, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -9,16 +10,61 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
     RemoteStorageReader,
+    RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.filepath_creater import resolve_absolute_output_path
 from studio.app.common.core.workspace.workspace_dependencies import is_workspace_owner
 from studio.app.optinist.core.edit_ROI import EditROI, EditRoiUtils
+from studio.app.optinist.dataclass.roi import EditImagesUnavailableError
 from studio.app.optinist.schemas.roi import RoiList, RoiPos, RoiStatus
 
 router = APIRouter(prefix="/api/visualizations", tags=["visualizations"])
 
 logger = AppLogger.get_logger()
+
+_T = TypeVar("_T")
+
+
+def roi_filepath(filepath: str, workspace_id: Union[int, str]) -> str:
+    """The node path an ROI endpoint acts on, bound to the workspace it authorized."""
+    filepath = resolve_absolute_output_path(filepath)
+    path_workspace_id = ExptOutputPathIds(os.path.dirname(filepath)).workspace_id
+    if path_workspace_id != str(workspace_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="filepath does not belong to the authorized workspace",
+        )
+    return filepath
+
+
+def _refuse_while_locked(filepath: str) -> None:
+    ids = ExptOutputPathIds(os.path.dirname(filepath))
+    try:
+        RemoteSyncLockFileUtil.check_sync_lock_file(
+            ids.workspace_id, ids.unique_id, raise_error=True
+        )
+    except RemoteStorageLockError as e:
+        logger.warning(e)
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+
+
+def unlocked_roi_filepath(filepath: str = Depends(roi_filepath)) -> str:
+    """The same path, refused while a commit (or, with remote storage, a run)
+    holds the experiment lock."""
+    _refuse_while_locked(filepath)
+    return filepath
+
+
+async def _edit(filepath: str, action: Callable[[EditROI], _T]) -> _T:
+    """action(EditROI(filepath)) on the ROI edit thread. The lock is checked again
+    there: a commit may have taken it while the edit waited for the thread."""
+
+    def run():
+        _refuse_while_locked(filepath)
+        return action(EditROI(file_path=filepath))
+
+    return await EditRoiUtils.run_on_edit_thread(run)
 
 
 async def ensure_experiment_synced_for_edit(
@@ -70,13 +116,12 @@ async def ensure_experiment_synced_for_edit(
     dependencies=[Depends(is_workspace_owner)],
 )
 async def status_roi(
-    filepath: str,
+    filepath: str = Depends(unlocked_roi_filepath),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    filepath = resolve_absolute_output_path(filepath)
     # Ensure experiment is synced before Edit ROI operations
     await ensure_experiment_synced_for_edit(filepath, remote_bucket_name)
-    return EditROI(file_path=filepath).get_status()
+    return await _edit(filepath, lambda edit_roi: edit_roi.get_status())
 
 
 @router.post(
@@ -84,9 +129,8 @@ async def status_roi(
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def add_roi(filepath: str, pos: RoiPos):
-    filepath = resolve_absolute_output_path(filepath)
-    EditROI(file_path=filepath).add(pos)
+async def add_roi(pos: RoiPos, filepath: str = Depends(unlocked_roi_filepath)):
+    await _edit(filepath, lambda edit_roi: edit_roi.add(pos))
     return True
 
 
@@ -95,9 +139,8 @@ async def add_roi(filepath: str, pos: RoiPos):
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def merge_roi(filepath: str, roi_list: RoiList):
-    filepath = resolve_absolute_output_path(filepath)
-    EditROI(file_path=filepath).merge(roi_list.ids)
+async def merge_roi(roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)):
+    await _edit(filepath, lambda edit_roi: edit_roi.merge(roi_list.ids))
     return True
 
 
@@ -106,9 +149,20 @@ async def merge_roi(filepath: str, roi_list: RoiList):
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def delete_roi(filepath: str, roi_list: RoiList):
-    filepath = resolve_absolute_output_path(filepath)
-    EditROI(file_path=filepath).delete(roi_list.ids)
+async def delete_roi(roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)):
+    await _edit(filepath, lambda edit_roi: edit_roi.delete(roi_list.ids))
+    return True
+
+
+@router.post(
+    "/image/{filepath:path}/promote_roi",
+    response_model=bool,
+    dependencies=[Depends(is_workspace_owner)],
+)
+async def promote_roi(
+    roi_list: RoiList, filepath: str = Depends(unlocked_roi_filepath)
+):
+    await _edit(filepath, lambda edit_roi: edit_roi.promote(roi_list.ids))
     return True
 
 
@@ -118,16 +172,18 @@ async def delete_roi(filepath: str, roi_list: RoiList):
     dependencies=[Depends(is_workspace_owner)],
 )
 async def commit_edit(
-    filepath: str,
+    filepath: str = Depends(roi_filepath),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
-    filepath = resolve_absolute_output_path(filepath)
     try:
-        EditRoiUtils.execute(filepath, remote_bucket_name)
+        await EditRoiUtils.execute(filepath, remote_bucket_name)
 
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except EditImagesUnavailableError as e:
+        logger.error(e)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -143,7 +199,6 @@ async def commit_edit(
     response_model=bool,
     dependencies=[Depends(is_workspace_owner)],
 )
-async def cancel_edit(filepath: str):
-    filepath = resolve_absolute_output_path(filepath)
-    EditROI(file_path=filepath).cancel()
+async def cancel_edit(filepath: str = Depends(unlocked_roi_filepath)):
+    await _edit(filepath, lambda edit_roi: edit_roi.cancel())
     return True

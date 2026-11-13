@@ -6,9 +6,10 @@ import {
   ReactNode,
   useState,
   useRef,
+  useCallback,
 } from "react"
 import { useDrop } from "react-dnd"
-import { useSelector, useDispatch } from "react-redux"
+import { useSelector, useDispatch, useStore } from "react-redux"
 import {
   ReactFlow,
   isNode,
@@ -34,6 +35,7 @@ import {
   TreeItemDragObject,
   TreeItemDropResult,
 } from "components/Workspace/FlowChart/DnDItemType"
+import { isConnectionValid } from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
 import {
   reactFlowEdgeTypes,
   reactFlowNodeTypes,
@@ -54,6 +56,7 @@ import {
 } from "store/slice/FlowElement/FlowElementSlice"
 import { NodeData } from "store/slice/FlowElement/FlowElementType"
 import { UseRunPipelineReturnType } from "store/slice/Pipeline/PipelineHook"
+import { RootState } from "store/store"
 
 const ReactFlowProviderComponent = ReactFlowProvider as FC<{
   children: ReactNode
@@ -67,6 +70,11 @@ export const ReactFlowComponent = memo(function ReactFlowComponent(
   const edges = flowEdges.filter((item) => !isNode(item)) as Edge<NodeData>[]
   const loading = useSelector(selectLoading)
   const dispatch = useDispatch()
+  const store = useStore<RootState>()
+  const isValidConnection = useCallback(
+    (connection: Connection) => isConnectionValid(connection, store.getState()),
+    [store],
+  )
 
   const onConnect = (params: Connection | Edge) => {
     dispatch(
@@ -154,6 +162,7 @@ export const ReactFlowComponent = memo(function ReactFlowComponent(
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            isValidConnection={isValidConnection}
             onInit={onInit}
             onDragOver={onDragOver}
             onNodeDragStop={onNodeDragStop}

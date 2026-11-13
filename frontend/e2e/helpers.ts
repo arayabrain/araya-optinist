@@ -1,4 +1,9 @@
-import { execFileSync, execSync } from "child_process"
+import {
+  ExecFileSyncOptions,
+  ExecSyncOptions,
+  execFileSync,
+  execSync,
+} from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 
@@ -393,8 +398,10 @@ export function runCompose(
     .trim()
 }
 
+const BACKEND_EXEC = `${COMPOSE} exec -T studio-dev-be`
+
 export function runInBackend(cmd: string, input?: string): string {
-  return execSync(`${COMPOSE} exec -T studio-dev-be ${cmd}`, {
+  return execSync(`${BACKEND_EXEC} ${cmd}`, {
     cwd: REPO_ROOT,
     stdio: ["pipe", "pipe", "pipe"],
     input,
@@ -471,6 +478,43 @@ except auth.UserNotFoundError:
     pass
 `,
   )
+}
+
+const SWEEP_SCRIPT = ".github/scripts/sweep_e2e_firebase_users.py"
+// list_users pages the whole project, so the sweep outgrows the one-shot timeout
+const SWEEP_TIMEOUT_MS = 120_000
+
+// The e2e Firebase project is the same whichever BASE_URL a run targets, so a
+// deployed run needs no container: an interpreter that can import
+// firebase_admin reads the checkout's own credential, and the sweep script
+// refuses any project but the shared test one. Named rather than guessed, so a
+// missing dependency reads as such and not as a product bug.
+export const FIREBASE_PYTHON = process.env.FIREBASE_ADMIN_PYTHON || "python3"
+
+// A run that dies before its afterAll orphans the Firebase user even though the
+// DB row is gone, which puts it beyond the reach of any DB-driven cleanup.
+// Returns how many accounts the sweep removed; the script lists each address
+// on stderr, which passes straight through to the run's log.
+export function sweepE2eFirebaseUsers(): number {
+  const opts = {
+    cwd: REPO_ROOT,
+    stdio: ["ignore", "pipe", "inherit"],
+    timeout: SWEEP_TIMEOUT_MS,
+  } satisfies ExecSyncOptions & ExecFileSyncOptions
+  const out = (
+    isLocalBaseUrl()
+      ? execSync(`${BACKEND_EXEC} poetry run python ${SWEEP_SCRIPT}`, opts)
+      : execFileSync(FIREBASE_PYTHON, [SWEEP_SCRIPT], opts)
+  )
+    .toString()
+    .trim()
+  // poetry and firebase_admin can print their own lines before the count, and
+  // an empty output parses as 0 rather than as the failure it is
+  const last = out.split("\n").pop() ?? ""
+  if (!/^\d+$/.test(last)) {
+    throw new Error(`sweep printed ${JSON.stringify(out)} instead of a count`)
+  }
+  return Number(last)
 }
 
 export function activeUserRows(email: string): number {
@@ -745,8 +789,8 @@ export async function skipUnlessPremiumTargetHealthy(
 
 // The ALB half of "nothing is still held by us". A hard release can delete the
 // assignment row and the listener rule but fail the target-group deletion,
-// stranding a rule-less TG no sweep can find (issue #814) - so /premium/status
-// reporting released is only half the invariant. Only a genuine NotFound counts
+// stranding a rule-less TG that the hourly cleanup removes only later (issue
+// #814) - so /premium/status reporting released is only half the invariant. Only a genuine NotFound counts
 // as absence: premiumTargetHealth() is no substitute, it swallows every error
 // and returns [] for an existing-but-empty group exactly as for a missing one.
 export function expectPremiumTargetGroupGone(userId: number, stage: string) {
@@ -1093,6 +1137,41 @@ export function otherActiveUsers(): string[] {
     : []
 }
 
+// Free users signed in and active within the last minutes, the suite's own
+// included: the Free Manager sizes the free tier from this count
+export function activeFreeUsers(minutes: number): string[] {
+  const rows = runSql(
+    `SELECT u.email FROM free_user_assignments f JOIN users u ON u.id = f.user_id
+       WHERE f.logged_out_at IS NULL
+         AND f.last_activity > UTC_TIMESTAMP() - INTERVAL ${Math.floor(minutes)} MINUTE;`,
+  )
+  return rows
+    ? rows
+        .split("\n")
+        .map((r) => r.trim())
+        .filter(Boolean)
+    : []
+}
+
+// The scheduler runs development 23:00 -> 13:00 UTC on weekdays: it starts at
+// cron(0 23 ? * SUN-THU) and stops at cron(0 13 ? * MON-FRI)
+export function devIsUp(now: Date): boolean {
+  const day = now.getUTCDay()
+  const hour = now.getUTCHours()
+  return (hour >= 23 && day <= 4) || (hour < 13 && day >= 1 && day <= 5)
+}
+
+// The next scheduled stop after a moment: 13:00 UTC on a weekday. Saturday
+// and Sunday carry none.
+export function nextScheduledStop(now: Date): Date {
+  const stop = new Date(now)
+  stop.setUTCHours(13, 0, 0, 0)
+  while (stop <= now || stop.getUTCDay() === 0 || stop.getUTCDay() === 6) {
+    stop.setUTCDate(stop.getUTCDate() + 1)
+  }
+  return stop
+}
+
 // Returns the reason a @disruptive spec must not run right now, or "" if the
 // environment is idle enough to disturb.
 export function disruptiveSkipReason(): string {
@@ -1341,19 +1420,25 @@ export async function deleteE2eWorkspaces(
   return deleted
 }
 
-// The app keeps its tokens in localStorage, so page.request needs them
-// passed explicitly; the page must already be on the app origin
+// The app holds its access token in page memory, so page.request mints one
+// from the context's refresh cookie; the page must already be on the app origin
 export async function apiHeaders(page: Page) {
-  const { token, exToken } = await page.evaluate(() => ({
-    token: localStorage.getItem("access_token"),
-    exToken: localStorage.getItem("ExToken"),
-  }))
-  if (!token) {
+  const refreshed = await page.request.post(`${apiUrl()}/auth/refresh`, {
+    data: {},
+  })
+  if (!refreshed.ok()) {
     throw new Error(
-      "No access_token in localStorage — is the storage state stale? Delete e2e/.auth and rerun.",
+      `No session to refresh (${refreshed.status()}) - is the storage state stale? Delete e2e/.auth and rerun.`,
     )
   }
-  return authHeaders(token, exToken)
+  const { access_token } = await refreshed.json()
+  const exToken = await page.evaluate(() => localStorage.getItem("ExToken"))
+  return authHeaders(access_token, exToken)
+}
+
+export async function hasRefreshCookie(page: Page) {
+  const cookies = await page.context().cookies()
+  return cookies.some((cookie) => cookie.name === "refresh_token")
 }
 
 // Find-or-create a workspace via the API — avoids the virtualized grid
@@ -1432,8 +1517,24 @@ export async function ensureTutorialRecords(page: Page, workspaceName: string) {
 
 export async function reproduceTutorial(page: Page, tutorialName: string) {
   await page.locator('button[role="tab"]:has-text("Record")').click()
-  const row = page.locator(`tr:has-text("${tutorialName}")`).first()
-  await expect(row).toBeVisible({ timeout: 15_000 })
+  // Exact: a "_copy" record shares the original's startedAt, so sort order
+  // cannot separate them
+  const row = page
+    .locator("tr")
+    .filter({ has: page.getByText(tutorialName, { exact: true }) })
+    .first()
+  // Records sort newest first, so each run pushes the tutorials off page 1
+  const showRow = async () => {
+    await expect(
+      page.locator('[data-testid="reproduce-button"]').first(),
+    ).toBeVisible({ timeout: 15_000 })
+    const nextPage = page.getByRole("button", { name: "Go to next page" })
+    while (!(await row.isVisible()) && (await nextPage.isEnabled())) {
+      await nextPage.click()
+    }
+    await expect(row).toBeVisible({ timeout: 15_000 })
+  }
+  await showRow()
   // Disabled while a previous run is still settling — wait, then reload
   // once (a fresh fetch clears stale running state)
   const reproduceButton = row.locator('[data-testid="reproduce-button"]')
@@ -1444,7 +1545,7 @@ export async function reproduceTutorial(page: Page, tutorialName: string) {
   if (!enabled) {
     await page.reload()
     await page.locator('button[role="tab"]:has-text("Record")').click()
-    await expect(row).toBeVisible({ timeout: 15_000 })
+    await showRow()
     await expect(reproduceButton).toBeEnabled({ timeout: 60_000 })
   }
   await reproduceButton.click()
@@ -1482,7 +1583,8 @@ export async function startRun(page: Page, mode: "RUN" | "RUN ALL") {
       '[role="dialog"]:has-text("Name and run workflow")',
     )
     await expect(dialog).toBeVisible({ timeout: 15_000 })
-    // Must not contain "Tutorial" — record-row locators match by substring
+    // Must not equal a tutorial name: reproduceTutorial matches rows exactly,
+    // and 15-premium-aws reproduces this literal name
     await dialog.locator("input").fill("e2e-runall")
     await dialog.getByRole("button", { name: "Run", exact: true }).click()
   }
@@ -1620,6 +1722,7 @@ export function ensurePublishableAccount() {
 
 type DataviewItem = {
   id: number
+  uid?: string
   name?: string
   publish_status?: number
   thumbnails?: { image_url?: string | null }
@@ -1646,6 +1749,29 @@ export async function findDataviewRecord(
   return (items as DataviewItem[]).find((record) => record.name === name)
 }
 
+// What identifies a public row. The uid alone does not: it is only indexed and
+// records are keyed (workspace_id, uid), so the imported tutorial1 carries the
+// same uid in every account that imports it. `id` is the record's primary key
+export type PublicRecordRef = { id: number; uid: string }
+
+// The private listing is where both halves are readable
+export async function dataviewRecord(
+  page: Page,
+  name: string,
+): Promise<PublicRecordRef> {
+  const record = await findDataviewRecord(page, name)
+  if (!record?.uid) throw new Error(`no dataview record named ${name}`)
+  return { id: record.id, uid: record.uid }
+}
+
+// Publish syncs and validates against S3 in-request on a deployed env, which
+// outlasts the default request timeout
+export const PUBLISH_TIMEOUT_MS = 120_000
+
+export function publishPath(id: number, on: boolean): string {
+  return `/api/dataview/publish/${id}/${on ? "on" : "off"}`
+}
+
 export async function setPublished(page: Page, name: string, on: boolean) {
   const record = await findDataviewRecord(page, name)
   if (!record) {
@@ -1653,11 +1779,9 @@ export async function setPublished(page: Page, name: string, on: boolean) {
     throw new Error(`no dataview record named ${name} to publish`)
   }
   const headers = await apiHeaders(page)
-  // Publish syncs and validates against S3 in-request on a deployed env, which
-  // outlasts the default request timeout
   const res = await page.request.post(
-    `${apiUrl()}/api/dataview/publish/${record.id}/${on ? "on" : "off"}`,
-    { headers, timeout: 120_000 },
+    `${apiUrl()}${publishPath(record.id, on)}`,
+    { headers, timeout: PUBLISH_TIMEOUT_MS },
   )
   if (!res.ok()) {
     throw new Error(
@@ -1761,17 +1885,64 @@ export async function mockPremiumAssignment(
   )
 }
 
-// Server-side filter on the Workspace column, which is only offered where
-// DataviewRecords renders without a workspaceId: /dataview and /public
-export async function filterWorkspace(page: Page, value: string) {
+// Server-side filter on a column, driven through its header menu. The panel is
+// left open for the caller to close, so a caller that must see the filtered
+// rows can wait for them first.
+export async function filterColumn(page: Page, field: string, value: string) {
   const header = page.locator(
-    '.MuiDataGrid-columnHeader[data-field="workspace_name"]',
+    `.MuiDataGrid-columnHeader[data-field="${field}"]`,
   )
   await header.hover()
   await header.locator(".MuiDataGrid-menuIcon button").click()
   await page.getByRole("menuitem", { name: /^filter$/i }).click()
+  // MUI keeps the popper mounted through its closing transition, and a second
+  // column's menu then makes the Filter item above ambiguous. Scoped to the
+  // grid's own menu: the authed header keeps a hidden profile menu mounted, so
+  // a bare [role="menu"] never reaches zero on a private page
+  await expect(page.locator(".MuiDataGrid-menuList")).toHaveCount(0, {
+    timeout: 5_000,
+  })
   await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
+}
+
+// The Workspace column is only filterable where DataviewRecords renders
+// without a workspaceId: /dataview and /public
+export async function filterWorkspace(page: Page, value: string) {
+  await filterColumn(page, "workspace_name", value)
   await page.keyboard.press("Escape")
+}
+
+// Never identify a row on /public by name, and never by uid alone: the listing
+// spans every account. MUI puts the row id on data-id, and with no custom
+// getRowId that is the record's primary key, so this is exact
+export const publicRow = (page: Page, record: PublicRecordRef) =>
+  page.locator(`.MuiDataGrid-row[data-id="${record.id}"]`)
+
+// Filtered rather than scanned: the row is otherwise only on whichever page of
+// the listing happens to be open. The fill is debounced and the row assertions
+// settle on their first poll, so wait for the fetch, not the keystroke, and
+// hand back what it answered - the rendered count alone rides on task ordering.
+// uid is the only filterable key and the server matches it with `contains` over
+// every account, so the answer is narrowed to the record itself
+export async function filterPublicToRecord(
+  page: Page,
+  record: PublicRecordRef,
+) {
+  const applied = page.waitForResponse(
+    (r) =>
+      r.url().includes("/api/public/dataview") &&
+      new URL(r.url()).searchParams.get("uid") === record.uid,
+    { timeout: 30_000 },
+  )
+  await filterColumn(page, "uid", record.uid)
+  const listed = (await (await applied).json()) as {
+    items?: { id?: number }[]
+  }
+  await page.keyboard.press("Escape")
+  if (!listed.items) {
+    throw new Error(`no items in the public listing for uid=${record.uid}`)
+  }
+  return listed.items.filter((item) => item.id === record.id)
 }
 
 export async function createWorkspace(page: Page, name: string) {

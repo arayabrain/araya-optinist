@@ -2,6 +2,7 @@ import json
 import mmap
 import os
 from abc import ABC, abstractmethod
+from dataclasses import asdict, fields
 from io import BufferedReader
 from pathlib import Path
 
@@ -33,6 +34,10 @@ class Reader:
 
 
 class JsonReader:
+    # Bytes of lines stripped at a time when serving a file as bytes. A compact
+    # file is one line, read whole
+    READ_BATCH_BYTES = 1 << 20
+
     @classmethod
     def read(cls, filepath):
         with open(filepath, "r") as f:
@@ -51,6 +56,30 @@ class JsonReader:
             index=json_data["index"],
             meta=plot_metadata,
         )
+
+    @classmethod
+    def read_as_output_bytes(cls, filepath) -> bytes:
+        """
+        A file's JSON object with its plot meta added, without parsing the file.
+        Its members are served as written, without line breaks and indentation:
+        no OutputData conversion. ValueError if a split-format file is cut short.
+        """
+        plot_metadata_path = f"{os.path.splitext(filepath)[0]}.plot-meta.json"
+        meta = json.dumps(asdict(cls.read_as_plot_meta(plot_metadata_path)))
+        with open(filepath, "rb") as f:
+            # A JSON string never holds a raw line break, so a line's leading
+            # and trailing whitespace lies between tokens
+            body = b"".join(
+                b"".join(line.strip() for line in lines)
+                for lines in iter(lambda: f.readlines(cls.READ_BATCH_BYTES), [])
+            )
+        # JsonWriter replaces a file whole; one written in place can be read cut
+        # short. The split format's only "}" closes the object, so a cut split
+        # file fails here as a parse would; one of nested objects may not
+        if not (body.startswith(b"{") and body.endswith(b"}")):
+            raise ValueError(f"{filepath} does not hold a whole JSON object")
+        # "meta" goes first, after the object's opening brace
+        return b"".join((b'{"meta":', meta.encode(), b",", memoryview(body)[1:]))
 
     @classmethod
     def read_as_timeseries(cls, filepath) -> JsonTimeSeriesData:
@@ -107,7 +136,9 @@ class JsonReader:
     @classmethod
     def read_as_plot_meta(cls, filepath) -> PlotMetaData:
         json_data = cls.read(filepath) if os.path.exists(filepath) else {}
-        return PlotMetaData(**json_data)
+        # Ignore keys a newer writer may add, so mixed versions in a deploy still read
+        known = {f.name for f in fields(PlotMetaData)}
+        return PlotMetaData(**{k: v for k, v in json_data.items() if k in known})
 
 
 class ContentUnitReader(ABC):

@@ -24,6 +24,7 @@ import {
   sqlLiteral,
   sqlSkipReason,
   verifyEmail,
+  hasRefreshCookie,
 } from "./helpers"
 
 // The subscription/storage warning lifecycle, on the local docker stack AND on
@@ -725,9 +726,18 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   test("LC-07 - Long-expired premium: overdue modal requires acknowledgment", async ({
     page,
   }) => {
-    // Past expiry + 30-day grace + 30-day warning window → OVERDUE
-    setPlan(2, "INTERVAL -70 DAY")
-    setStorage(0, PREMIUM_QUOTA)
+    // Past the 30-day grace and over the free limit -> OVERDUE. Deployed, the
+    // only over-limit expired account is TEST_GRACE_OVER_*, and backdating it
+    // past the grace would hand its data to the deletion job.
+    test.skip(
+      !LOCAL,
+      "LC-07 needs an over-limit account past the grace; on deployed dev that " +
+        "makes TEST_GRACE_OVER_* eligible for deletion",
+    )
+    test.setTimeout(120_000)
+    ensureBallast(OVER_FREE_QUOTA)
+    setPlan(2, "INTERVAL -40 DAY")
+    setStorage(OVER_FREE_QUOTA, PREMIUM_QUOTA)
     await loginKeepWarnings(page)
 
     const modal = dialog(page)
@@ -1026,9 +1036,18 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     )
     try {
       // The corrupted token makes the first heartbeat a genuine dead-token
-      // 401 (ExToken is ignored locally; auth is the Firebase bearer token)
-      await page.evaluate(() =>
-        localStorage.setItem("access_token", "e2e-dead-token"),
+      // 401 (ExToken is ignored locally; auth is the Firebase bearer token).
+      // The access token lives in page memory, so it goes on the request
+      await page.route(
+        "**/users/me/premium/heartbeat",
+        (route) =>
+          route.continue({
+            headers: {
+              ...route.request().headers(),
+              authorization: "Bearer e2e-dead-token",
+            },
+          }),
+        { times: 1 },
       )
 
       const heartbeat401 = page.waitForResponse(
@@ -1192,10 +1211,8 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     expect(response.status()).toBe(200)
     expect((await response.json()).logged_out).toBe(true)
 
-    // logout() asserted the redirect; the session tokens must be gone too
-    expect(
-      await page.evaluate(() => localStorage.getItem("access_token")),
-    ).toBeNull()
+    // logout() asserted the redirect; the session cookie must be gone too
+    expect(await hasRefreshCookie(page)).toBe(false)
 
     expect(
       runSql(

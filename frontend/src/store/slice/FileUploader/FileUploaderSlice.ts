@@ -4,6 +4,8 @@ import {
   getStatusLoadViaUrl,
   setUploadProgress,
   uploadFile,
+  uploadRejectionMessage,
+  waitForUploadViaUrl,
 } from "store/slice/FileUploader/FileUploaderActions"
 import { inistialUploaderState } from "store/slice/FileUploader/FileUploaderInitlalState"
 import {
@@ -57,7 +59,10 @@ export const fileUploaderSlice = createSlice({
           ...currentState,
           pending: false,
           fulfilled: false,
-          error: action.error.message,
+          error: uploadRejectionMessage(
+            action.payload,
+            action.error.message ?? "Upload failed",
+          ),
         }
       })
       .addCase(getStatusLoadViaUrl.pending, (state, action) => {
@@ -71,23 +76,25 @@ export const fileUploaderSlice = createSlice({
         }
       })
       .addCase(getStatusLoadViaUrl.fulfilled, (state, action) => {
-        const { current, total } = action.payload
+        const { done, error } = action.payload
         const { requestId } = action.meta.arg
         const currentState = state[requestId]
         state[requestId] = {
           ...currentState,
-          pending: !(current === total),
-          fulfilled: true,
+          pending: !done && !error,
+          fulfilled: done,
+          error: error ?? undefined,
         }
       })
-      .addCase(getStatusLoadViaUrl.rejected, (state, action) => {
+      // A failed poll is retried by waitForUploadViaUrl, which reports the outcome
+      .addCase(waitForUploadViaUrl.rejected, (state, action) => {
         const { requestId } = action.meta.arg
         const currentState = state[requestId]
         state[requestId] = {
           ...currentState,
           pending: false,
           fulfilled: false,
-          error: action.error.message,
+          error: action.payload ?? action.error.message,
         }
       })
   },

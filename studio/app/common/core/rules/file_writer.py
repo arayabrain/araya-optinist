@@ -1,12 +1,51 @@
-import h5py
+import hashlib
+import os
+import shutil
+import uuid
 
+import h5py
+import numpy as np
+
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import Rule
-from studio.app.common.dataclass import CsvData, ImageData, TimeSeriesData
-from studio.app.const import FILETYPE
+from studio.app.common.core.utils.filepath_creater import (
+    create_directory,
+    join_filepath,
+)
+from studio.app.common.dataclass import CsvData, ImageData
+from studio.app.const import FILETYPE, INPUT_TIFF_CACHE_DIRNAME
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
+from studio.app.optinist.dataclass.behavior import BehaviorData
+from studio.app.optinist.dataclass.fluo import FluoData
 from studio.app.optinist.dataclass.iscell import IscellData
 from studio.app.optinist.dataclass.microscope import MicroscopeData
 from studio.app.optinist.routers.mat import MatGetter
+
+logger = AppLogger.get_logger()
+
+
+def is_behavior_role(params: dict) -> bool:
+    """HDF5 and MAT inputs declared as behaviour load time-major."""
+    return (params or {}).get("dataType") == "behavior"
+
+
+def dataclass_for_rank(ndim: int):
+    """The rank rule, in one place. The run-time precheck compares against this."""
+    if ndim < 1:
+        return None
+    if ndim >= 3:
+        return ImageData
+    return FluoData if ndim == 2 else IscellData
+
+
+def hdf5_dataset(f: h5py.File, path: str):
+    """Resolve `group/dataset`, or `group/dataset/field` for one compound column."""
+    if path not in f and "/" in path:
+        dataset_path, field = path.rsplit("/", 1)
+        parent = f.get(dataset_path)
+        if isinstance(parent, h5py.Dataset) and field in (parent.dtype.names or ()):
+            return parent, field
+    return f[path], None
 
 
 class FileWriter:
@@ -49,15 +88,79 @@ class FileWriter:
         nwbfile = rule_config.nwbfile
 
         with h5py.File(rule_config.input, "r") as f:
-            data = f[rule_config.hdf5Path][:]
+            dataset, field = hdf5_dataset(f, rule_config.hdf5Path)
+            n_rois = cls._sibling_roi_count(dataset)
+            cls._warn_on_rate_mismatch(dataset, nwbfile, rule_config.hdf5Path)
+            cached = cls._cached_tiff(rule_config, rule_config.hdf5Path)
+            if cached is None:
+                data = dataset[()] if field is None else dataset[field]
+            else:
+                data = None
 
-        return cls.get_info_from_array_data(rule_config, nwbfile, data)
+        if cached is not None:
+            return cls._image_info(rule_config, nwbfile, ImageData([cached]))
+
+        info = cls.get_info_from_array_data(
+            rule_config, nwbfile, data, source_key=rule_config.hdf5Path
+        )
+        fluo = info[rule_config.return_arg]
+        if n_rois is not None and type(fluo) is FluoData:
+            oriented = cls._orient_nwb_fluorescence(fluo, n_rois)
+            if oriented and (rule_config.params or {}).get("transpose"):
+                AppLogger.get_logger().warning(
+                    f"'{rule_config.hdf5Path}' is oriented by its rois sibling; "
+                    "the input Transpose setting is ignored"
+                )
+        return info
+
+    @staticmethod
+    def _sibling_roi_count(dataset):
+        rois = dataset.parent.get("rois")
+        if isinstance(rois, h5py.Dataset) and rois.ndim == 1:
+            return rois.shape[0]
+        return None
+
+    @staticmethod
+    def _warn_on_rate_mismatch(dataset, nwbfile, path):
+        """Nodes take the frame rate from the NWB settings, not from the input."""
+        start = dataset.parent.get("starting_time")
+        rate = start.attrs.get("rate") if isinstance(start, h5py.Dataset) else None
+        setting = (nwbfile or {}).get("imaging_plane", {}).get("imaging_rate")
+        try:
+            if rate is None or np.isclose(float(rate), float(setting)):
+                return
+        except (TypeError, ValueError):
+            return
+        logger.warning(
+            f"{path} is sampled at {float(rate):g} Hz but the NWB setting "
+            f"imaging_rate is {setting} Hz; nodes that use the frame rate, "
+            "such as CaImAn, read the setting"
+        )
+
+    @classmethod
+    def _orient_nwb_fluorescence(cls, fluo: FluoData, n_rois: int):
+        """NWB RoiResponseSeries is (time, roi); FluoData is (roi, time)."""
+        n_rows, n_cols = fluo.data.shape
+        if (n_rows == n_rois) == (n_cols == n_rois):
+            return False
+        if n_cols == n_rois:
+            fluo.data = fluo.data.T
+            fluo.index = np.arange(n_rows)
+            fluo.cell_numbers = range(n_cols)
+        fluo.nwb_oriented = True
+        return True
 
     @classmethod
     def mat(cls, rule_config: Rule):
         nwbfile = rule_config.nwbfile
+        cached = cls._cached_tiff(rule_config, rule_config.matPath)
+        if cached is not None:
+            return cls._image_info(rule_config, nwbfile, ImageData([cached]))
+
         data = MatGetter.data(rule_config.input, rule_config.matPath)
-        return cls.get_info_from_array_data(rule_config, nwbfile, data)
+        return cls.get_info_from_array_data(
+            rule_config, nwbfile, data, source_key=rule_config.matPath
+        )
 
     @classmethod
     def microscope(cls, rule_config: Rule):
@@ -68,14 +171,94 @@ class FileWriter:
         return info
 
     @classmethod
-    def get_info_from_array_data(cls, rule_config: Rule, nwbfile, data):
-        if data.ndim == 3:
-            info = {rule_config.return_arg: ImageData(data)}
-            nwbfile["image_series"]["external_file"] = info[rule_config.return_arg]
+    def _tiff_cache_path(cls, rule_config: Rule, source_key: str):
+        """One tiff per (file, dataset, mtime) per workspace, not one per run.
+
+        Never pruned, so a re-uploaded input leaks its old tiff;
+        add a sweep if workspaces grow faster than users delete them.
+        """
+        src = rule_config.input
+        if not source_key or not isinstance(src, str) or not os.path.isfile(src):
+            return None
+        digest = hashlib.sha1(
+            f"{os.path.realpath(src)}:{source_key}:{os.path.getmtime(src)}".encode()
+        ).hexdigest()[:16]
+        # dirname(output) is OUTPUT_DIR/{workspace}/{unique_id}/{node}
+        workspace_dir = os.path.dirname(
+            os.path.dirname(os.path.dirname(rule_config.output))
+        )
+        return join_filepath(
+            [
+                workspace_dir,
+                INPUT_TIFF_CACHE_DIRNAME,
+                digest,
+                "tiff",
+                "image",
+                "image.tif",
+            ]
+        )
+
+    @classmethod
+    def _cached_tiff(cls, rule_config: Rule, source_key: str):
+        path = cls._tiff_cache_path(rule_config, source_key)
+        return path if path and os.path.isfile(path) else None
+
+    @classmethod
+    def _write_tiff(cls, rule_config: Rule, source_key: str, data) -> ImageData:
+        cache_path = cls._tiff_cache_path(rule_config, source_key)
+        if cache_path is None:
+            return ImageData(
+                data,
+                output_dir=os.path.dirname(rule_config.output),
+                file_name="image",
+            )
+
+        cache_dir = os.path.dirname(os.path.dirname(os.path.dirname(cache_path)))
+        tmp_dir = f"{cache_dir}.{uuid.uuid4().hex}"
+        try:
+            image = ImageData(data, output_dir=tmp_dir, file_name="image")
+            create_directory(os.path.dirname(cache_path))
+            os.replace(image.path[0], cache_path)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        image.path = [cache_path]
+        return image
+
+    @classmethod
+    def _image_info(cls, rule_config: Rule, nwbfile, image: ImageData):
+        info = {rule_config.return_arg: image}
+        nwbfile["image_series"]["external_file"] = image
+        info["nwbfile"] = {"input": nwbfile}
+        info["nwbfile"][FILETYPE.IMAGE] = nwbfile
+        return info
+
+    @classmethod
+    def get_info_from_array_data(
+        cls, rule_config: Rule, nwbfile, data, source_key: str = None
+    ):
+        params = rule_config.params or {}
+        transposed = bool(params.get("transpose")) and data.ndim == 2
+        if transposed:
+            data = data.T
+        produced = dataclass_for_rank(data.ndim)
+        if produced is None:
+            raise ValueError(f"'{source_key}' is a scalar dataset; expected 1D or more")
+        if is_behavior_role(params) and produced is not ImageData:
+            info = {rule_config.return_arg: BehaviorData(data)}
+            nwbfile.setdefault(NWBDATASET.BEHAVIOR, {})[rule_config.return_arg] = info[
+                rule_config.return_arg
+            ]
+            nwbfile.pop("image_series", None)
             info["nwbfile"] = {"input": nwbfile}
-            info["nwbfile"][FILETYPE.IMAGE] = nwbfile
-        elif data.ndim == 2:
-            info = {rule_config.return_arg: TimeSeriesData(data)}
+        elif produced is ImageData:
+            if data.dtype == np.float64:
+                # halves the tiff; astype peaks at ~1.5x the input in memory
+                data = data.astype(np.float32)
+            info = cls._image_info(
+                rule_config, nwbfile, cls._write_tiff(rule_config, source_key, data)
+            )
+        elif produced is FluoData:
+            info = {rule_config.return_arg: FluoData(data)}
 
             if NWBDATASET.TIMESERIES not in nwbfile:
                 nwbfile[NWBDATASET.TIMESERIES] = {}
@@ -85,7 +268,7 @@ class FileWriter:
             ]
             nwbfile.pop("image_series", None)
             info["nwbfile"] = {"input": nwbfile}
-        elif data.ndim == 1:
+        elif produced is IscellData:
             info = {rule_config.return_arg: IscellData(data)}
 
             if NWBDATASET.COLUMN not in nwbfile:
@@ -95,4 +278,6 @@ class FileWriter:
                 rule_config.return_arg
             ]
             info["nwbfile"] = {"input": nwbfile}
+        if transposed:
+            info[rule_config.return_arg].nwb_oriented = True
         return info

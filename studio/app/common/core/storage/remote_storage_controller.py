@@ -1,15 +1,17 @@
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import shutil
 import time
+import uuid
 from abc import ABCMeta, abstractmethod
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk_utils import SmkUtils
@@ -17,7 +19,10 @@ from studio.app.common.core.utils.datetime_utils import (
     datetime_from_timestamp,
     get_current_datetime,
 )
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
+    join_filepath,
+)
 from studio.app.const import ThumbnailType
 from studio.app.dir_path import DIRPATH
 
@@ -355,9 +360,14 @@ class RemoteSyncLockFileUtil:
         cls,
         workspace_id: str,
         unique_id: str,
-    ) -> None:
+    ) -> str:
         """
         create remote storage sync lock file.
+        Returns the owner token, which delete_sync_lock_file can be given so a
+        holder only ever releases its own lock.
+        Raises RemoteStorageLockError if the file already exists: the create is
+        exclusive, so two uvicorn workers that both passed check_sync_lock_file
+        cannot both take the lock.
         """
         remote_sync_lock_file_path = cls.__make_sync_lock_file_path(
             workspace_id, unique_id
@@ -367,28 +377,47 @@ class RemoteSyncLockFileUtil:
             os.path.dirname(remote_sync_lock_file_path),
             exist_ok=True,
         )
-        with open(remote_sync_lock_file_path, "w") as f:
+        token = uuid.uuid4().hex
+        try:
+            f = open(remote_sync_lock_file_path, "x")
+        except FileExistsError:
+            raise RemoteStorageLockError(workspace_id, unique_id)
+        with f:
             file_data = {
                 "workspace_id": workspace_id,
                 "unique_id": unique_id,
                 "timestamp": get_current_datetime(),
+                "token": token,
             }
             json.dump(file_data, f, default=str, indent=2)
 
             # force fsync
             os.fsync(f.fileno())
+        return token
 
     @classmethod
-    def delete_sync_lock_file(cls, workspace_id: str, unique_id: str) -> None:
+    def delete_sync_lock_file(
+        cls, workspace_id: str, unique_id: str, token: str = None
+    ) -> None:
         """
         delete remote storage sync lock file.
+        With a token, only the lock that token was issued for is deleted.
         """
         remote_sync_lock_file_path = cls.__make_sync_lock_file_path(
             workspace_id, unique_id
         )
 
-        if os.path.isfile(remote_sync_lock_file_path):
-            os.remove(remote_sync_lock_file_path)
+        if not os.path.isfile(remote_sync_lock_file_path):
+            return
+        if token is not None:
+            try:
+                with open(remote_sync_lock_file_path) as f:
+                    owner = json.load(f).get("token")
+            except (OSError, ValueError):
+                owner = None
+            if owner != token:
+                return
+        os.remove(remote_sync_lock_file_path)
 
     @classmethod
     def wait_for_lock_release(cls, workspace_id: str, unique_id: str) -> bool:
@@ -427,9 +456,45 @@ class InputFileLock:
 
     @classmethod
     def _lock_path(cls, workspace_id: str, filename: str) -> str:
+        # a 255-byte file name plus ".lock" is over the file name limit
+        head, name = os.path.split(os.path.normpath(filename))
+        if len(name.encode()) > 250:
+            name = hashlib.sha256(name.encode()).hexdigest()
         return join_filepath(
-            [DIRPATH.INPUT_DIR, workspace_id, cls.LOCKS_DIRNAME, f"{filename}.lock"]
+            [DIRPATH.INPUT_DIR, workspace_id, cls.LOCKS_DIRNAME, head, f"{name}.lock"]
         )
+
+    @classmethod
+    def _warn_timeout(cls, elapsed: float, workspace_id: str, filename: str) -> None:
+        logger.warning(
+            f"InputFileLock acquire timeout after {elapsed:.1f}s "
+            f"for {workspace_id}/{filename}; proceeding without "
+            "exclusive lock"
+        )
+
+    @classmethod
+    @contextmanager
+    def acquire_sync(cls, workspace_id: str, filename: str):
+        """Same lock, wait bound and fall-through for synchronous callers."""
+        lock_path = cls._lock_path(workspace_id, filename)
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            start = time.monotonic()
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    pass
+                elapsed = time.monotonic() - start
+                if elapsed >= cls.LOCK_WAIT_MAX_SECONDS:
+                    cls._warn_timeout(elapsed, workspace_id, filename)
+                    break
+                time.sleep(cls.LOCK_WAIT_POLL_INTERVAL)
+            yield
+        finally:
+            os.close(fd)
 
     @classmethod
     @asynccontextmanager
@@ -453,11 +518,7 @@ class InputFileLock:
                     break
                 elapsed = time.monotonic() - start
                 if elapsed >= cls.LOCK_WAIT_MAX_SECONDS:
-                    logger.warning(
-                        f"InputFileLock acquire timeout after {elapsed:.1f}s "
-                        f"for {workspace_id}/{filename}; proceeding without "
-                        "exclusive lock"
-                    )
+                    cls._warn_timeout(elapsed, workspace_id, filename)
                     break
                 await asyncio.sleep(cls.LOCK_WAIT_POLL_INTERVAL)
 
@@ -465,6 +526,18 @@ class InputFileLock:
         finally:
             # close releases the flock; off-loop in case it blocks on NFS.
             await asyncio.to_thread(os.close, fd)
+
+
+def local_path_for_remote_key(key: str, prefix: str, local_root: str) -> Optional[str]:
+    """Local path for a remote key, or None (logged) if it leaves local_root."""
+    if not key.startswith(prefix):
+        logger.warning("Skip remote key outside the expected prefix: %r", key)
+        return None
+    try:
+        return join_filepath([local_root, key.removeprefix(prefix)])
+    except InvalidPathError as e:
+        logger.warning("Skip remote key: %s", e)
+        return None
 
 
 class BaseRemoteStorageController(metaclass=ABCMeta):
@@ -595,6 +668,14 @@ class BaseRemoteStorageController(metaclass=ABCMeta):
     def delete_experiment(self, workspace_id: str, unique_id: str) -> bool:
         """
         delete experiment data from remote storage.
+        """
+
+    @abstractmethod
+    def delete_experiment_files(
+        self, workspace_id: str, unique_id: str, target_files: list
+    ) -> bool:
+        """
+        delete the given experiment files (relative paths) from remote storage.
         """
 
     @abstractmethod
@@ -797,7 +878,7 @@ class RemoteStorageController(BaseRemoteStorageController):
             workspace_id: Workspace identifier
             unique_id: Experiment identifier
             sync_mode: RemoteExperimentSyncMode.ALL (full sync),
-                       RemoteExperimentSyncMode.VISUALIZATION (json/tiff only),
+                       RemoteExperimentSyncMode.VISUALIZATION (viewing files only),
                        or RemoteExperimentSyncMode.ESSENTIAL_ONLY (yaml/json only)
 
         Note: Only sync_mode=ALL updates the sync status file and downloads
@@ -925,6 +1006,13 @@ class RemoteStorageController(BaseRemoteStorageController):
 
         return result
 
+    async def delete_experiment_files(
+        self, workspace_id: str, unique_id: str, target_files: list
+    ) -> bool:
+        return await self.__controller.delete_experiment_files(
+            workspace_id, unique_id, target_files
+        )
+
     async def download_thumbnail_source(
         self,
         workspace_id: str,
@@ -1024,20 +1112,32 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
         unique_id: str,
         sync_action: RemoteSyncAction,
         sync_mode: RemoteExperimentSyncMode = RemoteExperimentSyncMode.ALL,
+        owns_lock: bool = False,
     ):
+        """
+        owns_lock: the caller already holds the experiment lock and releases it
+        itself, so this wrapper neither takes nor releases one.
+        """
         self.bucket_name = bucket_name
         self.workspace_id = workspace_id
         self.unique_id = unique_id
         self.sync_action = sync_action
         self.sync_mode = sync_mode
+        self.owns_lock = owns_lock
+        self.lock_token = None
 
-        is_locked = RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, unique_id)
-        if is_locked:
-            logger.warning("This data is locked because it is being processed.")
-            raise RemoteStorageLockError(workspace_id, unique_id)
+        if not owns_lock:
+            is_locked = RemoteSyncLockFileUtil.check_sync_lock_file(
+                workspace_id, unique_id
+            )
+            if is_locked:
+                logger.warning("This data is locked because it is being processed.")
+                raise RemoteStorageLockError(workspace_id, unique_id)
 
-        # generate remote-sync-lock-file
-        RemoteSyncLockFileUtil.create_sync_lock_file(workspace_id, unique_id)
+            # generate remote-sync-lock-file
+            self.lock_token = RemoteSyncLockFileUtil.create_sync_lock_file(
+                workspace_id, unique_id
+            )
 
         # generate remote-sync-status-file (for pendding)
         # *updates are only made when self.sync_mode==ALL (full sync)
@@ -1074,7 +1174,10 @@ class BaseRemoteStorageReaderWriter(metaclass=ABCMeta):
                 )
 
         # delete lock file
-        RemoteSyncLockFileUtil.delete_sync_lock_file(self.workspace_id, self.unique_id)
+        if not self.owns_lock:
+            RemoteSyncLockFileUtil.delete_sync_lock_file(
+                self.workspace_id, self.unique_id, self.lock_token
+            )
 
 
 class RemoteStorageReader(BaseRemoteStorageReaderWriter):
@@ -1099,8 +1202,20 @@ class RemoteStorageWriter(BaseRemoteStorageReaderWriter):
     Writer wrapper for RemoteStorageController
     """
 
-    def __init__(self, bucket_name: str, workspace_id: str, unique_id: str):
-        super().__init__(bucket_name, workspace_id, unique_id, RemoteSyncAction.UPLOAD)
+    def __init__(
+        self,
+        bucket_name: str,
+        workspace_id: str,
+        unique_id: str,
+        owns_lock: bool = False,
+    ):
+        super().__init__(
+            bucket_name,
+            workspace_id,
+            unique_id,
+            RemoteSyncAction.UPLOAD,
+            owns_lock=owns_lock,
+        )
 
 
 class RemoteStorageDeleter(BaseRemoteStorageReaderWriter):

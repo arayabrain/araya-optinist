@@ -31,17 +31,25 @@ import Switch from "@mui/material/Switch"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
+import {
+  outlineRoi,
+  roiIdAt,
+} from "components/Workspace/Visualize/Plot/roiOutline"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
+import { markDownstreamStale } from "store/slice/AlgorithmNode/AlgorithmNodeSlice"
 import {
   addRoi,
   cancelRoi,
   commitRoi,
   deleteRoi,
   mergeRoi,
-  getImageData,
+  promoteRoi,
   getRoiData,
   getStatus,
   getTimeSeriesInitData,
+  getEditRoiErrorMessage,
+  EDIT_ROI_LOCKED_MESSAGE,
+  RejectPayload,
 } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectImageDataError,
@@ -55,6 +63,7 @@ import {
   selectStatusRoi,
 } from "store/slice/DisplayData/DisplayDataSelectors"
 import {
+  getImageItemData,
   selectingImageArea,
   setImageItemClickedDataId,
 } from "store/slice/VisualizeItem/VisualizeItemActions"
@@ -70,7 +79,9 @@ import {
   selectImageItemEndIndex,
   selectRoiItemFilePath,
   selectRoiItemIndex,
+  selectRoiItemNodeId,
   selectImageItemDuration,
+  selectVisualizeItemIsWorkflowDialog,
   selectVisualizeItemWidth,
   selectVisualizeItemHeight,
   selectVisualizeSaveFilename,
@@ -78,6 +89,8 @@ import {
   selectImageItemAlpha,
   selectVisualizeItems,
   selectImageItemShowRoiLabels,
+  selectImageItemRoiAlpha,
+  selectImageItemRoiOutline,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import {
   incrementImageActiveIndex,
@@ -95,12 +108,20 @@ export type StatusROI = {
   temp_add_roi: number[]
   temp_delete_roi: number[]
   temp_merge_roi: number[]
+  temp_promote_roi: number[]
 }
 
 const ADD_ROI = "Add ROI"
 const DELETE_ROI = "Delete ROI"
 const MERGE_ROI = "Merge ROI"
+const PROMOTE_ROI = "Set as Cell ROI"
 const CELL_ROI = "/cell_roi.json"
+// suite2p and the hdf5 wrappers write noncell_roi.json, caiman/lccd/vacant_roi
+// write non_cell_roi.json. all_roi is not offered: no commit path regenerates it.
+const PROMOTE_ROI_FILES = ["/noncell_roi.json", "/non_cell_roi.json"]
+
+const isEditableRoiPath = (path?: string | null): path is string =>
+  [CELL_ROI, ...PROMOTE_ROI_FILES].some((file) => path?.includes(file))
 const WIDTH_CHARTJS = 321
 const INIT_WIDTH_ROI = 30
 
@@ -124,27 +145,28 @@ export const ImagePlot = memo(function ImagePlot() {
   const { filePath: path, itemId } = useContext(DisplayDataContext)
 
   const workspaceId = useSelector(selectCurrentWorkspaceId)
-  const startIndex = useSelector(selectImageItemStartIndex(itemId))
-  const endIndex = useSelector(selectImageItemEndIndex(itemId))
   const isPending = useSelector(selectImageDataIsPending(path))
   const isInitialized = useSelector(selectImageDataIsInitialized(path))
   const isFulfilled = useSelector(selectImageDataIsFulfilled(path))
   const error = useSelector(selectImageDataError(path))
 
   const roiFilePath = useSelector(selectRoiItemFilePath(itemId))
+  const isWorkflowDialog = useSelector(
+    selectVisualizeItemIsWorkflowDialog(itemId),
+  )
 
   const dispatch = useDispatch<AppDispatch>()
+  // A dialog item fetches its own window when it mounts: frames cached for its
+  // path may be another item's window, or a refusal of one
+  useEffect(() => {
+    if (workspaceId && isWorkflowDialog) {
+      dispatch(getImageItemData({ itemId, path, workspaceId }))
+    }
+  }, [dispatch, isWorkflowDialog, itemId, path, workspaceId])
   useEffect(() => {
     if (workspaceId) {
-      if (!isInitialized) {
-        dispatch(
-          getImageData({
-            path,
-            workspaceId,
-            startIndex: startIndex ?? 1,
-            endIndex: endIndex ?? 10,
-          }),
-        )
+      if (!isWorkflowDialog && !isInitialized) {
+        dispatch(getImageItemData({ itemId, path, workspaceId }))
       }
       if (roiFilePath != null) {
         dispatch(getRoiData({ path: roiFilePath, workspaceId }))
@@ -153,10 +175,10 @@ export const ImagePlot = memo(function ImagePlot() {
   }, [
     dispatch,
     isInitialized,
+    isWorkflowDialog,
+    itemId,
     path,
     workspaceId,
-    startIndex,
-    endIndex,
     roiFilePath,
   ])
   if (isPending) {
@@ -193,6 +215,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
   )
   const meta = useSelector(selectImageMeta(path))
   const roiFilePath = useSelector(selectRoiItemFilePath(itemId))
+  const roiNodeId = useSelector(selectRoiItemNodeId(itemId))
 
   const refRoiFilePath = useRef(roiFilePath)
 
@@ -219,9 +242,19 @@ const ImagePlotChart = memo(function ImagePlotChart({
   const [action, setAction] = useState("")
   const [positionDrag, setChangeSize] = useState<PositionDrag | undefined>()
   const showRoiLabels = useSelector(selectImageItemShowRoiLabels(itemId))
+  const roiAlpha = useSelector(selectImageItemRoiAlpha(itemId))
+  const roiOutline = useSelector(selectImageItemRoiOutline(itemId))
+  const roiZ = useMemo(
+    () => (roiOutline ? outlineRoi(roiDataState) : roiDataState),
+    [roiOutline, roiDataState],
+  )
 
   const allowEditRoi = useMemo(
     () => roiFilePath?.includes(CELL_ROI),
+    [roiFilePath],
+  )
+  const allowPromoteRoi = useMemo(
+    () => PROMOTE_ROI_FILES.some((file) => roiFilePath?.includes(file)),
     [roiFilePath],
   )
   const { setRoisClick, roisClick, resetRoisClick } = useVisualize()
@@ -235,6 +268,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
         temp_add_roi: [],
         temp_delete_roi: [],
         temp_merge_roi: [],
+        temp_promote_roi: [],
       }
     )
   }, [selectedStatus])
@@ -258,18 +292,19 @@ const ImagePlotChart = memo(function ImagePlotChart({
   useEffect(() => {
     if (!roiFilePath || !workspaceId) return
     dispatch(getStatus({ path: roiFilePath, workspaceId }))
+      .unwrap()
+      .catch((error: RejectPayload) => {
+        if (error?.status === 423) {
+          enqueueSnackbar(EDIT_ROI_LOCKED_MESSAGE, { variant: "warning" })
+        }
+      })
     //eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roiFilePath, workspaceId])
 
   useEffect(() => {
     refRoiFilePath.current = roiFilePath
     return () => {
-      if (
-        !refRoiFilePath.current ||
-        !workspaceId ||
-        !refRoiFilePath.current.includes(CELL_ROI)
-      )
-        return
+      if (!workspaceId || !isEditableRoiPath(refRoiFilePath.current)) return
       dispatch(
         cancelRoi({ path: refRoiFilePath.current as string, workspaceId }),
       )
@@ -308,7 +343,7 @@ const ImagePlotChart = memo(function ImagePlotChart({
         zsmooth: zsmooth, // ["best", "fast", false]
       },
       {
-        z: roiDataState,
+        z: roiZ,
         type: "heatmap",
         name: "roi",
         hovertemplate: action === ADD_ROI ? "none" : "ROI: %{z}",
@@ -316,29 +351,33 @@ const ImagePlotChart = memo(function ImagePlotChart({
         colorscale: [...Array(timeDataMaxIndex + 1)].map((_, i) => {
           const offset: number = i / timeDataMaxIndex
           const rgba = getRoiColor(i)
-          const hex = rgba2hex(rgba, 1)
+          const hex = rgba2hex(rgba, roiAlpha)
 
           const isClickPoint = roiClicked.some((point) => point === i)
           const isDeleted = statusRoi?.temp_delete_roi?.includes(i) || false
           const isMerged = statusRoi?.temp_merge_roi?.includes(i) || false
           const isAdded = statusRoi?.temp_add_roi?.includes(i) || false
-          if (allowEditRoi && isClickPoint && action) {
+          const isPromoted = statusRoi?.temp_promote_roi?.includes(i) || false
+          if ((allowEditRoi || allowPromoteRoi) && isClickPoint && action) {
             switch (action) {
               case DELETE_ROI:
                 return [offset, "#FFA500"] // orange
               case MERGE_ROI:
                 return [offset, "#e134eb"] // purple
               case ADD_ROI:
-                return [offset, "3483eb"] // red
+                return [offset, "#3483eb"] // blue
+              case PROMOTE_ROI:
+                return [offset, "#32A919"] // green
             }
           }
-          if (isDeleted || isMerged || isAdded) {
+          if (isDeleted || isMerged || isAdded || isPromoted) {
             if (isDeleted) return [offset, "#FFA500"]
             if (isMerged) return [offset, "#e134eb"]
-            if (isAdded) return [offset, "3483eb"]
+            if (isAdded) return [offset, "#3483eb"]
+            if (isPromoted) return [offset, "#32A919"]
           }
           if (isClickPoint || !roiClicked.length) return [offset, hex]
-          return [offset, rgba2hex(rgba, 0.3)]
+          return [offset, rgba2hex(rgba, roiAlpha * 0.3)]
         }),
         zmin: 0,
         zmax: timeDataMaxIndex,
@@ -352,13 +391,15 @@ const ImagePlotChart = memo(function ImagePlotChart({
       colorscale,
       showscale,
       zsmooth,
-      roiDataState,
+      roiZ,
       timeDataMaxIndex,
       alpha,
+      roiAlpha,
       action,
       roiClicked,
       statusRoi,
       allowEditRoi,
+      allowPromoteRoi,
     ],
   )
 
@@ -488,6 +529,8 @@ const ImagePlotChart = memo(function ImagePlotChart({
         title: meta?.ylabel,
         automargin: true,
         autorange: "reversed",
+        // add ROI maps the overlay onto a stretched image
+        scaleanchor: action === ADD_ROI ? undefined : "x",
         showgrid: showgrid,
         showline: showline,
         zeroline: false,
@@ -530,19 +573,19 @@ const ImagePlotChart = memo(function ImagePlotChart({
   const onChartClick = (event: PlotMouseEvent) => {
     // use as unknown because original PlotDatum does not have z property
     const point: PlotDatum = event.points[0] as unknown as PlotDatum
-    if (point.curveNumber >= 1 && point.z >= 0) {
+    const roiId = roiIdAt(point, roiDataState)
+    if (roiId != null) {
       dispatch(
-        setImageItemClickedDataId({ itemId, clickedDataId: String(point.z) }),
+        setImageItemClickedDataId({ itemId, clickedDataId: String(roiId) }),
       )
-      setRoisClick(itemId, point.z)
+      setRoisClick(itemId, roiId)
     }
   }
 
   const onCancel = async () => {
     setAction("")
     if (
-      !refRoiFilePath.current ||
-      !refRoiFilePath.current.includes(CELL_ROI) ||
+      !isEditableRoiPath(refRoiFilePath.current) ||
       workspaceId === undefined
     ) {
       return
@@ -635,6 +678,14 @@ const ImagePlotChart = memo(function ImagePlotChart({
     refPageYSize.current = pageY
   }
 
+  // the server's reason for a refused edit, e.g. an ROI that is not a cell
+  const reportEditError = (error: unknown, fallback: string) => {
+    enqueueSnackbar(
+      getEditRoiErrorMessage(error as RejectPayload | undefined, fallback),
+      { variant: "error" },
+    )
+  }
+
   const addOrSelectRoi = async () => {
     if (!roiFilePath || !workspaceId || !statusRoi) return
     if (action === ADD_ROI) {
@@ -652,35 +703,61 @@ const ImagePlotChart = memo(function ImagePlotChart({
         sizey: yAdd,
       }
       await dispatch(resetAllOrderList())
-      await dispatch(
-        addRoi({ path: roiFilePath, workspaceId, data: pointCenter }),
-      )
+      try {
+        await dispatch(
+          addRoi({ path: roiFilePath, workspaceId, data: pointCenter }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to add the ROI.")
+      }
       onCancelAdd()
     }
     if (action === MERGE_ROI) {
       if (roiClicked.length < 2) return
       dispatch(resetAllOrderList())
-      dispatch(
-        mergeRoi({
-          path: roiFilePath,
-          workspaceId,
-          data: { ids: roiClicked },
-        }),
-      )
+      try {
+        await dispatch(
+          mergeRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to merge the ROIs.")
+      }
       resetRoisClick(itemId)
       workspaceId && dispatch(getRoiData({ path: roiFilePath, workspaceId }))
     } else if (action === DELETE_ROI) {
       if (!roiClicked.length) return
       dispatch(resetAllOrderList())
-      await dispatch(
-        deleteRoi({
-          path: roiFilePath,
-          workspaceId,
-          data: { ids: roiClicked },
-        }),
-      )
+      try {
+        await dispatch(
+          deleteRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to delete the ROIs.")
+      }
       resetRoisClick(itemId)
       workspaceId && dispatch(getRoiData({ path: roiFilePath, workspaceId }))
+    } else if (action === PROMOTE_ROI) {
+      if (!roiClicked.length) return
+      dispatch(resetAllOrderList())
+      try {
+        await dispatch(
+          promoteRoi({
+            path: roiFilePath,
+            workspaceId,
+            data: { ids: roiClicked },
+          }),
+        ).unwrap()
+      } catch (error) {
+        reportEditError(error, "Failed to set the ROIs as cell ROIs.")
+      }
     }
     setAction("")
     setEdit(true)
@@ -698,22 +775,38 @@ const ImagePlotChart = memo(function ImagePlotChart({
     setAction(DELETE_ROI)
   }
 
+  const onPromoteRoi = async () => {
+    if (!roiFilePath) return
+    setAction(PROMOTE_ROI)
+  }
+
   const onCommitRoi = async () => {
     if (!roiFilePath || workspaceId === undefined) return
     try {
       await dispatch(commitRoi({ path: roiFilePath, workspaceId })).unwrap()
-      workspaceId &&
-        (await dispatch(
-          getRoiData({ path: roiFilePath, workspaceId }),
-        ).unwrap())
 
-      enqueueSnackbar("Successfully committed to Edit ROI.", {
-        variant: "success",
-      })
-      resetTimeSeries()
-      resetRoisClick(itemId)
+      // Commit discards the downstream results on the server; flag those
+      // nodes for the next RUN the same way a changed parameter does, before
+      // the refresh below, which can fail on its own
+      if (roiNodeId) dispatch(markDownstreamStale({ nodeId: roiNodeId }))
+      enqueueSnackbar(
+        "Successfully committed to Edit ROI. Run the workflow to update downstream results.",
+        { variant: "success" },
+      )
+
+      try {
+        await dispatch(getRoiData({ path: roiFilePath, workspaceId })).unwrap()
+        resetTimeSeries()
+        resetRoisClick(itemId)
+      } catch (error) {
+        enqueueSnackbar(
+          "Committed, but the ROI image could not be reloaded. Reload the page.",
+          { variant: "warning" },
+        )
+      }
     } catch (error) {
-      enqueueSnackbar("Failed to commit Edit ROI.", { variant: "error" })
+      // e.g. 409 when the movie this node read was removed or rewritten
+      reportEditError(error, "Failed to commit Edit ROI.")
     } finally {
       setEdit(false)
       setAction("")
@@ -736,12 +829,16 @@ const ImagePlotChart = memo(function ImagePlotChart({
   }
 
   const renderActionRoi = () => {
-    if (!allowEditRoi) return null
+    if (!allowEditRoi && !allowPromoteRoi) return null
+    const okDisabled =
+      action !== ADD_ROI && roiClicked.length < (action === MERGE_ROI ? 2 : 1)
     if (action) {
       return (
         <>
           {action !== ADD_ROI ? (
-            <BoxDiv>ROI Selecteds: [{roiClicked?.join(",") || ""}]</BoxDiv>
+            <BoxDiv data-testid="roi-selected-ids">
+              ROI Selecteds: [{roiClicked?.join(",") || ""}]
+            </BoxDiv>
           ) : null}
           <BoxDiv sx={{ display: "flex", gap: 1 }}>
             <LinkDiv
@@ -751,7 +848,9 @@ const ImagePlotChart = memo(function ImagePlotChart({
                     ? "#F84E1B"
                     : action === MERGE_ROI
                       ? "#6619A9"
-                      : "default",
+                      : action === PROMOTE_ROI
+                        ? "#32A919"
+                        : "default",
                 display: "flex",
                 gap: 1,
                 textDecoration: "none",
@@ -763,16 +862,8 @@ const ImagePlotChart = memo(function ImagePlotChart({
             <LinkDiv onClick={onCancelAdd}>Cancel</LinkDiv>
             <LinkDiv
               style={{
-                opacity:
-                  (roiClicked.length < 2 && action === MERGE_ROI) ||
-                  (roiClicked.length < 1 && action === DELETE_ROI)
-                    ? 0.5
-                    : 1,
-                cursor:
-                  (roiClicked.length < 2 && action === MERGE_ROI) ||
-                  (roiClicked.length < 1 && action === DELETE_ROI)
-                    ? "default"
-                    : "pointer",
+                opacity: okDisabled ? 0.5 : 1,
+                cursor: okDisabled ? "default" : "pointer",
               }}
               onClick={addOrSelectRoi}
             >
@@ -807,28 +898,42 @@ const ImagePlotChart = memo(function ImagePlotChart({
         />
       </Box>
       <Box sx={{ minHeight: 5.5 }}>
-        {edit && !action && roiFilePath && roiFilePath.includes(CELL_ROI) ? (
+        {edit && !action && (allowEditRoi || allowPromoteRoi) ? (
           <>
             <BoxDiv sx={{ flexDirection: "column" }}>
               <BoxWrapper sx={{ marginBottom: 2 }}>
-                <LinkDiv onClick={onAddRoi}>{ADD_ROI}</LinkDiv>
-                <LinkDiv
-                  sx={{
-                    color: "#F84E1B",
-                  }}
-                  onClick={onDeleteRoi}
-                >
-                  {DELETE_ROI}
-                </LinkDiv>
-                <LinkDiv
-                  sx={{
-                    color: "#6619A9",
-                    ml: 0,
-                  }}
-                  onClick={onMergeRoi}
-                >
-                  {MERGE_ROI}
-                </LinkDiv>
+                {allowEditRoi ? (
+                  <>
+                    <LinkDiv onClick={onAddRoi}>{ADD_ROI}</LinkDiv>
+                    <LinkDiv
+                      sx={{
+                        color: "#F84E1B",
+                      }}
+                      onClick={onDeleteRoi}
+                    >
+                      {DELETE_ROI}
+                    </LinkDiv>
+                    <LinkDiv
+                      sx={{
+                        color: "#6619A9",
+                        ml: 0,
+                      }}
+                      onClick={onMergeRoi}
+                    >
+                      {MERGE_ROI}
+                    </LinkDiv>
+                  </>
+                ) : (
+                  <LinkDiv
+                    data-testid="roi-promote"
+                    sx={{
+                      color: "#32A919",
+                    }}
+                    onClick={onPromoteRoi}
+                  >
+                    {PROMOTE_ROI}
+                  </LinkDiv>
+                )}
               </BoxWrapper>
               <BoxWrapper>
                 {Object.keys(statusRoi).some(
@@ -1004,14 +1109,14 @@ interface PlotDatum {
   xaxis: LayoutAxis
   y: Datum
   yaxis: LayoutAxis
-  z: number
+  z: number | null | undefined
 }
 
 export function rgba2hex(rgba: number[], alpha: number) {
   const r = rgba[0]
   const g = rgba[1]
   const b = rgba[2]
-  const a = alpha
+  const a = Math.min(Math.max(alpha, 0), 1)
 
   const outParts = [
     r.toString(16),

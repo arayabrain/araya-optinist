@@ -292,13 +292,65 @@ The script will display:
 ============================================
   Environment : development
   ECR Repo    : development-optinist-for-cloud
+  ECR URI     : 000000000000.dkr.ecr.ap-northeast-1.amazonaws.com/development-optinist-for-cloud
   Tags        : latest, 20260317-143022-a1b2c3d
+  Git commit  : a1b2c3d4e5f6... (a1b2c3d)
+  Git branch  : -
+  Git tag     : v1.1.10
+  Build time  : 2026-03-17T14:30:22Z
 ============================================
 
 Proceed with build and push? (y/N):
 ```
 
 For production, an additional **WARNING** banner is shown.
+
+The commit, branch, tag and build time shown here are baked into the image as
+`/app/BUILD_INFO` and echoed at container startup, so a running container can be traced
+back to its source. Building from a tag leaves HEAD detached, so `Git branch` reads `-`
+and `Git tag` carries the identity. Building from a branch records the branch, and *also*
+records the tag when that branch's HEAD happens to carry one — so a non-empty `Git tag` is
+not by itself proof of a tag checkout. `Git branch` is what tells the two apart.
+
+There are three ways to read it back, depending on what you have access to:
+
+```bash
+# 1. From the registry, without pulling — the standard OCI labels.
+#    image.version is the git tag, and is empty for an image built from a
+#    branch; image.revision is always the commit.
+#    Needs `docker login` against ECR first (see the build step above).
+docker buildx imagetools inspect \
+  --format '{{json .Image.Config.Labels}}' <ECR_URI>:latest | python3 -m json.tool
+
+#    Two ways this can mislead, both measured:
+#    - `aws ecr batch-get-image ... --query 'images[0].imageManifest'` does NOT
+#      show these. It returns the manifest, which holds only the config digest
+#      and the layer list; the labels live in the config blob it points at.
+#    - `.Image` is the config only while the tag names a single-platform image,
+#      which is what ecr_build_push.sh's plain `docker build` produces. Against
+#      a multi-platform index `.Image` is a map keyed by platform, and the
+#      format above prints `null` with no error. Use
+#      `{{json (index .Image "linux/amd64").Config.Labels}}` if the build ever
+#      becomes multi-platform.
+
+# 2. From a running container — the raw record, including the branch
+docker exec <CONTAINER> cat /app/BUILD_INFO
+
+# 3. From the application log — one line, written at every startup
+#    "Git Ref" is a summary of the two recorded fields:
+#      branch + tag -> "develop-main (v1.1.10)"   built from the branch, at that version
+#      tag only     -> "v1.1.10"                  built from the tag
+#      branch only  -> "develop-main"
+#      neither      -> "detached@<short sha>", or "N/A" if no commit was recorded
+```
+
+```
+"Studio" application startup complete.
+    # App Version: 1.1.10
+    # Git Commit: 0cf95d0dd37e4b9bda51601bbb12adf4d21173a4
+    # Git Ref: v1.1.10
+    # Build Time: 2026-09-07T02:23:37Z
+```
 
 - If initialized to **development** → pushes to `development-optinist-for-cloud:latest`
 - If initialized to **production** → pushes to `optinist-for-cloud:latest`
@@ -335,6 +387,11 @@ aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
   --services $SERVICES \
   --query 'services[].{name:serviceName,deployments:length(deployments),running:runningCount}'
 ```
+
+`terraform apply` does both steps itself in `null_resource.deploy_to_ecs`. It waits up to about
+an hour for every service to settle (the public service alone took about 40 minutes on
+development) and fails the apply, naming each unsettled service, if one does not. The failed
+resource is tainted, so the next apply forces a new deployment on every service again.
 
 ### Safe Deployment Workflow
 
@@ -395,6 +452,31 @@ The ECR lifecycle policy automatically manages storage:
 - **Untagged images**: removed after 7 days
 - **Versioned images**: only the last 10 are kept
 - **`:latest`**: always retained
+
+On the hosts themselves, the `<env>-docker-hygiene` SSM association prunes stopped containers and
+unused images every 6 hours and after each deploy (`null_resource.deploy_to_ecs` and
+`ecr_build_push.sh --deploy` both trigger it). See
+[MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#host-root-volume-hygiene).
+
+### Host Root Volumes
+
+Root volume sizes are `root_volume_gib` in `local.free_tier_sizing_defaults` (88 GiB) and
+`local.premium_tier_sizing_defaults` (64 GiB) in `main.tf`, overridable per environment through
+`free_tier_sizing` / `premium_tier_sizing` in the tfvars. Background and public hosts keep the
+AMI's 30 GiB. The ECS agent's cleanup knobs (`ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION` and the
+`ECS_IMAGE_*` settings in `scripts/ecs-user-data.sh`) ship with the user data.
+
+A change to either reaches a host only when it is launched from the new launch template version:
+
+- `aws_instance.premium` and `aws_instance.background` pin their template's `latest_version`, so the
+  plan that changes a template shows `-/+` on its instance and the same apply replaces it. Apply at a
+  time with no premium run active: users on the old premium instance lose their task.
+- The free and public ASGs do not instance-refresh under `$Latest`; their hosts pick the change up
+  at the next launch, or after a manual `aws autoscaling start-instance-refresh`.
+- Premium hosts created by the Lambda (`premium_manager.py`) keep their size until terminated.
+
+The hygiene association needs none of this: it targets hosts by the
+`aws:ec2launchtemplate:id` tag, which every host launched from a template already carries.
 
 ---
 
@@ -470,9 +552,33 @@ cat .terraform/terraform.tfstate | python3 -c "import sys,json; print(json.load(
 ### Check Which Git Revision Was Applied
 
 Every `terraform apply` stamps the applied `infrastructure/` git revision onto the ECS
-cluster as tags (`TfGitCommit` / `TfGitBranch`), so you can confirm which infrastructure
-version is actually running and detect deploy mistakes. The tag only changes when the git
-commit changes, so no-op applies produce no diff.
+cluster as tags (`TfGitCommit` / `TfGitBranch` / `TfGitTag`), so you can confirm which
+infrastructure version is actually running and detect deploy mistakes. The tags only change
+when the values they record change, so re-applying from the same checkout produces no diff.
+The commit is not the only such value: applying the same commit first from a branch and then
+from a tag flips `TfGitBranch` and `TfGitTag` while `TfGitCommit` stays put.
+
+Branch and tag are recorded separately because checking out a tag leaves HEAD detached, so a
+tag checkout has no branch to record and the field reads `-`. A branch checkout whose HEAD
+also carries a tag sets both:
+
+| Applied from | `TfGitBranch` | `TfGitTag` | `TfGitCommit` |
+| --- | --- | --- | --- |
+| tag `v1.1.10` | `-` | `v1.1.10` | the commit |
+| branch `develop-main` | `develop-main` | `-` | the commit |
+| branch whose HEAD also carries a tag | `develop-main` | `v1.1.10` | the commit |
+| not a git checkout at all | `-` | `-` | `unknown` |
+
+The last row is the one to watch: `-` means "no such ref", which covers both a
+detached HEAD and a directory that is not a git checkout. `TfGitCommit =
+unknown` is what tells the two apart, and it means the apply ran from a source
+tree whose revision could not be determined — worth investigating rather than
+recording.
+
+> **Terraform will not plan outside a git checkout.** The same revision also triggers the
+> image rebuild (`null_resource.build_and_deploy` in `deployment.tf`), so
+> `terraform_build_info.sh` fails rather than falling back to a constant — a constant
+> would silently stop new images from deploying.
 
 > **Why only the ECS cluster is tagged:** the commit is deliberately *not* added to
 > `provider.default_tags`. A default tag would apply the value to every taggable resource,

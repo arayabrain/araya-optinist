@@ -1,3 +1,4 @@
+import contextlib
 import gc
 import os
 
@@ -8,26 +9,43 @@ from urllib3.util.retry import Retry
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.local_disk_guard import reserve_file
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
     join_filepath,
 )
 from studio.app.common.dataclass import ImageData
+from studio.app.common.dataclass.image import CANNOT_MAP, iter_frame_batches
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import EditRoiData, FluoData, IscellData, RoiData
+from studio.app.optinist.dataclass.roi import (
+    RoiMasks,
+    edit_reference,
+    nwb_roi_label_image,
+    nwb_roi_table,
+)
+from studio.app.optinist.wrappers.caiman.caiman_utils import (
+    caiman_cluster,
+    cnn_crops_copied,
+    distribute_params_to_groups,
+    parse_text_params,
+)
 from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 
 logger = AppLogger.get_logger()
 
+CORRELATION_CHUNK_ELEMENTS = 2**24  # float64 values per frame chunk, 128 MB
+
 
 def get_roi(A, roi_thr, thr_method, swap_dim, dims):
+    """Each column's footprint as a boolean image of dims, one column at a
+    time, so no more than one full-frame mask is held."""
     from scipy.ndimage import binary_fill_holes
     from skimage.measure import find_contours
 
     d, nr = np.shape(A)
 
     # for each patches
-    ims = []
     coordinates = []
     for i in range(nr):
         pars = dict()
@@ -45,6 +63,8 @@ def get_roi(A, roi_thr, thr_method, swap_dim, dims):
                     neuron_id=i + 1,
                 )
                 coordinates.append(pars)
+                # keep one mask per column so row i stays component i
+                yield np.zeros(dims, dtype=bool)
                 continue
             else:
                 # we work with normalized values
@@ -69,10 +89,7 @@ def get_roi(A, roi_thr, thr_method, swap_dim, dims):
             r_mask[np.round(c[:, 0]).astype("int"), np.round(c[:, 1]).astype("int")] = 1
 
         # Fill in the hole created by the contour boundary
-        r_mask = binary_fill_holes(r_mask)
-        ims.append(r_mask + (i * r_mask))
-
-    return ims
+        yield binary_fill_holes(r_mask)
 
 
 def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
@@ -104,6 +121,204 @@ def util_get_image_memmap(function_id: str, images: np.ndarray, file_path: str):
     mmap_images = np.reshape(mmap_images.T, [T] + list(dims), order="F")
     mmap_images[:] = images[:]
     return mmap_images, dims, mmap_path
+
+
+def correlation_image(movie):
+    """caiman.local_correlations(movie.transpose(1, 2, 0)) for a (T, d1, d2) movie,
+    and the movie's mean over time, from the same pass.
+
+    The moments are accumulated in float64 over frame chunks, so memory stays near
+    one chunk instead of the several whole-movie float32 copies caiman makes.
+    movie can also be an array-like that reads its frames when sliced.
+    """
+    T, d1, d2 = movie.shape
+    step = max(1, CORRELATION_CHUNK_ELEMENTS // (d1 * d2))
+
+    def chunks():  # one at a time, so a movie read when sliced is never held whole
+        return (movie[t : t + step] for t in range(0, T, step))
+
+    mean = sum(c.sum(axis=0, dtype=np.float64) for c in chunks()) / T
+    # caiman's rho_h, rho_w, rho_d1, rho_d2 pixel pairs
+    pairs = [
+        (np.s_[:-1, :], np.s_[1:, :]),
+        (np.s_[:, :-1], np.s_[:, 1:]),
+        (np.s_[1:, :-1], np.s_[:-1, 1:]),
+        (np.s_[:-1, :-1], np.s_[1:, 1:]),
+    ]
+    sq = np.zeros((d1, d2))
+    cross = [0.0] * len(pairs)
+    for c in chunks():
+        d = c - mean
+        sq += (d * d).sum(axis=0)
+        for i, (a, b) in enumerate(pairs):
+            cross[i] = cross[i] + (d[:, a[0], a[1]] * d[:, b[0], b[1]]).sum(axis=0)
+    std = np.sqrt(sq / T)
+    rho_h, rho_w, rho_d1, rho_d2 = (
+        x / T / (std[a] * std[b]) for x, (a, b) in zip(cross, pairs)
+    )
+
+    # caiman's placement, swapped diagonal terms included, so the image is unchanged
+    rho = np.zeros((d1, d2))
+    rho[:-1, :] += rho_h
+    rho[1:, :] += rho_h
+    rho[:, :-1] += rho_w
+    rho[:, 1:] += rho_w
+    rho[:-1, :-1] += rho_d2
+    rho[1:, 1:] += rho_d1
+    rho[1:, :-1] += rho_d1
+    rho[:-1, 1:] += rho_d2
+    neighbors = np.full((d1, d2), 8.0)
+    neighbors[[0, -1], :] -= 3
+    neighbors[:, [0, -1]] -= 3
+    neighbors[[0, 0, -1, -1], [0, -1, 0, -1]] += 1
+    return rho / neighbors, mean
+
+
+# a mapped file larger than this is assigned a block of image columns at a time
+FILL_BLOCK_BYTES = 256 << 20
+
+
+def assign_by_columns(target, source, block_bytes: int = None):
+    """
+    target[...] = source, for a (T, d1, d2) source memory-mapped in C order and
+    a target in CaImAn's pixels x time order, with a bounded share of the
+    source in play.
+
+    numpy fills the target in its own memory order, time innermost, so a whole
+    source would be read once per image column: it would have to stay in the
+    page cache, or be read again from disk each time. A source of up to
+    block_bytes is assigned whole. A larger one is copied out a block of
+    columns at a time (one sequential pass over the source per block, the
+    block held in memory) and assigned, and the target's pixels of a block are
+    contiguous, so each page is written once.
+    """
+    block_bytes = block_bytes or FILL_BLOCK_BYTES
+    if source.nbytes <= block_bytes:
+        target[...] = source
+        return
+    width = max(1, block_bytes // (source.nbytes // source.shape[-1]))
+    for j in range(0, source.shape[-1], width):
+        target[..., j : j + width] = np.ascontiguousarray(source[..., j : j + width])
+
+
+def util_get_image_memmap_from_files(
+    function_id: str, paths, file_path: str, batch_size: int = 1024
+):
+    """
+    As util_get_image_memmap(function_id, ImageData(paths).data, file_path), but
+    filled from the image files batch by batch, with the same values: the movie
+    is not held in memory as a whole, nor a second time while being copied into
+    the memmap. A file is memory-mapped and assigned by assign_by_columns when
+    its pixels are contiguous, else decoded a batch of pages at a time when
+    each page is one frame (compressed stacks), and read in full only
+    otherwise (see iter_frame_batches).
+
+    The memmap is pixels x time, so a 4 KiB page holds 1024 consecutive frames
+    of one pixel: decoded batches of about that many frames write each page
+    about once (smaller batches rewrite every page several times and run
+    slower), and a mapped file, assigned by columns, has each page written
+    once.
+    """
+    import imageio
+    import tifffile
+    from caiman.mmapping import prepare_shape
+    from caiman.paths import memmap_frames_filename
+
+    paths = paths if isinstance(paths, list) else [paths]
+
+    def header_shape(path):
+        try:
+            with tifffile.TiffFile(path) as tif:
+                return tuple(int(n) for n in tif.series[0].shape)
+        except Exception:
+            return np.asarray(imageio.volread(path)).shape
+
+    shapes = [header_shape(path) for path in paths]
+    T, dims = sum(s[0] for s in shapes), shapes[0][1:]
+
+    # The per-file assignment below would broadcast a mismatched frame shape
+    # (a 2D file, or a (T, 1, X) one) where concatenating the files raises
+    for path, shape in zip(paths, shapes):
+        name = os.path.basename(path)
+        if len(shape) < 3:
+            raise ValueError(f"{name}: shape {shape} is not a stack of frames")
+        if shape[1:] != dims:
+            raise ValueError(
+                f"{name}: frame shape {shape[1:]} differs from {dims}, "
+                f"the frame shape of {os.path.basename(paths[0])}"
+            )
+
+    order = "C"
+    shape_mov = (np.prod(dims), T)
+    dir_path = join_filepath(file_path.split("/")[:-1])
+    file_basename = file_path.split("/")[-1]
+    mmap_basename = f"{file_basename}.{function_id}"
+    fname_tot = memmap_frames_filename(mmap_basename, dims, T, order)
+    mmap_path = join_filepath([dir_path, fname_tot])
+
+    # The whole file is reserved up front: a sparse memmap on a disk that fills
+    # mid-fill dies with SIGBUS, which nothing can catch or record. numpy's
+    # "w+" reopens with "w+b" and truncates, so the reserved file is mapped "r+".
+    nbytes = int(np.prod(shape_mov)) * np.dtype(np.float32).itemsize
+    reserve_file(mmap_path, nbytes)
+    mmap = np.memmap(
+        mmap_path,
+        mode="r+",
+        dtype=np.float32,
+        shape=prepare_shape(shape_mov),
+        order=order,
+    )
+    mmap_images = np.reshape(mmap.T, [T] + list(dims), order="F")
+
+    try:
+        t = 0
+        for path, shape in zip(paths, shapes):
+            end = t + shape[0]
+            try:
+                source = tifffile.memmap(path, mode="r")
+            except CANNOT_MAP:
+                source = None
+            if source is not None:
+                if source.shape != shape:
+                    raise ValueError(
+                        f"{os.path.basename(path)}: read as {source.shape}, "
+                        f"but its headers give {shape}"
+                    )
+                assign_by_columns(mmap_images[t:end], source)
+                t = end
+                continue
+            for batch in iter_frame_batches(path, shape[0], batch_size):
+                if batch.shape[1:] != dims or t + len(batch) > end:
+                    raise ValueError(
+                        f"{os.path.basename(path)}: read as frames of "
+                        f"{batch.shape[1:]}, but its headers give {shape}"
+                    )
+                mmap_images[t : t + len(batch)] = batch
+                t += len(batch)
+            if t != end:
+                raise ValueError(
+                    f"{os.path.basename(path)}: read {shape[0] - (end - t)} "
+                    f"frames, but its headers give {shape[0]}"
+                )
+    except BaseException:
+        # no half-filled memmap left for the run to use; a failure to remove it
+        # must not hide why the fill failed
+        with contextlib.suppress(OSError):
+            os.remove(mmap_path)
+        raise
+    return mmap_images, dims, mmap_path
+
+
+def util_edit_roi_movie(images: ImageData, fallback, output_dir: str):
+    """
+    The movie EditRoiData keeps for ROI edits: a reference to the input when it
+    lives in this node's experiment (see edit_reference), else the fallback copy,
+    or what a fallback function returns, called only when there is no reference.
+    """
+    reference = edit_reference(images, output_dir)
+    if reference is not None:
+        return reference
+    return fallback() if callable(fallback) else fallback
 
 
 def util_cleanup_image_memmap(mmap_paths: list):
@@ -152,250 +367,349 @@ def util_download_model_files():
                 f.write(response.content)
 
 
+def nwb_pixel_mask(A, comp, dims, swap_dim):
+    """
+    Component comp of A as NWB pixel-mask rows (row, column, weight), its
+    non-zero pixels in row-major order: the image_mask it replaces, made sparse.
+    """
+    # the pixel order get_roi reads A in, so the NWB masks match the ROI images
+    column = A[:, [comp]].tocoo()
+    column.sum_duplicates()
+    nonzero = column.data != 0
+    rows, cols = np.unravel_index(
+        column.row[nonzero], dims, order="C" if swap_dim else "F"
+    )
+    weights = column.data[nonzero]
+    by_pixel = np.lexsort((cols, rows))
+    return np.array([rows[by_pixel], cols[by_pixel], weights[by_pixel]]).T
+
+
+def component_outputs(
+    A,
+    C,
+    idx_good,
+    idx_bad,
+    dims,
+    roi_thr,
+    thr_method,
+    swap_dim,
+    accepted_list=None,
+    rejected_list=None,
+    n_frames=0,
+):
+    """The ROI masks, iscell, the NWB ROI table and fluorescence in one shared
+    row order.
+
+    Row i of every output is component order[i], accepted components first, so
+    the ROI editor and the analyses can index fluorescence by ROI row. order is
+    returned last for the outputs computed elsewhere.
+    """
+    order = list(idx_good) + list(idx_bad)
+    n_components = len(order)
+    n_rois, n_noncell_rois = len(idx_good), len(idx_bad)
+
+    iscell = np.concatenate(
+        [
+            np.ones(n_rois, dtype=int),
+            np.zeros(n_noncell_rois, dtype=int),
+        ]
+    )
+
+    # one footprint at a time: no full-frame layer per component is kept
+    pixels = []
+    for ids, kind in ((idx_good, "accepted"), (idx_bad, "rejected")):
+        if len(ids) == 0 or A is None:
+            continue
+        found = 0
+        for mask in get_roi(A[:, ids], roi_thr, thr_method, swap_dim, dims):
+            pixels.append(np.flatnonzero(mask))
+            found += 1
+        if found != len(ids):
+            raise ValueError(f"one mask per {kind} component expected")
+    roi_masks = RoiMasks.from_pixels(dims, pixels)
+    non_cell_roi = roi_masks.label_image(slice(n_rois, None))
+
+    roi_list = []
+    for comp in order:
+        kargs = {}
+        kargs["pixel_mask"] = nwb_pixel_mask(A, comp, dims, swap_dim)
+        if accepted_list is not None:
+            kargs["accepted"] = comp in accepted_list
+        if rejected_list is not None:
+            kargs["rejected"] = comp in rejected_list
+        roi_list.append(kargs)
+
+    fluorescence = (
+        np.asarray(C)[order]
+        if n_components > 0 and C is not None
+        else np.zeros((0, n_frames))
+    )
+
+    return (
+        roi_masks,
+        iscell,
+        roi_list,
+        fluorescence,
+        non_cell_roi,
+        n_rois,
+        n_noncell_rois,
+        order,
+    )
+
+
+def dff_frames_window(value):
+    """frames_window for detrend_df_f: None (whole recording) or an integer >= 2."""
+    if value is None:
+        return None
+    try:
+        window = int(value)
+    except (TypeError, ValueError):
+        window = None
+    if isinstance(value, bool) or window is None or window != value or window < 2:
+        raise ValueError(
+            f"frames_window must be null or an integer of at least 2, got {value!r}"
+        )
+    return window
+
+
+def caiman_dff(estimates, rows, n_frames, frames_window):
+    """CaImAn's detrend_df_f of estimates as float32, rows in the given order.
+
+    A CaImAn failure gives NaN rows with a warning instead of failing the node.
+    """
+    if len(rows) == 0:
+        return np.zeros((0, n_frames), dtype=np.float32)
+    from caiman.source_extraction.cnmf.utilities import detrend_df_f
+
+    b, f = estimates.b, estimates.f
+    if b is None or f is None or np.shape(b)[-1] == 0:
+        # detrend_df_f only takes None as no background; zero-width divides by F0
+        b = f = None
+    b0 = getattr(estimates, "b0", None)
+    if b is None and b0 is not None:
+        # ring model: the static background b0 only, its W fluctuations left out
+        b, f = np.reshape(b0, (-1, 1)), np.ones((1, n_frames))
+    elif b is None:
+        logger.warning(
+            "CaImAn estimates have no background (b, f or b0); dff is "
+            "detrended only, F - F0, not divided by a baseline"
+        )
+    try:
+        dff = detrend_df_f(
+            estimates.A,
+            b,
+            estimates.C,
+            f,
+            YrA=estimates.YrA,
+            frames_window=frames_window,
+            flag_auto=True,
+            use_fast=False,
+        )
+    except Exception:
+        logger.warning("CaImAn detrend_df_f failed, dff is all NaN", exc_info=True)
+        return np.full((len(rows), n_frames), np.nan, dtype=np.float32)
+    return np.asarray(dff, dtype=np.float32)[rows]
+
+
 def caiman_cnmf(
     images: ImageData, output_dir: str, params: dict = None, **kwargs
-) -> dict(fluorescence=FluoData, iscell=IscellData):
-    from caiman import local_correlations, stop_server
-    from caiman.cluster import setup_cluster
+) -> dict(fluorescence=FluoData, dff=FluoData, iscell=IscellData, meanImg=ImageData):
     from caiman.source_extraction.cnmf import cnmf, online_cnmf
     from caiman.source_extraction.cnmf.params import CNMFParams
 
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info(f"start caiman_cnmf: {function_id}")
 
+    # ROI editing reads new traces from the input movie, opened lazily at
+    # commit time: EditRoiData keeps a reference to it when util_edit_roi_movie
+    # allows it, rather than a copy
+    images_ref = images
+
     # NOTE: evaluate_components requires cnn_model files in caiman_data directory.
     util_download_model_files()
 
     flattened_params = {}
-    recursive_flatten_params(params, flattened_params)
-    params = flattened_params
+    recursive_flatten_params(params or {}, flattened_params)
+    params = parse_text_params(flattened_params)
 
     Ain = params.pop("Ain", None)
     do_refit = params.pop("do_refit", None)
     roi_thr = params.pop("roi_thr", None)
     use_online = params.pop("use_online", False)
+    requested_n_processes = params.pop("n_processes", 1)
+    frames_window = dff_frames_window(params.pop("frames_window", 500))
 
     file_path = images.path
     if isinstance(file_path, list):
         file_path = file_path[0]
 
-    images = images.data
     mmap_paths = []
-    mmap_images, dims, mmap_path = util_get_image_memmap(function_id, images, file_path)
+    mmap_images, dims, mmap_path = util_get_image_memmap_from_files(
+        function_id, images.path, file_path
+    )
     mmap_paths.append(mmap_path)
-
-    del images
-    gc.collect()
-
-    nwbfile = kwargs.get("nwbfile", {})
-    fr = nwbfile.get("imaging_plane", {}).get("imaging_rate", 30)
-
-    if params is None:
-        ops = CNMFParams()
-    else:
-        ops = CNMFParams(params_dict={**params, "fr": fr})
-
-    if "dview" in locals():
-        stop_server(dview=dview)  # noqa: F821
-
-    # TODO: Add parameters for node
-    n_processes = 1
-    dview = None
-    # This process launches another process to run the CNMF algorithm,
-    # so this node use at least 2 core.
-    if n_processes == 1:
-        c, dview, n_processes = setup_cluster(
-            backend="single", n_processes=n_processes, single_thread=True
-        )
-    else:
-        c, dview, n_processes = setup_cluster(
-            backend="multiprocessing", n_processes=n_processes
-        )
-    logger.debug(f"n_processes: {n_processes}")
-
-    if use_online:
-        ops.change_params(
-            {
-                "fnames": [mmap_path],
-                # NOTE: These params uses np.inf as default in CaImAn.
-                # Yaml cannot serialize np.inf, so default value in yaml is None.
-                "max_comp_update_shape": params["max_comp_update_shape"] or np.inf,
-                "num_times_comp_updated": params["update_num_comps"] or np.inf,
-            }
-        )
-        cnm = online_cnmf.OnACID(dview=dview, Ain=Ain, params=ops)
-        cnm.fit_online()
-    else:
-        cnm = cnmf.CNMF(n_processes=n_processes, dview=dview, Ain=Ain, params=ops)
-        cnm = cnm.fit(mmap_images)
-
-        if do_refit:
-            cnm = cnm.refit(mmap_images, dview=dview)
-
-    # Check if any components were found
-    n_components = cnm.estimates.A.shape[1] if hasattr(cnm.estimates, "A") else 0
-
-    if n_components > 0:
-        # Only evaluate components if we found some
-        cnm.estimates.evaluate_components(mmap_images, cnm.params, dview=dview)
-        idx_good = cnm.estimates.idx_components
-        idx_bad = cnm.estimates.idx_components_bad
-        if not isinstance(idx_good, list):
-            idx_good = idx_good.tolist()
-        if not isinstance(idx_bad, list):
-            idx_bad = idx_bad.tolist()
-    else:
-        # No components found
-        idx_good = []
-        idx_bad = []
-
-    # In single-thread mode dview is None and there is no cluster to stop;
-    # stop_server() would shell out to a nonexistent `ipcluster` and log errors.
-    if dview is not None:
-        stop_server(dview=dview)
-
-    # contours plot
-    Cn = local_correlations(mmap_images.transpose(1, 2, 0))
-    Cn[np.isnan(Cn)] = 0
-
-    thr_method = "nrg"
-    swap_dim = False
-
-    iscell = np.concatenate(
-        [
-            np.ones(len(idx_good), dtype=int),
-            np.zeros(len(idx_bad), dtype=int),
-        ]
-    )
-
-    if len(idx_good) > 0 and hasattr(cnm.estimates, "A"):
-        cell_ims = get_roi(
-            cnm.estimates.A[:, idx_good], roi_thr, thr_method, swap_dim, dims
-        )
-        if len(cell_ims) > 0:  # Check if get_roi returned any ROIs
-            cell_ims = np.stack(cell_ims).astype(float)
-            cell_ims[cell_ims == 0] = np.nan
-            cell_ims = np.where(
-                np.isnan(cell_ims), cell_ims, cell_ims - 1
-            )  # Safer subtraction
-            n_rois = len(cell_ims)
-        else:
-            cell_ims = np.zeros((0, *dims))
-            n_rois = 0
-    else:
-        cell_ims = np.zeros((0, *dims))
-        n_rois = 0
-
-    if len(idx_bad) > 0:
-        non_cell_ims = get_roi(
-            cnm.estimates.A[:, idx_bad], roi_thr, thr_method, swap_dim, dims
-        )
-        non_cell_ims = np.stack(non_cell_ims).astype(float)
-        for i, j in enumerate(range(n_rois, n_rois + len(non_cell_ims))):
-            non_cell_ims[i, :] = np.where(non_cell_ims[i, :] != 0, j, 0)
-        non_cell_roi = np.nanmax(non_cell_ims, axis=0).astype(float)
-    else:
-        non_cell_ims = np.zeros((0, *dims))
-        non_cell_roi = np.zeros(dims)
-        non_cell_roi[non_cell_roi == 0] = np.nan
-    non_cell_ims[non_cell_ims == 0] = np.nan
-
-    n_noncell_rois = len(non_cell_ims)
-
-    im = (
-        np.vstack([cell_ims, non_cell_ims])
-        if n_components > 0
-        else np.zeros((0, *dims))
-    )
-
-    # NWB additions
-    nwbfile = {}
-    # Add ROIs to NWB
-    roi_list = []
-    if n_components > 0:
-        for i in range(n_components):
-            kargs = {}
-            kargs["image_mask"] = cnm.estimates.A.T[i].T.toarray().reshape(dims)
-            # Safer attribute access with getattr
-            accepted_list = getattr(cnm.estimates, "accepted_list", None)
-            rejected_list = getattr(cnm.estimates, "rejected_list", None)
-            if accepted_list is not None:
-                kargs["accepted"] = i in accepted_list
-            if rejected_list is not None:
-                kargs["rejected"] = i in rejected_list
-            roi_list.append(kargs)
-
-    nwbfile[NWBDATASET.ROI] = {function_id: {"roi_list": roi_list}}
-    nwbfile[NWBDATASET.POSTPROCESS] = {function_id: {"all_roi_img": im}}
-
-    # Add iscell to NWB
-    nwbfile[NWBDATASET.COLUMN] = {
-        function_id: {
-            "name": "iscell",
-            "description": "two columns - iscell & probcell",
-            "data": iscell,
-        }
-    }
-
-    # Fluorescence - with safety check for C attribute
-    fluorescence = (
-        (
-            cnm.estimates.C
-            if hasattr(cnm.estimates, "C")
-            else np.zeros((0, mmap_images.shape[0]))
-        )
-        if n_components > 0
-        else np.zeros((0, mmap_images.shape[0]))
-    )
-
-    nwbfile[NWBDATASET.FLUORESCENCE] = {
-        function_id: {
-            "Fluorescence": {
-                "table_name": "ROIs",
-                "region": list(range(n_rois + n_noncell_rois)),
-                "name": "Fluorescence",
-                "data": fluorescence.T,
-                "unit": "lumens",
-                "rate": fr,
-            }
-        }
-    }
-
-    # Create empty ROI array filled with NaN for when no components found
-    empty_roi = np.full(dims, np.nan)
-
-    info = {
-        "images": ImageData(
-            np.array(Cn * 255, dtype=np.uint8),
-            output_dir=output_dir,
-            file_name="images",
-        ),
-        "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
-        "iscell": IscellData(iscell, file_name="iscell"),
-        "all_roi": RoiData(
-            np.nanmax(im, axis=0) if len(im) > 0 else empty_roi.copy(),
-            output_dir=output_dir,
-            file_name="all_roi",
-        ),
-        "cell_roi": RoiData(
-            np.nanmax(im[iscell != 0], axis=0) if len(im) > 0 else empty_roi.copy(),
-            output_dir=output_dir,
-            file_name="cell_roi",
-        ),
-        "non_cell_roi": RoiData(
-            non_cell_roi if len(im) > 0 else empty_roi.copy(),
-            output_dir=output_dir,
-            file_name="non_cell_roi",
-        ),
-        "edit_roi_data": EditRoiData(mmap_images, im),
-        "nwbfile": nwbfile,
-    }
-
-    # Clean up temporary files
     try:
-        util_cleanup_image_memmap(mmap_paths)
-    except Exception as e:
-        logger.warning("Failed to cleanup memmap files.")
-        logger.warning(e)
+        del images
+        gc.collect()
+
+        nwbfile = kwargs.get("nwbfile", {})
+        fr = nwbfile.get("imaging_plane", {}).get("imaging_rate", 30)
+
+        with caiman_cluster(requested_n_processes) as (dview, n_processes):
+            ops = CNMFParams()
+            ops.change_params(
+                distribute_params_to_groups({**params, "fr": fr}, vars(ops))
+            )
+
+            if use_online:
+                ops.change_params(
+                    {
+                        "data": {"fnames": [mmap_path]},
+                        # NOTE: These params uses np.inf as default in CaImAn.
+                        # Yaml cannot serialize np.inf, so the yaml default is None.
+                        "online": {
+                            "max_comp_update_shape": params["max_comp_update_shape"]
+                            or np.inf,
+                            "num_times_comp_updated": params["num_times_comp_updated"]
+                            or np.inf,
+                        },
+                    }
+                )
+                cnm = online_cnmf.OnACID(dview=dview, Ain=Ain, params=ops)
+                cnm.fit_online()
+            else:
+                cnm = cnmf.CNMF(
+                    n_processes=n_processes, dview=dview, Ain=Ain, params=ops
+                )
+                cnm = cnm.fit(mmap_images)
+
+                if do_refit:
+                    cnm = cnm.refit(mmap_images, dview=dview)
+
+            # Check if any components were found
+            n_components = (
+                cnm.estimates.A.shape[1] if hasattr(cnm.estimates, "A") else 0
+            )
+
+            if n_components > 0:
+                # Only evaluate components if we found some; the CNN's crops are
+                # copied, so they do not keep a dense frame per component
+                with cnn_crops_copied():
+                    cnm.estimates.evaluate_components(
+                        mmap_images, cnm.params, dview=dview
+                    )
+                idx_good = cnm.estimates.idx_components
+                idx_bad = cnm.estimates.idx_components_bad
+                if not isinstance(idx_good, list):
+                    idx_good = idx_good.tolist()
+                if not isinstance(idx_bad, list):
+                    idx_bad = idx_bad.tolist()
+            else:
+                # No components found
+                idx_good = []
+                idx_bad = []
+
+        # contours plot
+        Cn, meanImg = correlation_image(mmap_images)
+        Cn[np.isnan(Cn)] = 0
+
+        thr_method = "nrg"
+        swap_dim = False
+
+        (
+            roi_masks,
+            iscell,
+            roi_list,
+            fluorescence,
+            non_cell_roi,
+            n_rois,
+            n_noncell_rois,
+            order,
+        ) = component_outputs(
+            getattr(cnm.estimates, "A", None),
+            getattr(cnm.estimates, "C", None),
+            idx_good,
+            idx_bad,
+            dims,
+            roi_thr,
+            thr_method,
+            swap_dim,
+            getattr(cnm.estimates, "accepted_list", None),
+            getattr(cnm.estimates, "rejected_list", None),
+            mmap_images.shape[0],
+        )
+        dff = caiman_dff(cnm.estimates, order, fluorescence.shape[1], frames_window)
+
+        # NWB additions
+        nwbfile = {}
+        nwbfile[NWBDATASET.ROI] = {
+            function_id: nwb_roi_table(roi_list, roi_masks.shape, kwargs.get("nwbfile"))
+        }
+        all_roi = roi_masks.label_image()
+        nwbfile[NWBDATASET.POSTPROCESS] = {function_id: nwb_roi_label_image(all_roi)}
+
+        # Add iscell to NWB
+        nwbfile[NWBDATASET.COLUMN] = {
+            function_id: {
+                "name": "iscell",
+                "description": "two columns - iscell & probcell",
+                "data": iscell,
+            }
+        }
+
+        nwbfile[NWBDATASET.FLUORESCENCE] = {
+            function_id: {
+                "Fluorescence": {
+                    "table_name": "ROIs",
+                    "region": list(range(n_rois + n_noncell_rois)),
+                    "name": "Fluorescence",
+                    "data": fluorescence,
+                    "unit": "lumens",
+                    "rate": fr,
+                }
+            }
+        }
+
+        info = {
+            "images": ImageData(
+                np.array(Cn * 255, dtype=np.uint8),
+                output_dir=output_dir,
+                file_name="images",
+            ),
+            "meanImg": ImageData(
+                meanImg.astype(np.float32), output_dir=output_dir, file_name="meanImg"
+            ),
+            "fluorescence": FluoData(fluorescence, file_name="fluorescence"),
+            "dff": FluoData(dff, file_name="dff"),
+            "iscell": IscellData(iscell, file_name="iscell"),
+            "all_roi": RoiData(
+                all_roi,
+                output_dir=output_dir,
+                file_name="all_roi",
+            ),
+            "cell_roi": RoiData(
+                roi_masks.label_image(iscell != 0),
+                output_dir=output_dir,
+                file_name="cell_roi",
+            ),
+            "non_cell_roi": RoiData(
+                non_cell_roi,
+                output_dir=output_dir,
+                file_name="non_cell_roi",
+            ),
+            "edit_roi_data": EditRoiData(
+                util_edit_roi_movie(images_ref, mmap_images, output_dir), roi_masks
+            ),
+            "nwbfile": nwbfile,
+        }
+
+    finally:
+        # Also on the error path, so no half-used memmap outlives the run
+        gc.collect()
+        try:
+            util_cleanup_image_memmap(mmap_paths)
+        except Exception as e:
+            logger.warning("Failed to cleanup memmap files.")
+            logger.warning(e)
 
     return info

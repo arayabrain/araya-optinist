@@ -40,6 +40,7 @@ from studio.app.common.models import (
     Workspace,
 )
 from studio.app.common.models.instance_usage import UsageTier
+from studio.app.const import INPUT_TIFF_CACHE_DIRNAME
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -341,6 +342,7 @@ class DataCleanupJob:
             from studio.app.common.core.storage.remote_storage_controller import (
                 InputFileLock,
             )
+            from studio.app.common.routers.files import is_atomic_replace_tmp
 
             s3 = boto3.client("s3")
             s3_prefix = (
@@ -352,6 +354,10 @@ class DataCleanupJob:
                 # Skip the per-file flock working dir; it is never uploaded.
                 dirs[:] = [d for d in dirs if d != InputFileLock.LOCKS_DIRNAME]
                 for filename in files:
+                    # A killed upload's temporary file and CaImAn's memmap of
+                    # the input: never uploaded, deleted with the directory
+                    if is_atomic_replace_tmp(filename) or filename.endswith(".mmap"):
+                        continue
                     rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
                     s3_key = f"{s3_prefix}{rel_path}"
                     try:
@@ -515,11 +521,16 @@ class DataCleanupJob:
                     # Verify each experiment has S3 backup before deletion
                     experiments_to_delete = []
                     experiments_to_keep = []
+                    has_input_tiff_cache = False
 
                     if os.path.isdir(output_dir):
                         for experiment_id in os.listdir(output_dir):
                             experiment_path = os.path.join(output_dir, experiment_id)
                             if not os.path.isdir(experiment_path):
+                                continue
+
+                            if experiment_id == INPUT_TIFF_CACHE_DIRNAME:
+                                has_input_tiff_cache = True
                                 continue
 
                             # Verify S3 backup exists
@@ -549,8 +560,17 @@ class DataCleanupJob:
                         )
                         shutil.rmtree(experiment_path)
 
+                    # The cached input TIFFs are never uploaded; kept
+                    # experiments still reference them, so they go last
+                    if has_input_tiff_cache and not experiments_to_keep:
+                        cache_dir = os.path.join(output_dir, INPUT_TIFF_CACHE_DIRNAME)
+                        logger.debug(f"Deleting input TIFF cache: {cache_dir}")
+                        shutil.rmtree(cache_dir)
+
                     # If all experiments deleted, remove workspace output dir
-                    if experiments_to_delete and not experiments_to_keep:
+                    if (
+                        experiments_to_delete or has_input_tiff_cache
+                    ) and not experiments_to_keep:
                         if os.path.exists(output_dir) and not os.listdir(output_dir):
                             logger.debug(
                                 f"Deleting empty output directory: {output_dir}"

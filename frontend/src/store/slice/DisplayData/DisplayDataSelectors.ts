@@ -21,6 +21,17 @@ export const selectTimeSeriesData = (filePath: string | null) =>
     (data) => data || {},
   )
 
+export const selectTimeSeriesById =
+  (filePath: string | null) => (state: RootState) =>
+    filePath ? selectDisplayData(state).timeSeries[filePath]?.byId : undefined
+
+export const selectTimeSeriesIdsWithStatus =
+  (filePath: string | null, keys: string[], status: string) =>
+  (state: RootState) => {
+    const byId = selectTimeSeriesById(filePath)(state)
+    return keys.filter((key) => byId?.[key] === status)
+  }
+
 export const selectTimesSeriesMeta = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).timeSeries[filePath].meta
 
@@ -62,7 +73,7 @@ export const selectHeatMapData = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).heatMap[filePath].data
 
 export const selectHeatMapMeta = (filePath: string) => (state: RootState) =>
-  selectDisplayData(state).heatMap[filePath].meta
+  selectDisplayData(state).heatMap[filePath]?.meta
 
 export const selectHeatMapColumns = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).heatMap[filePath].columns
@@ -239,6 +250,9 @@ export const selectBarData = (filePath: string) =>
 export const selectBarMeta = (filePath: string) => (state: RootState) =>
   selectDisplayData(state).bar[filePath]?.meta
 
+export const selectBarColumns = (filePath: string) => (state: RootState) =>
+  selectDisplayData(state).bar[filePath]?.columns
+
 export const selectBarIndex = (filePath: string) =>
   createSelector(
     [(state: RootState) => selectDisplayData(state).bar[filePath]?.index],
@@ -413,6 +427,7 @@ export const selectStatusRoi = createSelector(
     temp_add_roi: statusRoi?.temp_add_roi || [],
     temp_delete_roi: statusRoi?.temp_delete_roi || [],
     temp_merge_roi: statusRoi?.temp_merge_roi || [],
+    temp_promote_roi: statusRoi?.temp_promote_roi || [],
   }),
 )
 

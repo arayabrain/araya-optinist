@@ -1,12 +1,20 @@
+import warnings
+
 import numpy as np
 from scipy.stats import mode
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.dataclass import HeatMapData, TimeSeriesData
+from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.dataclass import BehaviorData, FluoData, IscellData
-from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
+from studio.app.optinist.wrappers.optinist.utils import (
+    nan_gaussian_1d,
+    peak_order,
+    recursive_flatten_params,
+    row_order_from,
+)
 
 logger = AppLogger.get_logger()
 
@@ -43,21 +51,25 @@ def calc_trigger(behavior_data, trigger_type, trigger_threshold):
             i += length
         else:
             i += 1
-    if trigger_lengths:
-        mode_result = mode(trigger_lengths)  # find most common length
-        trigger_len = mode_result.mode  # If scalar, use this value
-        if hasattr(trigger_len, "__len__"):  # If array use first value
-            trigger_len = trigger_len[0]
+    num_detected = len(trigger_lengths)
+    if num_detected == 0:
+        return np.array([], dtype=int), 0, 0
 
-        trigger_idx = [
-            idx
-            for idx, length in zip(trigger_idx, trigger_lengths)
-            if length == trigger_len  # if trigger_len is different (boundary cut-offs)
-        ]  # don't include
-        trigger_idx = np.array(trigger_idx)
-        return trigger_idx, trigger_len
-    else:
-        return trigger_idx, 0
+    # Up and down runs differ in length, so cross aligns each edge with a fixed window
+    if trigger_type == "cross":
+        return np.array(trigger_idx), 0, num_detected
+
+    mode_result = mode(trigger_lengths)  # find most common length
+    trigger_len = mode_result.mode  # If scalar, use this value
+    if hasattr(trigger_len, "__len__"):  # If array use first value
+        trigger_len = trigger_len[0]
+
+    trigger_idx = [
+        idx
+        for idx, length in zip(trigger_idx, trigger_lengths)
+        if length == trigger_len  # if trigger_len is different (boundary cut-offs)
+    ]  # don't include
+    return np.array(trigger_idx), trigger_len, num_detected
 
 
 def calc_trigger_average(neural_data, trigger_idx, trigger_len, pre_event, post_event):
@@ -68,9 +80,56 @@ def calc_trigger_average(neural_data, trigger_idx, trigger_len, pre_event, post_
         event_end = idx + trigger_len + post_event
         if event_end <= num_frame and event_start >= 0:
             event_trigger_data.append(neural_data[event_start:event_end])
-    # Convert to numpy array (num_event, cell_number, event_time)
+    # Convert to numpy array (num_event, event_time, cell_number)
     event_trigger_data = np.array(event_trigger_data)
     return event_trigger_data
+
+
+def baseline_zscore(event_trigger_data, onset, baseline_window):
+    # In place, keeping float32: a full-size copy is GBs on a large recording
+    if not np.issubdtype(event_trigger_data.dtype, np.floating):
+        event_trigger_data = event_trigger_data.astype(float)
+    base = event_trigger_data[:, onset - baseline_window : onset]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        # float64: float32 sums leave a constant baseline with a nonzero s.d.
+        mean = np.nanmean(base, axis=1, keepdims=True, dtype=np.float64)
+        sd = np.nanstd(base, axis=1, keepdims=True, dtype=np.float64)
+        scale = np.nanmax(np.abs(base), axis=1, keepdims=True).astype(float)
+    # skipped: baseline constant to 1e-6 of its scale, or no finite sample
+    skip = ~(sd > 1e-6 * np.maximum(scale, np.finfo(float).tiny))
+    sd[skip] = np.nan
+    event_trigger_data -= mean
+    event_trigger_data /= sd
+    return event_trigger_data, skip[:, 0]
+
+
+def nan_stats(data):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return (
+            np.nanmean(data, axis=0),
+            np.nanstd(data, axis=0, ddof=1),
+            np.sum(~np.isnan(data), axis=0),
+        )
+
+
+def population_trace(mean, band):
+    """Mean across the cells that are finite at every time point, with the std or
+    sem across them. A cell NaN anywhere is left out everywhere, so a NaN cannot
+    turn into a step where the cell set changes."""
+    rows = mean[np.isfinite(mean).all(axis=1)]
+    n_cell = len(rows)
+    if n_cell == 0:
+        nan = np.full(mean.shape[1], np.nan)
+        return nan, nan.copy(), 0
+    overall = rows.mean(axis=0)
+    if n_cell < 2:
+        return overall, np.full_like(overall, np.nan), n_cell
+    spread = rows.std(axis=0, ddof=1)
+    if band == "sem":
+        spread = spread / np.sqrt(n_cell, dtype=spread.dtype)
+    return overall, spread, n_cell
 
 
 def ETA(
@@ -78,15 +137,23 @@ def ETA(
     behaviors_data: BehaviorData,
     output_dir: str,
     iscell: IscellData = None,
+    order_from: HeatMapData = None,
     params: dict = None,
     **kwargs,
-) -> dict(mean=TimeSeriesData):
+) -> dict(mean=TimeSeriesData, mean_trace=TimeSeriesData, mean_heatmap=HeatMapData):
     function_id = ExptOutputPathIds(output_dir).function_id
     logger.info("start ETA: %s", function_id)
 
     flattened_params = {}
     recursive_flatten_params(params, flattened_params)
     params = flattened_params
+
+    mean_trace_band = params.get("mean_trace_band", "sem") or "sem"
+    mean_trace_band = str(mean_trace_band).strip().lower()
+    if mean_trace_band not in ("std", "sem"):
+        raise ValueError(
+            f"Unknown mean_trace_band '{mean_trace_band}'; expected 'std' or 'sem'"
+        )
 
     neural_data = neural_data.data
     behaviors_data = behaviors_data.data
@@ -100,6 +167,8 @@ def ETA(
         Y = behaviors_data.transpose()
     else:
         Y = behaviors_data
+    if Y.ndim == 1:
+        Y = Y[:, np.newaxis]
 
     assert (
         X.shape[0] == Y.shape[0]
@@ -109,36 +178,147 @@ def ETA(
 
     if iscell is not None:
         iscell = iscell.data
+        assert len(iscell) == X.shape[1], (
+            f"iscell has {len(iscell)} entries but neural_data has "
+            f"{X.shape[1]} ROIs"
+        )
         ind = np.where(iscell > 0)[0]
+        assert len(ind) > 0, "iscell marks no ROI as a cell, nothing to average"
         cell_numbers = ind
         X = X[:, ind]
 
-    Y = Y[:, params["event_col_index"]]
+    col = params["event_col_index"]
+    assert col == int(col) and 0 <= col < Y.shape[1], (
+        f"event_col_index {col} is out of range for behaviour data with "
+        f"{Y.shape[1]} column(s); it must be a whole number from 0 to "
+        f"{Y.shape[1] - 1}"
+    )
+    Y = Y[:, int(col)]
+
+    # The window is abs(pre_event) frames before the trigger whichever sign is given
+    pre_event = -abs(params["pre_event"])
+    post_event = params["post_event"]
+
+    baseline_window = params.get("baseline_window") or 0
+    if baseline_window != int(baseline_window):
+        raise ValueError(f"baseline_window {baseline_window} must be a whole number")
+    baseline_window = int(baseline_window)
+    if baseline_window == 1 or not 0 <= baseline_window <= abs(pre_event):
+        raise ValueError(
+            f"baseline_window {baseline_window} must be 0 (off) or between 2 and "
+            f"abs(pre_event) {abs(pre_event)}: the baseline is the pre-onset frames"
+        )
 
     # calculate Triggers
-    [trigger_idxs, trigger_len] = calc_trigger(
+    trigger_idxs, trigger_len, num_detected = calc_trigger(
         Y, params["trigger_type"], params["trigger_threshold"]
     )
+    assert num_detected > 0, (
+        f"No triggers found: no {params['trigger_type']} crossing of "
+        f"{params['trigger_threshold']} in behaviour column {params['event_col_index']}"
+    )
+
+    # post_event counts from the end of the trigger, so it may be negative
+    window_len = abs(pre_event) + trigger_len + post_event
+    assert window_len > 0, (
+        f"Empty window: abs(pre_event) {abs(pre_event)} + trigger_len {trigger_len}"
+        f" + post_event {post_event} must be > 0"
+    )
+    if baseline_window and trigger_len + post_event < 0:
+        raise ValueError(
+            f"baseline_window needs the window to reach the onset: trigger_len "
+            f"{trigger_len} + post_event {post_event} must be >= 0"
+        )
 
     # calculate Triggered average
     event_trigger_data = calc_trigger_average(
         X,
         trigger_idxs,
         trigger_len,
-        params["pre_event"],
-        params["post_event"],
+        pre_event,
+        post_event,
     )
 
-    # (cell_number, event_time_lambda)
-    if len(event_trigger_data) > 0:
-        mean = np.mean(event_trigger_data, axis=0)
-        std = np.std(event_trigger_data, axis=0)
-        sem = np.std(event_trigger_data, axis=0) / np.sqrt(len(event_trigger_data))
-        mean = mean.transpose()
-        std = std.transpose()
-        sem = sem.transpose()
+    smooth_sigma = float(params.get("smooth_sigma_frames") or 0)
+    if smooth_sigma < 0:
+        raise ValueError(f"smooth_sigma_frames {smooth_sigma} must be >= 0")
+
+    num_event = len(event_trigger_data)
+    dropped_length = num_detected - len(trigger_idxs)
+    dropped_edge = len(trigger_idxs) - num_event
+    if dropped_length or dropped_edge:
+        reasons = []
+        if dropped_length:
+            reasons.append(
+                f"{dropped_length} dropped, length differs from the modal {trigger_len}"
+            )
+        if dropped_edge:
+            reasons.append(f"{dropped_edge} dropped, window crosses the recording edge")
+        logger.warning(
+            "ETA: averaged %d of %d triggers (%s)",
+            num_event,
+            num_detected,
+            "; ".join(reasons),
+        )
+    assert num_event > 0, f"All {num_detected} triggers were dropped, see the log"
+
+    if baseline_window:
+        cells = (
+            np.asarray(cell_numbers) if iscell is not None else np.arange(X.shape[1])
+        )
+        nan_windows = int(np.isnan(event_trigger_data).any(axis=(1, 2)).sum())
+        if nan_windows:
+            logger.warning(
+                "ETA: NaN samples in %d event windows are excluded per time point",
+                nan_windows,
+            )
+        event_trigger_data, skip = baseline_zscore(
+            event_trigger_data, abs(pre_event), baseline_window
+        )
+        if skip.any():
+            logger.warning(
+                "ETA: %d event-cell pairs skipped for a constant or non-finite "
+                "baseline, cells %s",
+                int(skip.sum()),
+                cells[skip.any(axis=0)].tolist(),
+            )
+    if baseline_window:
+        mean, std, n_event = nan_stats(event_trigger_data)
+        empty = (n_event == 0).all(axis=0)
+        if empty.any():
+            logger.warning(
+                "ETA: cells %s have no event left and are NaN", cells[empty].tolist()
+            )
+        sem = std / np.sqrt(n_event)
     else:
-        assert False, "Output data size is 0"
+        # (cell_number, event_time_lambda)
+        mean = np.mean(event_trigger_data, axis=0)
+        # Sample std; undefined with one event rather than a false zero
+        std = (
+            np.std(event_trigger_data, axis=0, ddof=1)
+            if num_event > 1
+            else np.full(mean.shape, np.nan)
+        )
+        sem = std / np.sqrt(num_event)
+    mean = mean.transpose()
+    std = std.transpose()
+    sem = sem.transpose()
+
+    heatmap_cells = (
+        np.asarray(cell_numbers) if iscell is not None else np.arange(len(mean))
+    )
+    # mean, std, sem and the NWB stay unsmoothed; the heatmap and mean_trace plot
+    # use the smoothed means, stored as *_smoothed
+    smoothed = nan_gaussian_1d(mean, smooth_sigma, axis=1) if smooth_sigma > 0 else mean
+    overall_mean, overall_band, n_cell = population_trace(mean, mean_trace_band)
+    left_out = ~np.isfinite(mean).all(axis=1)
+    if left_out.any():
+        logger.warning(
+            "ETA: mean_trace leaves out cells %s, NaN at some time point",
+            heatmap_cells[left_out].tolist(),
+        )
+    if n_cell < 2:
+        logger.warning("mean_trace error band is undefined for fewer than 2 cells")
 
     nwbfile = {}
     nwbfile[NWBDATASET.POSTPROCESS] = {
@@ -146,28 +326,63 @@ def ETA(
             "mean": mean,
             "std": std,
             "sem": sem,
-            "num_sample": [len(mean)],
+            "num_sample": [num_event],
+            "mean_trace": overall_mean,
+            "mean_trace_band": overall_band,
         }
     }
-    min_value = np.min(mean, axis=1, keepdims=True)
-    max_value = np.max(mean, axis=1, keepdims=True)
-    norm_mean = (mean - min_value) / (max_value - min_value)
+    trace_mean, trace_band = overall_mean, overall_band
+    if smooth_sigma > 0:
+        trace_mean, trace_band, _ = population_trace(smoothed, mean_trace_band)
+        nwbfile[NWBDATASET.POSTPROCESS][function_id].update(
+            mean_smoothed=smoothed,
+            mean_trace_smoothed=trace_mean,
+            mean_trace_band_smoothed=trace_band,
+        )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # an all-NaN row stays NaN
+        min_value = np.nanmin(smoothed, axis=1, keepdims=True)
+        value_range = np.nanmax(smoothed, axis=1, keepdims=True) - min_value
+    value_range[value_range == 0] = 1  # a flat cell becomes a zero row, not NaN
+    norm_mean = (smoothed - min_value) / value_range
+
+    trace_index = list(range(pre_event, post_event + trigger_len))
+    order = np.arange(len(mean))
+    if order_from is not None:
+        order = row_order_from(order_from, heatmap_cells)
+    elif params.get("sort_by_peak", False):
+        order = peak_order(norm_mean)
+
+    title = f"n = {num_event} events"
+    if num_event < num_detected:
+        title = f"n = {num_event} of {num_detected} events"
+    if baseline_window:
+        title += ", per-event z-score"
+    if smooth_sigma > 0:
+        title += f", smoothed {smooth_sigma:g} frames"
 
     info = {}
     info["mean"] = TimeSeriesData(
         mean,
         std=std,
         sem=sem,
-        index=list(range(params["pre_event"], params["post_event"] + trigger_len)),
+        index=trace_index,
         cell_numbers=cell_numbers if iscell is not None else None,
         file_name="mean",
     )
+    info["mean_trace"] = TimeSeriesData(
+        trace_mean[np.newaxis],
+        std=trace_band[np.newaxis],
+        index=trace_index,
+        file_name="mean_trace",
+        meta=PlotMetaData(title=f"{title}, {n_cell} cells"),
+    )
     info["mean_heatmap"] = HeatMapData(
-        norm_mean,
-        columns=list(
-            np.arange(params["pre_event"], params["post_event"] + trigger_len)
-        ),
+        norm_mean[order],
+        columns=list(np.arange(pre_event, post_event + trigger_len)),
+        index=heatmap_cells[order].tolist(),
         file_name="mean_heatmap",
+        meta=PlotMetaData(title=title, yaxis_type="category"),
     )
     info["nwbfile"] = nwbfile
     return info

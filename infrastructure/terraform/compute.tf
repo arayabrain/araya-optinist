@@ -139,6 +139,10 @@ locals {
     ? data.aws_ssm_parameter.custom_ami_id[0].value
     : data.aws_ami.ecs_optimized.id
   )
+
+  # Attachment name of the dedicated swap volume. ecs-user-data.sh finds the
+  # device by it, so the mapping and the script must use the same name
+  swap_device_name = "/dev/xvds"
 }
 
 resource "aws_launch_template" "ecs" {
@@ -156,7 +160,7 @@ resource "aws_launch_template" "ecs" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 88 # Reduced from 120: 32 GB swap moved to dedicated volume
+      volume_size = local.free_tier_sizing.root_volume_gib
       volume_type = "gp3"
       encrypted   = true
     }
@@ -165,9 +169,9 @@ resource "aws_launch_template" "ecs" {
   # Dedicated swap volume — mkswap on a block device takes <1 second
   # vs ~4.5 minutes for dd-based swap file creation on root volume
   block_device_mappings {
-    device_name = "/dev/xvds"
+    device_name = local.swap_device_name
     ebs {
-      volume_size           = 32
+      volume_size           = local.free_tier_sizing.swap_volume_gib
       volume_type           = "gp3"
       encrypted             = true
       delete_on_termination = true
@@ -187,8 +191,8 @@ resource "aws_launch_template" "ecs" {
     ecr_repository_url = local.ecr_repository_url
     efs_id             = aws_efs_file_system.snmk.id
     db_host            = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb       = 32768 # 32GB swap for workflow memory spikes
-    swap_device_name   = "/dev/xvds"
+    swap_size_mb       = local.free_tier_sizing.swap_volume_gib * 1024 # the whole swap volume
+    swap_device_name   = local.swap_device_name
   }))
   tag_specifications {
     resource_type = "instance"
@@ -220,7 +224,7 @@ resource "aws_autoscaling_group" "main" {
   name                      = "${local.env_prefix}-asg"
   vpc_zone_identifier       = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns         = [aws_lb_target_group.autoscaling.arn]
-  health_check_type         = "ELB"
+  health_check_type         = "ELB" # not EC2: only the TG check replaces a registered host with no task, or a wedged one
   health_check_grace_period = 900
   default_cooldown          = 300
 
@@ -233,8 +237,13 @@ resource "aws_autoscaling_group" "main" {
     version = "$Latest"
   }
 
-  force_delete              = true
-  termination_policies      = ["OldestInstance"]
+  force_delete = true
+  # Sticky sessions accumulate on long-lived instances; the newest holds only
+  # sessions placed since it launched. Workload-blind: a workflow on it is
+  # still stopped. Scale-in no longer rotates old instances out, and
+  # instance_refresh does not start under version = "$Latest", so a template
+  # change reaches running instances only via a manual start-instance-refresh
+  termination_policies      = ["NewestInstance"]
   wait_for_capacity_timeout = "0"
 
   # Enable instance scale-in protection
@@ -294,6 +303,20 @@ resource "aws_autoscaling_group" "main" {
     propagate_at_launch = true
   }
 
+  # Authorises the ECS service-linked role to complete the
+  # ecs-managed-draining-termination-hook (its policy requires this tag to
+  # exist). Without it a scaled-in instance waits out the hook's 3600 s timeout.
+  # ECS adds the tag itself when the capacity provider is attached; declaring
+  # it here stops the next apply removing it. Also required for ECS to delete
+  # the hook if managed_draining is ever turned off
+  tag {
+    key                 = "AmazonECSManaged"
+    value               = "true"
+    propagate_at_launch = true
+  }
+
+  # Never starts on its own: launch_template uses version = "$Latest". Only
+  # the preferences a refresh would use; see CUSTOM_AMI_ARCHITECTURE.md
   instance_refresh {
     strategy = "Rolling"
     preferences {
@@ -302,42 +325,49 @@ resource "aws_autoscaling_group" "main" {
     }
   }
 
+  # No initial_lifecycle_hook. The group's hooks: the launch hook
+  # (aws_autoscaling_lifecycle_hook.launch below) and ECS's
+  # ecs-managed-draining-termination-hook. The former terminate hook is retired.
+  # - initial_lifecycle_hook is ForceNew and never refreshed from AWS, so the
+  #   hooks a group was created with stay in state; removing the blocks alone
+  #   would replace the group. ignore_changes keeps it in place
+  # - existing groups: delete the terminate hook with delete-lifecycle-hook
+  #   (FREE_MANAGER_ARCHITECTURE.md, Lifecycle Hooks)
+  # - a block added here is ignored on existing groups; declare a hook with
+  #   aws_autoscaling_lifecycle_hook instead
   lifecycle {
-    ignore_changes = [desired_capacity]
+    ignore_changes = [desired_capacity, initial_lifecycle_hook]
   }
 
   timeouts {
     delete = "30m"
   }
-
-  # Lifecycle hooks for logging
-  initial_lifecycle_hook {
-    name                 = "${local.env_prefix}-launch-hook"
-    default_result       = "CONTINUE"
-    heartbeat_timeout    = 300
-    lifecycle_transition = "autoscaling:EC2_INSTANCE_LAUNCHING"
-  }
-
-  initial_lifecycle_hook {
-    name                 = "${local.env_prefix}-terminate-hook"
-    default_result       = "CONTINUE"
-    heartbeat_timeout    = 300
-    lifecycle_transition = "autoscaling:EC2_INSTANCE_TERMINATING"
-  }
 }
 
-# Auto Scaling Policies
+# Boot wait: holds every launch in Pending:Wait for 300 s, then CONTINUE.
+# Nothing completes it. InService starts the target-group registration, the
+# ELB health-check grace, the refresh warmup and the scale_up cooldown; the
+# wait makes them count from a booted instance whose task is being placed.
+# - without it the target is registered with nothing on port 8000 and turns
+#   unhealthy (free-tg-unhealthy-hosts fires on every scale-out), and the 900 s
+#   grace can run out before a slow start serves
+# - the name is the one the group was created with, so on an existing group
+#   the first apply overwrites the same hook (PutLifecycleHook)
+resource "aws_autoscaling_lifecycle_hook" "launch" {
+  name                   = "${local.env_prefix}-launch-hook"
+  autoscaling_group_name = aws_autoscaling_group.main.name
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_LAUNCHING"
+  heartbeat_timeout      = 300
+  default_result         = "CONTINUE"
+}
+
+# Auto Scaling Policies: scale-out only.
+# - scale_up is driven by cpu-high / memory-high (monitoring.tf)
+# - no scale-down policy: the free-manager Lambda removes instances, chosen
+#   by workload; a policy would let the group choose, blind to workflows
 resource "aws_autoscaling_policy" "scale_up" {
   name                   = "${local.env_prefix}-scale-up"
   scaling_adjustment     = 1
-  adjustment_type        = "ChangeInCapacity"
-  cooldown               = 300
-  autoscaling_group_name = aws_autoscaling_group.main.name
-}
-
-resource "aws_autoscaling_policy" "scale_down" {
-  name                   = "${local.env_prefix}-scale-down"
-  scaling_adjustment     = -1
   adjustment_type        = "ChangeInCapacity"
   cooldown               = 300
   autoscaling_group_name = aws_autoscaling_group.main.name
@@ -365,10 +395,23 @@ resource "aws_ecs_service" "premium" {
     expression = "attribute:tier == premium"
   }
 
+  # No load balancer, but ECS applies the grace to container health checks
+  # too. Sized for cloud-startup.sh's DB wait (up to 600 s) plus app start;
+  # the container's startPeriod caps at 300 s.
+  health_check_grace_period_seconds = 900
 
   depends_on = [
     aws_instance.premium
   ]
+
+  # desired_count above is the creation value only. At runtime the
+  # premium-manager Lambda owns it, keeping one slot per premium instance that
+  # is registered with ECS or still booting, so Terraform must not pull it back
+  # to 1 - ECS would stop the task on every other premium instance until the
+  # manager's next sync. Same as the free service.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 }
 
 # Premium Launch Template - Optimized for dedicated premium users
@@ -387,7 +430,7 @@ resource "aws_launch_template" "premium" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 48 # Reduced from 80: 32 GB swap moved to dedicated volume
+      volume_size = local.premium_tier_sizing.root_volume_gib
       volume_type = "gp3"
       encrypted   = true
     }
@@ -396,9 +439,9 @@ resource "aws_launch_template" "premium" {
   # Dedicated swap volume — mkswap on a block device takes <1 second
   # vs ~4.5 minutes for dd-based swap file creation on root volume
   block_device_mappings {
-    device_name = "/dev/xvds"
+    device_name = local.swap_device_name
     ebs {
-      volume_size           = 32
+      volume_size           = local.premium_tier_sizing.swap_volume_gib
       volume_type           = "gp3"
       encrypted             = true
       delete_on_termination = true
@@ -418,8 +461,8 @@ resource "aws_launch_template" "premium" {
     ecr_repository_url = local.ecr_repository_url
     efs_id             = aws_efs_file_system.snmk.id
     db_host            = replace(aws_db_instance.main.endpoint, ":3306", "")
-    swap_size_mb       = 32768 # 32GB swap for workflow memory spikes
-    swap_device_name   = "/dev/xvds"
+    swap_size_mb       = local.premium_tier_sizing.swap_volume_gib * 1024 # the whole swap volume
+    swap_device_name   = local.swap_device_name
   }))
 
   tag_specifications {
@@ -465,8 +508,12 @@ resource "aws_ecs_cluster" "main" {
     Name = "${local.env_prefix}-cloud-cluster"
     # Terraform apply provenance (see deploy_info.tf). Traces the running
     # deployment back to the infrastructure/ git revision it was applied from.
+    # TfGitBranch is "-" when the apply ran from a detached HEAD (a tag
+    # checkout); TfGitTag is "-" when HEAD carried no tag. AWS accepts empty
+    # tag values, but "-" reads unambiguously in the console.
     TfGitCommit = data.external.tf_build_info.result.git_commit
-    TfGitBranch = data.external.tf_build_info.result.git_branch
+    TfGitBranch = coalesce(data.external.tf_build_info.result.git_branch, "-")
+    TfGitTag    = coalesce(data.external.tf_build_info.result.git_tag, "-")
   }
 }
 
@@ -482,6 +529,7 @@ resource "aws_ecs_capacity_provider" "main" {
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.main.arn
+    managed_draining               = "ENABLED"
     managed_termination_protection = "DISABLED"
 
     managed_scaling {
@@ -538,7 +586,7 @@ resource "aws_instance" "premium" {
 
   launch_template {
     id      = aws_launch_template.premium.id
-    version = "$Latest"
+    version = aws_launch_template.premium.latest_version
   }
 
   instance_type = var.premium_instance_type
@@ -547,8 +595,13 @@ resource "aws_instance" "premium" {
   # On shutdown, stop instance instead of terminating
   instance_initiated_shutdown_behavior = "stop"
 
-  # Prevent accidental termination
-  disable_api_termination = false
+  # Termination protection: TerminateInstances from any Lambda, script or the
+  # console fails with OperationNotPermitted. Backstop for PREMIUM_INSTANCE_IDS,
+  # which premium manager reads to leave this instance alone. Stop and start
+  # are unaffected. force_destroy lets Terraform itself still replace or
+  # destroy it; it takes effect only once applied, so both are set together.
+  disable_api_termination = true
+  force_destroy           = true
 
   tags = {
     # Pre-provisioned at deploy time. Distinct from "premium-dedicated"
@@ -567,9 +620,11 @@ resource "aws_instance" "premium" {
     command = "aws ec2 stop-instances --instance-ids ${self.id} --region ${var.aws_region} || true"
   }
 
-
+  # Same as aws_instance.background: the launch template owns user_data, and
+  # applying its removal would clear the bootstrap and start a stopped standby
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [user_data]
   }
 }
 
@@ -580,8 +635,8 @@ resource "aws_ecs_task_definition" "autoscaling" {
   family                   = "${local.env_prefix}-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
-  cpu                      = 2048
-  memory                   = 7168
+  cpu                      = local.free_tier_sizing.task_cpu
+  memory                   = local.free_tier_sizing.task_memory_mib
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -589,17 +644,17 @@ resource "aws_ecs_task_definition" "autoscaling" {
     {
       name              = "${local.env_prefix}-cloud-container"
       image             = "${local.ecr_repository_url}:latest"
-      cpu               = 1536
-      memory            = 6656
-      memoryReservation = 4096
+      cpu               = local.free_tier_sizing.container_cpu
+      memory            = local.free_tier_sizing.container_memory_mib
+      memoryReservation = local.free_tier_sizing.container_memory_reservation_mib
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
-        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+        maxSwap    = local.free_tier_sizing.container_max_swap_mib
+        swappiness = local.free_tier_sizing.container_swappiness # host vm.swappiness: ecs-user-data.sh
       }
 
       portMappings = [
@@ -621,6 +676,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "AWS_DEFAULT_REGION"
           value = var.aws_region
+        },
+        {
+          name  = "ANNOUNCEMENT_SSM_PARAMETER"
+          value = aws_ssm_parameter.announcement.name
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"
@@ -781,6 +840,13 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
         },
+        # Each worker is a full app process (~0.3 GiB) out of the memory the
+        # workflows use. One more than premium for page-load bursts from users
+        # sharing an instance.
+        {
+          name  = "UVICORN_WORKERS"
+          value = "3"
+        },
       ]
       mountPoints = [
         {
@@ -833,6 +899,30 @@ resource "aws_ecs_task_definition" "autoscaling" {
   tags = {
     Name = "${local.env_prefix}-cloud-taskdef"
   }
+
+  # Rules across free_tier_sizing's fields (main.tf). Preconditions fail the
+  # plan too, and unlike a variable validation can read the merged sizes
+  lifecycle {
+    precondition {
+      condition     = local.free_tier_sizing.container_memory_mib <= local.free_tier_sizing.task_memory_mib
+      error_message = "free_tier_sizing: container_memory_mib must not exceed task_memory_mib."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_memory_reservation_mib < local.free_tier_sizing.container_memory_mib
+      error_message = "free_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_cpu <= local.free_tier_sizing.task_cpu
+      error_message = "free_tier_sizing: container_cpu must not exceed task_cpu."
+    }
+
+    precondition {
+      condition     = local.free_tier_sizing.container_max_swap_mib <= local.free_tier_sizing.swap_volume_gib * 1024
+      error_message = "free_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
+    }
+  }
 }
 
 
@@ -841,8 +931,8 @@ resource "aws_ecs_task_definition" "premium" {
   family                   = "${var.environment}-premium-optinist-cloud-taskdef"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
-  cpu                      = 2048
-  memory                   = 7168
+  cpu                      = local.premium_tier_sizing.task_cpu
+  memory                   = local.premium_tier_sizing.task_memory_mib
   task_role_arn            = aws_iam_role.ecs_task.arn
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
@@ -850,17 +940,17 @@ resource "aws_ecs_task_definition" "premium" {
     {
       name              = "${var.environment}-premium-optinist-cloud-container"
       image             = "${local.ecr_repository_url}:latest"
-      cpu               = 1536
-      memory            = 6656
-      memoryReservation = 4096
+      cpu               = local.premium_tier_sizing.container_cpu
+      memory            = local.premium_tier_sizing.container_memory_mib
+      memoryReservation = local.premium_tier_sizing.container_memory_reservation_mib
       essential         = true
       workingDirectory  = "/app"
       entryPoint        = ["/bin/sh", "-c"]
       command           = ["./cloud-startup.sh"]
 
       linuxParameters = {
-        maxSwap    = 32768 # Max swap in MiB (matches 32GB host swap on EBS)
-        swappiness = 20    # Only swap under memory pressure (host also set to 20)
+        maxSwap    = local.premium_tier_sizing.container_max_swap_mib
+        swappiness = local.premium_tier_sizing.container_swappiness # host vm.swappiness: ecs-user-data.sh
       }
 
       portMappings = [
@@ -882,6 +972,10 @@ resource "aws_ecs_task_definition" "premium" {
         {
           name  = "AWS_DEFAULT_REGION"
           value = var.aws_region
+        },
+        {
+          name  = "ANNOUNCEMENT_SSM_PARAMETER"
+          value = aws_ssm_parameter.announcement.name
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"
@@ -1032,6 +1126,12 @@ resource "aws_ecs_task_definition" "premium" {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "1"
         },
+        # Cost per worker: see the autoscaling task definition. Two, not one, so
+        # /health is answered while a worker's event loop is blocked.
+        {
+          name  = "UVICORN_WORKERS"
+          value = "2"
+        },
       ]
 
       mountPoints = [
@@ -1082,6 +1182,30 @@ resource "aws_ecs_task_definition" "premium" {
     Name = "${var.environment}-premium-optinist-cloud-taskdef"
     Tier = "premium"
   }
+
+  # Rules across premium_tier_sizing's fields (main.tf); see the free task
+  # definition
+  lifecycle {
+    precondition {
+      condition     = local.premium_tier_sizing.container_memory_mib <= local.premium_tier_sizing.task_memory_mib
+      error_message = "premium_tier_sizing: container_memory_mib must not exceed task_memory_mib."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_memory_reservation_mib < local.premium_tier_sizing.container_memory_mib
+      error_message = "premium_tier_sizing: container_memory_reservation_mib must be below container_memory_mib (ECS requires memory > memoryReservation)."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_cpu <= local.premium_tier_sizing.task_cpu
+      error_message = "premium_tier_sizing: container_cpu must not exceed task_cpu."
+    }
+
+    precondition {
+      condition     = local.premium_tier_sizing.container_max_swap_mib <= local.premium_tier_sizing.swap_volume_gib * 1024
+      error_message = "premium_tier_sizing: container_max_swap_mib must not exceed the host swap (swap_volume_gib * 1024)."
+    }
+  }
 }
 
 # ===========
@@ -1120,7 +1244,25 @@ resource "aws_ecs_service" "autoscaling" {
     type = "distinctInstance" # Force different instances
   }
 
+  # Tier pin, as on the premium, public and background services: a drain's
+  # replacement task can only land on a free instance, headroom elsewhere
+  # or not (the capacity provider strategy confines placement today)
+  placement_constraints {
+    type       = "memberOf"
+    expression = "attribute:tier == free"
+  }
+
+  # Cold starts only: past the ASG's grace, a restart not serving in ~300 s loses its instance
   health_check_grace_period_seconds = 900
+
+  # desired_count above is the creation value only. At runtime the
+  # free-manager Lambda owns it, syncing it to the ASG's desired capacity, so
+  # Terraform must not pull it back to 1 - that would leave the extra
+  # instances task-less and unhealthy, with no ASG event to trigger a resync.
+  # Mirrors ignore_changes on aws_autoscaling_group.main.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 
   tags = {
     Name = "${local.env_prefix}-cloud-service"

@@ -1,14 +1,35 @@
 import inspect
-from typing import Dict, List, ValuesView
+from functools import cache
+from typing import Dict, List, Set, ValuesView
 
 from fastapi import APIRouter
 
-from studio.app.common.core.snakemake.smk_utils import SmkInternalUtils
+from studio.app.common.core.snakemake.smk_utils import SmkInternalUtils, SmkUtils
 from studio.app.common.schemas.algolist import Algo, AlgoList, Arg, Return
 from studio.app.const import NOT_DISPLAY_ARGS_LIST
 from studio.app.wrappers import wrapper_dict
 
 router = APIRouter()
+
+# Conda envs found built, by name. Snakemake only adds envs, so a found env
+# stays found; one not built yet is checked again on each request
+_built_conda_envs: Set[str] = set()
+
+
+@cache
+def _conda_env_filepath(conda_name: str) -> str:
+    # The env files ship with the app: one recursive search per name
+    return SmkUtils.get_conda_env_filepath(conda_name) or ""
+
+
+def _conda_env_exists(conda_name: str) -> bool:
+    if conda_name not in _built_conda_envs and (
+        SmkInternalUtils.verify_conda_env_exists(
+            conda_name, conda_env_filepath=_conda_env_filepath(conda_name)
+        )
+    ):
+        _built_conda_envs.add(conda_name)
+    return conda_name in _built_conda_envs
 
 
 class NestDictGetter:
@@ -29,13 +50,11 @@ class NestDictGetter:
 
                 # get conda env infomations
                 conda_name = value.get("conda_name")
-                if conda_name is None:
+                if not conda_name:
                     # If conda env is not used, always returns True.
                     conda_env_exists = True
                 else:
-                    conda_env_exists = SmkInternalUtils.verify_conda_env_exists(
-                        conda_name
-                    )
+                    conda_env_exists = _conda_env_exists(conda_name)
 
                 algo_dict[key] = Algo(
                     args=cls._args_list(sig.parameters.values()),
@@ -72,8 +91,10 @@ class NestDictGetter:
             return f"{parent_key}/{key}"
 
 
+# A sync route, so it runs in the threadpool: an env not built yet is checked on
+# the snakemake volume, a network filesystem in production
 @router.get("/algolist", response_model=AlgoList, tags=["others"])
-async def get_algolist() -> Dict[str, Algo]:
+def get_algolist() -> Dict[str, Algo]:
     """_summary_
 
     Returns:

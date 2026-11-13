@@ -44,84 +44,70 @@ Each environment has its own S3 backend (state bucket). When you run `terraform 
 
 ## S3 Bucket Isolation (IAM Policy)
 
-Each environment's IAM user has a **two-layer** S3 permission model:
+Terraform creates no IAM user for the application. S3 access is granted only to each environment's own roles, and every grant names that environment's buckets:
 
-| Layer | Action | Scope | Purpose |
-|-------|--------|-------|---------|
-| **Allow** | `s3:GetObject`, `PutObject`, `DeleteObject`, `ListBucket`, `CreateBucket`, `DeleteBucket` | `${env}-optinist-*` only | CRUD operations scoped to this environment's buckets only |
-| **Deny** | Same CRUD actions | `NotResource: ${env}-optinist-*` | **Explicit deny** on all buckets outside this environment. Even if another policy grants access, this deny overrides it. |
+| Principal | Actions | Scope |
+|-----------|---------|-------|
+| ECS task role (`${env}-optinist-cloud-task-role`) | `s3:GetObject`, `PutObject`, `DeleteObject`, `ListBucket`, `GetBucketLocation`, `CreateBucket`, `DeleteBucket` | `${env}-optinist-app-storage` and the per-user buckets `${s3_user_bucket_prefix}-*` |
+| ECS instance role, premium manager Lambda role | `s3:GetObject`, `PutObject`, `DeleteObject`, `ListBucket` | `${env}-optinist-app-storage` |
+| Image Builder role | `s3:PutObject` | `image-builder-logs/` in `${env}-optinist-app-storage` |
 
-`s3:ListAllMyBuckets` is intentionally **not granted**. This means the dev IAM user cannot see production bucket names at all — not even as metadata. The AWS Console S3 page will show an empty list, and `aws s3 ls` will return nothing. Users must access their environment's buckets by direct name (e.g., `aws s3 ls s3://development-optinist-app-storage/`).
+`s3_user_bucket_prefix` differs per environment (`development-optinist-user`, `optinist-user`), and neither wildcard matches the other environment's buckets. `s3:ListAllMyBuckets` is not granted to any of these roles.
 
-**Result for the development IAM user:**
+There is no explicit deny: isolation rests on these scoped grants being the only S3 permissions the roles hold. This model covers the application roles; operator access is governed separately.
+
+**Result for the development ECS task role:**
 
 | Operation | `development-optinist-app-storage` | `subscr-optinist-app-storage` |
 |-----------|-----------------------------------|-------------------------------|
-| List all bucket names (`aws s3 ls`) | **Not visible** | **Not visible** |
-| List bucket contents (`aws s3 ls s3://...`) | Allowed | **Denied** |
+| List all bucket names (`s3:ListAllMyBuckets`) | **Denied** | **Denied** |
+| List bucket contents (`s3:ListBucket`) | Allowed | **Denied** |
 | Read objects (`s3:GetObject`) | Allowed | **Denied** |
 | Write objects (`s3:PutObject`) | Allowed | **Denied** |
 | Delete objects (`s3:DeleteObject`) | Allowed | **Denied** |
-| Delete bucket (`s3:DeleteBucket`) | Allowed | **Denied** |
-
-The explicit deny (`DenyS3CrossEnvironment`) ensures that even if a second policy is accidentally attached to the dev IAM user, cross-environment S3 access remains blocked. In AWS IAM, an explicit deny always overrides any allow.
 
 ---
 
 ## Verifying S3 Isolation
 
-After deploying the development environment, run these tests using the **development IAM user credentials**:
+The IAM policy simulator evaluates a role's policies without assuming the role. After deploying the development environment, run these checks with your operator credentials. Pass one resource per call, so that each row of the table is that resource's decision.
 
 ```bash
-# Configure AWS CLI with development IAM user credentials
-export AWS_ACCESS_KEY_ID=<dev-access-key>
-export AWS_SECRET_ACCESS_KEY=<dev-secret-key>
-export AWS_DEFAULT_REGION=ap-northeast-1
+ROLE_ARN=$(aws iam get-role --role-name development-optinist-cloud-task-role \
+  --query 'Role.Arn' --output text)
 
-# --- Tests that SHOULD succeed ---
+# --- Expected: allowed ---
 
-# 1. List development bucket contents (by direct name)
-aws s3 ls s3://development-optinist-app-storage/
-# Expected: Success — shows objects in dev bucket
+# 1. Objects in the development app storage bucket
+aws iam simulate-principal-policy --policy-source-arn "$ROLE_ARN" \
+  --action-names s3:GetObject s3:PutObject s3:DeleteObject \
+  --resource-arns arn:aws:s3:::development-optinist-app-storage/test.txt \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output table
 
-# 2. Upload to development bucket
-echo "test" > /tmp/test-s3-isolation.txt
-aws s3 cp /tmp/test-s3-isolation.txt s3://development-optinist-app-storage/test-s3-isolation.txt
-# Expected: Success — upload completed
+# 2. A development per-user bucket
+aws iam simulate-principal-policy --policy-source-arn "$ROLE_ARN" \
+  --action-names s3:ListBucket s3:DeleteBucket \
+  --resource-arns arn:aws:s3:::development-optinist-user-test \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output table
 
-# 3. Download from development bucket
-aws s3 cp s3://development-optinist-app-storage/test-s3-isolation.txt /tmp/test-s3-download.txt
-# Expected: Success — download completed
+# --- Expected: implicitDeny ---
 
-# 4. Delete from development bucket
-aws s3 rm s3://development-optinist-app-storage/test-s3-isolation.txt
-# Expected: Success — delete completed
+# 3. Objects in the production app storage bucket
+aws iam simulate-principal-policy --policy-source-arn "$ROLE_ARN" \
+  --action-names s3:GetObject s3:PutObject s3:DeleteObject \
+  --resource-arns arn:aws:s3:::subscr-optinist-app-storage/test.txt \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output table
 
-# --- Tests that SHOULD fail (Access Denied / empty) ---
+# 4. A production per-user bucket
+aws iam simulate-principal-policy --policy-source-arn "$ROLE_ARN" \
+  --action-names s3:ListBucket s3:DeleteBucket \
+  --resource-arns arn:aws:s3:::optinist-user-test \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output table
 
-# 5. List all bucket names (not granted)
-aws s3 ls
-# Expected: Empty output (s3:ListAllMyBuckets not granted)
-
-# 6. List production bucket contents
-aws s3 ls s3://subscr-optinist-app-storage/
-# Expected: Access Denied
-
-# 7. Read from production bucket
-aws s3 cp s3://subscr-optinist-app-storage/test.txt /tmp/test.txt
-# Expected: Access Denied
-
-# 8. Write to production bucket
-aws s3 cp /tmp/test-s3-isolation.txt s3://subscr-optinist-app-storage/test-s3-isolation.txt
-# Expected: Access Denied
-
-# 9. Delete from production bucket
-aws s3 rm s3://subscr-optinist-app-storage/test-s3-isolation.txt
-# Expected: Access Denied
-
-# Clean up
-rm -f /tmp/test-s3-isolation.txt /tmp/test-s3-download.txt
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+# 5. List all bucket names
+aws iam simulate-principal-policy --policy-source-arn "$ROLE_ARN" \
+  --action-names s3:ListAllMyBuckets \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output table
 ```
 
 ---

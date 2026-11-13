@@ -1,7 +1,10 @@
+import asyncio
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from filelock import Timeout
+from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
@@ -18,23 +21,37 @@ from studio.app.common.core.experiment.experiment_record_services import (
     ExperimentRecordService,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.storage.local_disk_guard import (
+    USER_HINT,
+    LocalDiskFullError,
+    ensure_local_disk_headroom,
+)
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteStorageLockError,
+    RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
 from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workflow.workflow import DataFilterParam, NodeItem, RunItem
 from studio.app.common.core.workflow.workflow_filter import WorkflowNodeDataFilter
+from studio.app.common.core.workflow.workflow_input_validator import (
+    WorkflowValidationError,
+    ensure_structure_caches,
+    validate_input_edges,
+)
 from studio.app.common.core.workflow.workflow_result import (
     NodeResult,
     WorkflowMonitor,
     WorkflowResult,
+    await_despite_cancel,
 )
 from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
+from studio.app.common.core.workflow.workflow_tracking import decrement_workflow_count
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -42,9 +59,11 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
+from studio.app.common.db.database import get_db, release_request_session
 from studio.app.common.schemas.users import User
 from studio.app.common.schemas.workflow import CompleteStatus, PollRunResultResponse
 from studio.app.const import DATE_FORMAT
+from studio.app.optinist.core.edit_ROI import EditRoiUtils
 
 router = APIRouter(prefix="/run", tags=["run"])
 
@@ -69,8 +88,10 @@ def _finished_within_grace(expt_config: ExptConfig) -> bool:
     return (now - finished).total_seconds() < RECORD_WRITE_GRACE_SEC
 
 
-async def _check_storage_quota(user_id: int) -> None:
+async def _check_storage_quota(user_id: Optional[int]) -> None:
     """Raise 403 if user has exceeded their storage quota."""
+    if user_id is None:
+        return
     current_usage = await get_current_user_storage_usage(user_id, force_live=False)
     storage_info = get_user_storage_usage(user_id)
     quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
@@ -98,13 +119,20 @@ async def run(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
     try:
-        await _check_storage_quota(current_user.id)
+        user_id = current_user.id if current_user else None
+        await _check_storage_quota(user_id)
+        await asyncio.to_thread(ensure_local_disk_headroom)
+        await ensure_structure_caches(
+            remote_bucket_name, workspace_id, runItem.nodeDict
+        )
+        validate_input_edges(workspace_id, runItem.nodeDict, runItem.edgeDict)
 
         unique_id = WorkflowRunner.create_workflow_unique_id()
         runner = WorkflowRunner(
-            remote_bucket_name, workspace_id, unique_id, runItem, current_user.id
+            remote_bucket_name, workspace_id, unique_id, runItem, user_id
         )
 
         # Download any remote-only input files before workflow runs
@@ -115,13 +143,20 @@ async def run(
         runner.run_workflow(background_tasks)
 
         # Refresh storage cache in background to keep it up-to-date
-        background_tasks.add_task(
-            get_current_user_storage_usage, current_user.id, force_live=True
-        )
+        if user_id is not None:
+            background_tasks.add_task(
+                get_current_user_storage_usage, user_id, force_live=True
+            )
 
         logger.info("run snakemake")
 
         return unique_id
+
+    except LocalDiskFullError as e:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail=f"Cannot run workflow: {e} {USER_HINT}",
+        )
 
     except KeyError as e:
         logger.error(e, exc_info=True)
@@ -132,9 +167,23 @@ async def run(
             detail=str(e).strip('"'),  # Remove quotes from the KeyError message
         )
 
+    except WorkflowValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        )
+
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+
+    except HTTPException:
+        raise
+
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
 
     except Exception as e:
         logger.error(e, exc_info=True)
@@ -142,6 +191,10 @@ async def run(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to run workflow.",
         )
+
+    finally:
+        # The run outlives the request; do not hold the guards' connection
+        release_request_session(db)
 
 
 @router.post(
@@ -156,35 +209,106 @@ async def run_id(
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     try:
-        await _check_storage_quota(current_user.id)
-
-        runner = WorkflowRunner(
-            remote_bucket_name, workspace_id, uid, runItem, current_user.id
+        user_id = current_user.id if current_user else None
+        await _check_storage_quota(user_id)
+        await asyncio.to_thread(ensure_local_disk_headroom)
+        await ensure_structure_caches(
+            remote_bucket_name, workspace_id, runItem.nodeDict
         )
+        validate_input_edges(workspace_id, runItem.nodeDict, runItem.edgeDict)
 
-        # Download any remote-only input files before workflow runs
-        if RemoteStorageController.is_available():
-            await runner.ensure_input_data_local()
+        # An Edit ROI commit holds this lock whether or not remote storage is
+        # on; refuse before the runner rewrites the experiment's config files
+        RemoteSyncLockFileUtil.check_sync_lock_file(workspace_id, uid, raise_error=True)
 
-        runner.run_workflow(background_tasks)
+        # An observer mid-save would record its result into the reset config
+        workflow_result = WorkflowResult(workspace_id, uid)
+        observe_lock = workflow_result.observe_lock()
+        try:
+            observe_lock.acquire()
+        except Timeout:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail="The previous run's results are still being saved.",
+            )
+        # The build below is awaited; do not hold the guards' connection across it
+        release_request_session(db)
+        try:
+            # A same-second rerun waits out the second for a new generation
+            build = asyncio.ensure_future(
+                asyncio.to_thread(
+                    WorkflowRunner,
+                    remote_bucket_name,
+                    workspace_id,
+                    uid,
+                    runItem,
+                    user_id,
+                )
+            )
+            try:
+                runner = await await_despite_cancel(build)
+            except asyncio.CancelledError:
+                # The built runner reset the config and counted a workflow that
+                # will never be scheduled, so no child replaces the old pickles
+                if build.exception() is None:
+                    workflow_result.mark_plan_pending()
+                    await await_despite_cancel(
+                        asyncio.ensure_future(
+                            asyncio.to_thread(decrement_workflow_count, user_id)
+                        )
+                    )
+                raise
+
+            # The config is reset, so its old pickles wait for the child's plan
+            workflow_result.mark_plan_pending()
+
+            # Download any remote-only input files before workflow runs
+            if RemoteStorageController.is_available():
+                await runner.ensure_input_data_local()
+
+            runner.run_workflow(background_tasks)
+        finally:
+            observe_lock.release()
 
         # Refresh storage cache in background
-        background_tasks.add_task(
-            get_current_user_storage_usage,
-            current_user.id,
-            force_live=True,
-        )
+        if user_id is not None:
+            background_tasks.add_task(
+                get_current_user_storage_usage,
+                user_id,
+                force_live=True,
+            )
 
         logger.info("run snakemake")
         logger.info("forcerun list: %s", runItem.forceRunList)
 
         return uid
 
+    except LocalDiskFullError as e:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail=f"Cannot run workflow: {e} {USER_HINT}",
+        )
+
+    except WorkflowValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        )
+
     except RemoteStorageLockError as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+    except HTTPException:
+        raise
+
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
+
     except Exception as e:
         # Check if this is a KeyError with a specific workflow yaml error message
         if isinstance(e, KeyError) and "Workflow yaml error" in str(e):
@@ -192,7 +316,7 @@ async def run_id(
             # Return 422 for YAML validation errors
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Workflow yaml error, see FAQ",
+                detail=e.args[0] if e.args else "Workflow yaml error, see FAQ",
             )
         else:
             # Keep original error handling for other errors
@@ -201,6 +325,10 @@ async def run_id(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to run workflow.",
             )
+
+    finally:
+        # The run outlives the request; do not hold the guards' connection
+        release_request_session(db)
 
 
 @router.post(
@@ -214,7 +342,10 @@ async def run_result(
     nodeDict: NodeItem,
     background_tasks: BackgroundTasks,
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
+    # The save below is awaited; do not hold the guards' connection across it
+    release_request_session(db)
     try:
         # Ensure experiment yaml exists locally before accessing results.
         # Downloads from S3 if not present (handles multi-instance scenarios).
@@ -222,9 +353,18 @@ async def run_result(
             workspace_id, uid, remote_bucket_name
         )
 
-        node_results = await WorkflowResult(workspace_id, uid).observe(
-            nodeDict.pendingNodeIdList
-        )
+        # A poll overlapping one mid-save answers nothing rather than save again
+        workflow_result = WorkflowResult(workspace_id, uid)
+        observe_lock = workflow_result.observe_lock()
+        try:
+            observe_lock.acquire()
+        except Timeout:
+            node_results = {}
+        else:
+            try:
+                node_results = await workflow_result.observe(nodeDict.pendingNodeIdList)
+            finally:
+                observe_lock.release()
         if node_results:
             background_tasks.add_task(
                 WorkspaceDataCapacityService.update_experiment_data_usage,
@@ -280,6 +420,11 @@ async def run_result(
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
 
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -299,6 +444,11 @@ async def cancel_run(workspace_id: str, uid: str):
     except HTTPException as e:
         logger.error(e)
         raise e
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(
@@ -307,7 +457,11 @@ async def cancel_run(workspace_id: str, uid: str):
         )
 
 
-@router.post("/filter/{workspace_id}/{uid}/{node_id}", response_model=bool)
+@router.post(
+    "/filter/{workspace_id}/{uid}/{node_id}",
+    response_model=bool,
+    dependencies=[Depends(is_workspace_owner)],
+)
 async def apply_filter(
     workspace_id: str,
     uid: str,
@@ -315,16 +469,26 @@ async def apply_filter(
     background_tasks: BackgroundTasks,
     params: Optional[DataFilterParam] = None,
 ):
-    try:
+    def filter_node_data():
         WorkflowNodeDataFilter(
             workspace_id=workspace_id, unique_id=uid, node_id=node_id
         ).filter_node_data(params)
+
+    try:
+        # A filter rewrites the node's pickle, JSON outputs and NWB files, which
+        # ROI edits read and write too: on their thread, the two never interleave
+        await EditRoiUtils.run_on_edit_thread(filter_node_data)
 
         background_tasks.add_task(
             WorkspaceDataCapacityService.update_experiment_data_usage, workspace_id, uid
         )
 
         return True
+    # A rejected path is the caller's error. Let it past the blanket clause
+    # below so the app-level InvalidPathError handler answers 400; without
+    # this, a traversal in the uid is reported as a server fault.
+    except InvalidPathError:
+        raise
     except Exception as e:
         logger.error(e, exc_info=True)
         raise HTTPException(

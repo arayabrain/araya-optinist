@@ -10,6 +10,8 @@ import {
   ensureTutorialRecords,
   reproduceTutorial,
   runTutorial,
+  startRun,
+  awaitRunFinished,
   DATA_WS,
 } from "./helpers"
 
@@ -45,6 +47,157 @@ async function addImagePlot(page: Page) {
   await expect(page.locator(".js-plotly-plot").first()).toBeVisible({
     timeout: 60_000,
   })
+}
+
+// Read the ROI ids the rendered overlay actually contains. The roi trace's z is
+// a pixel grid whose values are the global ROI index, so the distinct non-null
+// values are exactly the ids the selected projection (cell_roi / non_cell_roi)
+// holds.
+// z is [] while getRoiData is pending, a full pixel grid once it lands; rows
+// and ids come from one read so a refresh between them cannot mix two grids
+async function roiGrid(page: Page): Promise<{ rows: number; ids: number[] }> {
+  return page.evaluate(() => {
+    const plot = document.querySelector(".js-plotly-plot") as unknown as {
+      data?: { name?: string; z?: (number | null)[][] }[]
+    }
+    const z = plot?.data?.find((t) => t.name === "roi")?.z ?? []
+    const ids = new Set<number>()
+    for (const row of z) for (const v of row) if (v != null) ids.add(v)
+    return { rows: z.length, ids: [...ids].sort((a, b) => a - b) }
+  })
+}
+
+async function roiIds(page: Page): Promise<number[]> {
+  return (await roiGrid(page)).ids
+}
+
+async function roiRowCount(page: Page): Promise<number> {
+  return (await roiGrid(page)).rows
+}
+
+// Select an ROI by id. Plotly's own hit test needs the ROI's pixel coordinates,
+// which the test would have to re-derive from the axis transform; emitting the
+// event Plotly would emit drives the real ImagePlot handler (redux dispatch and
+// the selection context) and only skips the hit test itself.
+async function clickRoi(page: Page, id: number) {
+  await page.evaluate((roiId) => {
+    const gd = document.querySelector(".js-plotly-plot") as unknown as {
+      emit: (name: string, payload: unknown) => void
+    }
+    gd.emit("plotly_click", { points: [{ curveNumber: 1, z: roiId }] })
+  }, id)
+  await expect(page.getByTestId("roi-selected-ids")).toContainText(String(id))
+}
+
+// Switch the projection and wait for its ids to land.
+async function selectRoiProjection(page: Page, outputKey: string) {
+  await selectFromMui(page, "Select Roi", outputKey)
+  await expect.poll(() => roiIds(page), { timeout: 60_000 }).not.toHaveLength(0)
+}
+
+// Run one Edit ROI action: open the editor, pick the action, select the ROIs,
+// OK. The "Edit ROI" link is only there when the editor is closed - after an OK
+// the toolbar stays open on the pending edits, which is how two actions get
+// staged into a single commit.
+async function runRoiAction(
+  page: Page,
+  action: string,
+  endpoint: RegExp,
+  ids: number[],
+  prepare?: () => Promise<void>,
+) {
+  const editLink = page.getByText("Edit ROI", { exact: true })
+  if (await editLink.isVisible()) await editLink.click()
+  const actionLink = page.getByText(action, { exact: true })
+  await expect(actionLink).toBeVisible({ timeout: 30_000 })
+  await actionLink.click()
+  if (prepare) await prepare()
+  for (const id of ids) await clickRoi(page, id)
+
+  const posted = page.waitForResponse(
+    (r) => r.request().method() === "POST" && endpoint.test(r.url()),
+    { timeout: 60_000 },
+  )
+  await page.getByText("OK", { exact: true }).click()
+  expect((await posted).status(), endpoint.source).toBe(200)
+}
+
+// Commit Edit renders only once statusRoi has entries after the getStatus
+// round-trip, and runs the recompute in-request. The success snackbar shows
+// before the ROI refetch, whose pending state empties the plot until it lands.
+async function commitRoiEdit(page: Page) {
+  const commitEdit = page.getByTestId("roi-commit-edit")
+  await expect(commitEdit).toBeVisible({ timeout: 60_000 })
+  const committed = page.waitForResponse(
+    (r) => r.request().method() === "POST" && /commit_edit/.test(r.url()),
+    { timeout: 600_000 },
+  )
+  // Starts on the commit response so an earlier action's refetch cannot match
+  const refetched = committed.then(() =>
+    page.waitForResponse(
+      (r) =>
+        r.request().method() === "GET" &&
+        /\/api\/visualizations\/image\/.*_roi\.json(\?|$)/i.test(r.url()),
+      { timeout: 60_000 },
+    ),
+  )
+  await commitEdit.click()
+  expect((await committed).status(), "commit_edit").toBe(200)
+  await expect(
+    page.getByText("Successfully committed to Edit ROI."),
+  ).toBeVisible({ timeout: 120_000 })
+  expect((await refetched).status(), "ROI refetch").toBe(200)
+  await expect
+    .poll(() => roiRowCount(page), { timeout: 60_000 })
+    .toBeGreaterThan(0)
+}
+
+async function editRoiAndCommit(
+  page: Page,
+  action: string,
+  endpoint: RegExp,
+  ids: number[],
+  prepare?: () => Promise<void>,
+) {
+  await runRoiAction(page, action, endpoint, ids, prepare)
+  await commitRoiEdit(page)
+}
+
+type RunFunction = {
+  name: string
+  outputPaths?: Record<string, { data_shape?: number[] }>
+}
+
+// experiment.yaml's per-node view of one run, via the experiments API
+async function runFunctions(page: Page, workspaceId: string, uid: string) {
+  const res = await page.request.get(`${apiUrl()}/experiments/${workspaceId}`, {
+    headers: await apiHeaders(page),
+  })
+  expect(res.ok(), await res.text()).toBe(true)
+  const experiments = (await res.json()) as Record<
+    string,
+    { function: Record<string, RunFunction> }
+  >
+  return experiments[uid].function
+}
+
+function nodeIdByName(functions: Record<string, RunFunction>, name: string) {
+  const nodeId = Object.keys(functions).find(
+    (key) => functions[key].name === name,
+  )
+  expect(nodeId, `no ${name} node in the run`).toBeTruthy()
+  return nodeId!
+}
+
+// Row count of a timeseries output: one row per cell that made it through
+function cellCount(
+  functions: Record<string, RunFunction>,
+  nodeId: string,
+  output: string,
+) {
+  const shape = functions[nodeId].outputPaths?.[output]?.data_shape
+  expect(shape, `${nodeId} has a ${output} data_shape`).toBeTruthy()
+  return shape![0]
 }
 
 test.describe("Visualize", () => {
@@ -102,6 +255,11 @@ test.describe("Visualize", () => {
   test("VIS-02 - Add Cell ROI plot renders image with ROI overlay @slow", async ({
     page,
   }) => {
+    test.setTimeout(60 * 60_000)
+    // Mints its own run: `cell_roi` is a suite2p_roi node output and the ROI
+    // route answers 503 without one. Nothing orders a run-minting test ahead of
+    // this one, so relying on "a run earlier in the session" is a coin flip.
+    await runTutorial(page, "Tutorial1", "RUN ALL")
     await addImagePlot(page)
     // @slow because `cell_roi` is a suite2p_roi node output, not shipped input:
     // without a completed run the ROI route answers 503. The other VIS tests
@@ -116,29 +274,47 @@ test.describe("Visualize", () => {
     // Trace *count* is no good either: ImagePlot always builds a fixed two-trace
     // array ("images" then "roi"), with the roi trace's z starting as []. So the
     // ROI-specific artefact is that trace's z gaining rows.
-    const roiRowCount = () =>
-      page.evaluate(() => {
-        const plot = document.querySelector(".js-plotly-plot") as unknown as {
-          data?: { name?: string; z?: unknown[] }[]
-        }
-        return plot?.data?.find((t) => t.name === "roi")?.z?.length ?? 0
-      })
-    expect(await roiRowCount()).toBe(0)
+    expect(await roiRowCount(page)).toBe(0)
 
+    // getRoiData GETs /api/visualizations/image/<path>/cell_roi.json while
+    // getStatus POSTs .../cell_roi.json/status on the same prefix, so matching
+    // the prefix alone resolves on whichever lands first. Pin the ROI data GET.
     const roiResponse = page.waitForResponse(
-      (r) => /\/api\/visualizations\/image\/.*roi/i.test(r.url()),
+      (r) =>
+        r.request().method() === "GET" &&
+        /\/api\/visualizations\/image\/.*_roi\.json(\?|$)/i.test(r.url()),
       { timeout: 60_000 },
     )
     await selectFromMui(page, "Select Roi", "cell_roi")
     expect((await roiResponse).status()).toBe(200)
 
-    await expect.poll(roiRowCount, { timeout: 60_000 }).toBeGreaterThan(0)
+    await expect
+      .poll(() => roiRowCount(page), { timeout: 60_000 })
+      .toBeGreaterThan(0)
 
     // Both selectors keep their values after the plot re-renders
     await expect(
       page.locator("text=sample_mouse2p_image.tiff").first(),
     ).toBeVisible()
     await expect(page.locator("text=cell_roi").first()).toBeVisible()
+
+    // Outline ROIs nulls each ROI's interior cells but keeps every ROI
+    const roiCellCount = () =>
+      page.evaluate(() => {
+        const plot = document.querySelector(".js-plotly-plot") as unknown as {
+          data?: { name?: string; z?: (number | null)[][] }[]
+        }
+        const z = plot?.data?.find((t) => t.name === "roi")?.z ?? []
+        return z.flat().filter((v) => v != null).length
+      })
+    const filled = await roiCellCount()
+    const ids = await roiIds(page)
+    const outline = page.getByRole("checkbox", { name: "Outline ROIs" })
+    await outline.click()
+    await expect.poll(roiCellCount).toBeLessThan(filled)
+    expect(await roiIds(page)).toEqual(ids)
+    await outline.click()
+    await expect.poll(roiCellCount).toBe(filled)
   })
 
   test("VIS-03 - Play advances image frames; Pause stops", async ({ page }) => {
@@ -205,48 +381,231 @@ test.describe("Visualize", () => {
     await expect(page.getByText("Add ROI", { exact: true })).toBeHidden()
   })
 
-  // Row BT-407's commit half: Add ROI, OK, then Commit Edit really re-runs
-  // the ROI processing server-side and reports success. Mints its own run:
-  // the commit recomputes off a real suite2p output, and the workspace is
-  // wiped at every suite start.
-  test("VIS-06 - Edit ROI commit really recomputes and succeeds @slow", async ({
+  // Row BT-407's commit half plus issue 538: Add ROI, OK, then Commit Edit
+  // really re-runs the ROI processing server-side, flags every node downstream
+  // of the ROI node for re-run, and a by-uid RUN recomputes those nodes against
+  // the edited ROI set while keeping the edit. Mints its own run: the commit
+  // recomputes off a real suite2p output, and the workspace is wiped at every
+  // suite start.
+  test("VIS-06 - Edit ROI commit flags downstream nodes and RUN recomputes them @slow", async ({
     page,
   }) => {
-    test.setTimeout(30 * 60_000)
-    await runTutorial(page, "Tutorial1", "RUN ALL")
+    test.setTimeout(45 * 60_000)
+    const { workspaceId, uid } = await runTutorial(page, "Tutorial1", "RUN ALL")
+    const before = await runFunctions(page, workspaceId, uid)
+    const roiNodeId = nodeIdByName(before, "suite2p_roi")
+    const etaNodeId = nodeIdByName(before, "eta")
+    const roiCellsBefore = cellCount(before, roiNodeId, "fluorescence")
+    const etaCellsBefore = cellCount(before, etaNodeId, "mean")
+
     await addImagePlot(page)
-    await selectFromMui(page, "Select Roi", "cell_roi")
-    await page.getByText("Edit ROI", { exact: true }).click()
-    await page.getByText("Add ROI", { exact: true }).click()
-    // The pending-ROI overlay is what registers the rectangle OK will post;
-    // clicking OK before it mounts posts nothing (observed failure mode).
-    await expect(page.getByTestId("roi-add-overlay")).toBeVisible({
-      timeout: 15_000,
+    await selectRoiProjection(page, "cell_roi")
+    await editRoiAndCommit(page, "Add ROI", /add_roi/, [], async () => {
+      // The pending-ROI overlay is what registers the rectangle OK will post;
+      // clicking OK before it mounts posts nothing (observed failure mode).
+      await expect(page.getByTestId("roi-add-overlay")).toBeVisible({
+        timeout: 15_000,
+      })
     })
 
-    // OK posts the pending ROI (a default rectangle when nothing is dragged)
-    const added = page.waitForResponse(
-      (r) => r.request().method() === "POST" && /add_roi/.test(r.url()),
+    // The ROI node keeps its committed result; the node downstream of it gets
+    // the same "needs a run" highlight a changed parameter does
+    await page.locator('button[role="tab"]:has-text("Workflow")').click()
+    const flowNode = (nodeId: string) =>
+      page.locator(`.react-flow__node:has-text("${nodeId}")`)
+    await expect(
+      flowNode(etaNodeId).locator('[data-updated="true"]'),
+    ).toHaveCount(1, { timeout: 15_000 })
+    await expect(
+      flowNode(roiNodeId).locator('[data-updated="true"]'),
+    ).toHaveCount(0)
+
+    // Commit deleted the downstream results on disk, so a by-uid RUN
+    // recomputes exactly those nodes against the edited ROI set
+    const rerun = await startRun(page, "RUN")
+    expect(rerun.uid, "RUN reuses the edited run").toBe(uid)
+    await expect(page.locator("text=Workflow finished")).toBeHidden({
+      timeout: 30_000,
+    })
+    await awaitRunFinished(page, "Tutorial1", workspaceId, uid)
+    await expect(
+      flowNode(etaNodeId).locator('[data-updated="true"]'),
+    ).toHaveCount(0)
+
+    // The added ROI is a cell, so it gains a trace and eta gains a row
+    const after = await runFunctions(page, workspaceId, uid)
+    expect(
+      cellCount(after, roiNodeId, "fluorescence"),
+      "the added ROI has a fluorescence trace",
+    ).toBe(roiCellsBefore + 1)
+    expect(
+      cellCount(after, etaNodeId, "mean"),
+      "eta was recomputed with the added ROI",
+    ).toBe(etaCellsBefore + 1)
+  })
+  // Issues #472 / #486: a cell ROI demoted by Delete has to be reachable and
+  // promotable again. Round trip: add a cell ROI, delete it (which is a demote —
+  // the index and its fluorescence row survive), find it in non_cell_roi, and
+  // promote it back. The non_cell_roi assertion is also the regression test for
+  // that projection going stale: before this change only cell_roi.json was
+  // regenerated on commit, so the demoted ROI never appeared there.
+  test("VIS-07 - a deleted ROI reappears in non_cell_roi and can be promoted back @slow", async ({
+    page,
+  }) => {
+    test.setTimeout(60 * 60_000)
+    await runTutorial(page, "Tutorial1", "RUN ALL")
+    await addImagePlot(page)
+    await selectRoiProjection(page, "cell_roi")
+    const before = await roiIds(page)
+
+    await editRoiAndCommit(page, "Add ROI", /add_roi/, [], async () => {
+      await expect(page.getByTestId("roi-add-overlay")).toBeVisible({
+        timeout: 15_000,
+      })
+    })
+
+    const added = (await roiIds(page)).filter((id) => !before.includes(id))
+    expect(added, "Add ROI produced exactly one new cell ROI").toHaveLength(1)
+    const roi = added[0]
+
+    await editRoiAndCommit(page, "Delete ROI", /delete_roi/, [roi])
+    await expect
+      .poll(() => roiIds(page), { timeout: 60_000 })
+      .not.toContain(roi)
+
+    await selectRoiProjection(page, "non_cell_roi")
+    expect(
+      await roiIds(page),
+      "the deleted ROI is now a non-cell ROI",
+    ).toContain(roi)
+
+    // Cancel has to discard a staged promotion the same way it discards a
+    // staged cell-ROI edit. The cancel_edit POST is what carries this row:
+    // onCancel's guard read cell_roi only, so on a non-cell projection it
+    // returned early and never dispatched, leaving the promotion pending.
+    // The id poll below is a sanity check, not the assertion - a pending
+    // promotion does not leave non_cell_roi until it is committed.
+    await runRoiAction(page, "Set as Cell ROI", /promote_roi/, [roi])
+    const cancelled = page.waitForResponse(
+      (r) => r.request().method() === "POST" && /cancel_edit/.test(r.url()),
       { timeout: 60_000 },
     )
-    await page.getByText("OK", { exact: true }).click()
-    expect((await added).status(), "add_roi").toBe(200)
+    await page.getByText("Cancel", { exact: true }).first().click()
+    expect((await cancelled).status(), "cancel_edit").toBe(200)
+    await expect.poll(() => roiIds(page), { timeout: 60_000 }).toContain(roi)
 
-    // Commit Edit renders only once statusRoi has entries after the
-    // getStatus round-trip, which can outlast the default action timeout.
-    const commitEdit = page.getByTestId("roi-commit-edit")
-    await expect(commitEdit).toBeVisible({ timeout: 60_000 })
+    await editRoiAndCommit(page, "Set as Cell ROI", /promote_roi/, [roi])
+    await expect
+      .poll(() => roiIds(page), { timeout: 60_000 })
+      .not.toContain(roi)
 
-    // Commit Edit runs the EDIT_ROI recompute in-request; the snackbar is
-    // the row's own "Success Edit ROI"
-    const committed = page.waitForResponse(
-      (r) => r.request().method() === "POST" && /commit_edit/.test(r.url()),
-      { timeout: 600_000 },
+    await selectRoiProjection(page, "cell_roi")
+    expect(
+      await roiIds(page),
+      "the promoted ROI is a cell ROI again",
+    ).toContain(roi)
+  })
+
+  // Issue #486's un-merge half. Merge keeps its sources: they are demoted to
+  // non-cell with their own indices and fluorescence rows intact, so promoting
+  // them back is the un-merge, and the merged ROI is removed with Delete.
+  test("VIS-08 - merged ROIs can be un-merged by promoting the sources @slow", async ({
+    page,
+  }) => {
+    test.setTimeout(60 * 60_000)
+    await runTutorial(page, "Tutorial1", "RUN ALL")
+    await addImagePlot(page)
+    await selectRoiProjection(page, "cell_roi")
+    const before = await roiIds(page)
+    expect(before.length, "need two cell ROIs to merge").toBeGreaterThan(1)
+    const [first, second] = before
+
+    await editRoiAndCommit(page, "Merge ROI", /merge_roi/, [first, second])
+    const afterMerge = await roiIds(page)
+    expect(afterMerge, "the merge sources left cell_roi").not.toContain(first)
+    expect(afterMerge).not.toContain(second)
+    const merged = afterMerge.filter((id) => !before.includes(id))
+    expect(merged, "the merge produced one new ROI").toHaveLength(1)
+
+    await selectRoiProjection(page, "non_cell_roi")
+    const nonCell = await roiIds(page)
+    expect(nonCell, "merge sources are recoverable as non-cell ROIs").toContain(
+      first,
     )
-    await commitEdit.click()
-    expect((await committed).status(), "commit_edit").toBe(200)
-    await expect(
-      page.getByText("Successfully committed to Edit ROI."),
-    ).toBeVisible({ timeout: 120_000 })
+    expect(nonCell).toContain(second)
+
+    await editRoiAndCommit(page, "Set as Cell ROI", /promote_roi/, [
+      first,
+      second,
+    ])
+
+    // Promoting alone is not enough to *see* them: every projection is a
+    // max-index flatten of the ROI stack, and the merged ROI covers the union
+    // of its sources' pixels with a higher index, so it hides them in cell_roi.
+    // Un-merging is promote the sources plus delete the merged ROI.
+    await selectRoiProjection(page, "cell_roi")
+    expect(
+      await roiIds(page),
+      "the merged ROI still covers its sources",
+    ).not.toContain(first)
+
+    await editRoiAndCommit(page, "Delete ROI", /delete_roi/, merged)
+    const unmerged = await roiIds(page)
+    expect(unmerged, "both sources are cell ROIs again").toContain(first)
+    expect(unmerged).toContain(second)
+    expect(unmerged, "the merged ROI is gone").not.toContain(merged[0])
+  })
+  // The un-merge half that has to happen before a commit: merge two ROIs, then
+  // delete the merged ROI while it is still pending. Its temp_merge_roi entry
+  // used to force it back to a cell at commit, so the delete was silently
+  // ignored; now the commit drops it and its sources are cell ROIs again.
+  test("VIS-09 - deleting a pending merge before commit really removes it @slow", async ({
+    page,
+  }) => {
+    test.setTimeout(60 * 60_000)
+    await runTutorial(page, "Tutorial1", "RUN ALL")
+    await addImagePlot(page)
+    await selectRoiProjection(page, "cell_roi")
+    const before = await roiIds(page)
+    expect(before.length, "need two cell ROIs to merge").toBeGreaterThan(1)
+    const [first, second] = before
+
+    await runRoiAction(page, "Merge ROI", /merge_roi/, [first, second])
+    // The merge writes cell_roi.json and refetches it, and that refresh lands
+    // after the POST resolves - reading the plot straight away races it.
+    const newRoiCount = async () =>
+      (await roiIds(page)).filter((id) => !before.includes(id)).length
+    await expect.poll(newRoiCount, { timeout: 60_000 }).toBe(1)
+    const merged = (await roiIds(page)).filter((id) => !before.includes(id))
+
+    // Same editor session, no commit in between: the merge is still pending.
+    await runRoiAction(page, "Delete ROI", /delete_roi/, merged)
+    await commitRoiEdit(page)
+
+    // Undoing a pending merge puts its sources straight back: leaving them
+    // demoted under the merged ROI would hide them in non_cell_roi too, since
+    // every projection is a max-index flatten.
+    const afterCommit = await roiIds(page)
+    expect(afterCommit, "the deleted merge is not a cell ROI").not.toContain(
+      merged[0],
+    )
+    expect(afterCommit, "the merge sources are cell ROIs again").toContain(
+      first,
+    )
+    expect(afterCommit).toContain(second)
+
+    // The sources are cells, so a loaded grid without them is non_cell_roi
+    await selectFromMui(page, "Select Roi", "non_cell_roi")
+    let grid = { rows: 0, ids: [] as number[] }
+    await expect
+      .poll(
+        async () => {
+          grid = await roiGrid(page)
+          return grid.rows > 0 && !grid.ids.includes(first)
+        },
+        { timeout: 60_000 },
+      )
+      .toBe(true)
+    expect(grid.ids, "the undone merge leaves no ROI").not.toContain(merged[0])
   })
 })

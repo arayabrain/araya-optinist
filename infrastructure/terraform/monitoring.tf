@@ -42,6 +42,11 @@ locals {
   critical_alerts_actions = var.environment == local.production_env_prefix ? [aws_sns_topic.critical_alerts[0].arn] : []
 }
 
+# Free-tier load alarms: scale-out only.
+# - cpu-high / memory-high may add an instance the user count under-estimated
+# - no alarm removes one: scale-in is the free-manager Lambda's, by user
+#   count, choosing the instance by workload (one writer, no undoing)
+# - the former cpu-low / memory-low alarms and their scale-down policy are gone
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name          = "${local.env_prefix}-cpu-high"
   comparison_operator = "GreaterThanThreshold"
@@ -70,40 +75,6 @@ resource "aws_cloudwatch_metric_alarm" "memory_high" {
   threshold           = "80"
   alarm_description   = "This metric monitors memory utilization"
   alarm_actions       = [aws_autoscaling_policy.scale_up.arn]
-  dimensions = {
-    ServiceName = aws_ecs_service.autoscaling.name
-    ClusterName = aws_ecs_cluster.main.name
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "cpu_low" {
-  alarm_name          = "${local.env_prefix}-cpu-low"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "2"
-  metric_name         = "CPUUtilization"
-  namespace           = "AWS/ECS"
-  period              = "120"
-  statistic           = "Average"
-  threshold           = "20"
-  alarm_description   = "This metric monitors low cpu utilization"
-  alarm_actions       = [aws_autoscaling_policy.scale_down.arn] # Enabled: dual CPU+memory scaling
-  dimensions = {
-    ServiceName = aws_ecs_service.autoscaling.name
-    ClusterName = aws_ecs_cluster.main.name
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "memory_low" {
-  alarm_name          = "${local.env_prefix}-memory-low"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = "3"
-  metric_name         = "MemoryUtilization"
-  namespace           = "AWS/ECS"
-  period              = "120"
-  statistic           = "Average"
-  threshold           = "10"
-  alarm_description   = "This metric monitors memory utilization"
-  alarm_actions       = [aws_autoscaling_policy.scale_down.arn]
   dimensions = {
     ServiceName = aws_ecs_service.autoscaling.name
     ClusterName = aws_ecs_cluster.main.name
@@ -362,6 +333,84 @@ resource "aws_cloudwatch_metric_alarm" "tg_unhealthy_hosts" {
   }
 }
 
+# A target gone or never healthy, missed by the ASG's ELB check; desired is the ASG's, which still publishes with no task
+resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
+  for_each = {
+    free = {
+      tg_arn_suffix = aws_lb_target_group.autoscaling.arn_suffix
+      service_name  = aws_ecs_service.autoscaling.name
+      asg_name      = aws_autoscaling_group.main.name
+      periods       = 30
+      datapoints    = 25
+    }
+    public = {
+      tg_arn_suffix = aws_lb_target_group.public.arn_suffix
+      service_name  = aws_ecs_service.public.name
+      asg_name      = aws_autoscaling_group.public.name
+      # A host replacement waits out two 600 s drains, about 25 min short
+      periods    = 40
+      datapoints = 35
+    }
+  }
+
+  alarm_name          = "${local.env_prefix}-${each.key}-serving-below-desired"
+  alarm_description   = "Fewer healthy ${each.key} targets than ASG desired hosts for ${each.value.datapoints} of ${each.value.periods} min, outside an ECS deployment. Check ASG activity first: a refresh or scale-out in progress is expected."
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = "0"
+  evaluation_periods  = each.value.periods
+  datapoints_to_alarm = each.value.datapoints
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  metric_query {
+    id          = "gap"
+    expression  = "IF(FILL(deploys, 0) > 1, 0, desired - FILL(healthy, 0))"
+    return_data = true
+  }
+
+  metric_query {
+    id = "desired"
+    metric {
+      namespace   = "AWS/AutoScaling"
+      metric_name = "GroupDesiredCapacity"
+      period      = 60
+      stat        = "Minimum"
+      dimensions = {
+        AutoScalingGroupName = each.value.asg_name
+      }
+    }
+  }
+
+  metric_query {
+    id = "deploys"
+    metric {
+      namespace   = "ECS/ContainerInsights"
+      metric_name = "DeploymentCount"
+      period      = 60
+      stat        = "Maximum"
+      dimensions = {
+        ClusterName = aws_ecs_cluster.main.name
+        ServiceName = each.value.service_name
+      }
+    }
+  }
+
+  metric_query {
+    id = "healthy"
+    metric {
+      namespace   = "AWS/ApplicationELB"
+      metric_name = "HealthyHostCount"
+      period      = 60
+      stat        = "Minimum"
+      dimensions = {
+        LoadBalancer = aws_lb.autoscaling.arn_suffix
+        TargetGroup  = each.value.tg_arn_suffix
+      }
+    }
+  }
+}
+
 # Premium UnHealthyHostCount alarms are created/deleted by the premium-manager
 # Lambda alongside each per-user target group; static alarms here would not
 # match the dynamic per-user TG ARNs.
@@ -408,6 +457,10 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
+            # TargetInstances: the user-count target, published by the Lambda every run.
+            # Desired above it past one run: a scale-in held back (workflow, load alarm);
+            # desired below it: a scale-out that has not happened
+            ["OptiNiSt/FreeUsers/${var.environment}", "TargetInstances", { "label" : "Free Tier Target (user count)" }],
             ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Free Tier Desired" }],
             ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Free Tier Running" }],
             ["AWS/AutoScaling", "GroupMinSize", "AutoScalingGroupName", aws_autoscaling_group.main.name, { "label" : "Free Tier Min" }],
@@ -769,8 +822,6 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 4
         properties = {
           title = "Alarm Status Overview"
-          # cpu_low excluded: it only drives scale-down (no SNS), so it sits in
-          # ALARM whenever the ASG is idle by design — a permanent false red here.
           alarms = concat([
             # Background Service Alarms
             aws_cloudwatch_metric_alarm.background_task_stopped.arn,
@@ -783,7 +834,6 @@ resource "aws_cloudwatch_dashboard" "main" {
             # Autoscaling Alarms
             aws_cloudwatch_metric_alarm.cpu_high.arn,
             aws_cloudwatch_metric_alarm.memory_high.arn,
-            aws_cloudwatch_metric_alarm.memory_low.arn,
             aws_cloudwatch_metric_alarm.load_average_high.arn,
             aws_cloudwatch_metric_alarm.high_iowait.arn,
             aws_cloudwatch_metric_alarm.ebs_queue_length_high.arn,
@@ -800,9 +850,31 @@ resource "aws_cloudwatch_dashboard" "main" {
             # Per-TG alarms (for_each maps) flattened into the overview.
             [for a in aws_cloudwatch_metric_alarm.alb_response_time_high : a.arn],
             [for a in aws_cloudwatch_metric_alarm.tg_unhealthy_hosts : a.arn],
+            [for a in aws_cloudwatch_metric_alarm.tg_serving_below_desired : a.arn],
           )
         }
       }
     ]
   })
+}
+
+# ==================================================
+# Expiration Lifecycle Email Monitoring
+# ==================================================
+# Persistent send failures pause over-quota expiration deletion (the job
+# never deletes data it could not warn about), so they must be visible.
+resource "aws_cloudwatch_metric_alarm" "expiration_email_failures" {
+  count               = var.notification_from_email == "" ? 0 : 1
+  alarm_name          = "${local.env_prefix}-expiration-email-failures"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "ExpirationEmailFailures"
+  namespace           = "OptiNiSt/BackgroundJobs/${var.environment}"
+  period              = "86400"
+  statistic           = "Sum"
+  threshold           = "0"
+  alarm_description   = "Expiration lifecycle emails are failing; over-quota deletion is paused for unwarned users"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+  treat_missing_data  = "notBreaching"
 }

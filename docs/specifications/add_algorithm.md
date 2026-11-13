@@ -197,6 +197,11 @@ Default function parameters can be defined in the following file. The user can t
 - Explanation:
   - {algorithm_function_name} must match the actual function name.
 
+- Changing the yaml later:
+  - Workflows saved before the change follow the current yaml. When such a workflow is loaded, and again when it runs, a key the yaml gained is added with its yaml default, and a key the yaml no longer has is dropped. The GUI names the added and removed keys when a workflow is opened, reproduced or imported.
+  - A saved workflow previously ran without the added key, i.e. on the library's own default. If the yaml default differs from it, re-running that workflow changes its result, so choose the yaml default with this in mind.
+  - Moving top-level keys into groups, or replacing a group with another, is a layout change, not an added key. A saved node in the old layout is not filled: its run stops with an error naming the old keys, and the node has to be deleted and added again. A group removed with nothing in its place is only dropped.
+
 ### NWB saving format
 
 Optinist uses NWB format for saving data, analysis and plots. Here are some examples of NWB saving formats.
@@ -420,6 +425,15 @@ Add the new entry in the format below:
 ```
 
 > **Tip:** Make sure that the `conda_name` matches the environment you’ve defined in your Snakemake workflow.
+
+### 3. Add the Sample Workflow
+
+When a node's Conda environment is missing, its **Create env** dialog imports and runs the sample workflow `setup_conda_{name}` from `sample_data/maintenance/output/`. Without it, the dialog fails.
+
+Copy an existing directory (e.g. `setup_conda_lccd/`) to `setup_conda_{name}/`. In all three files (`experiment.yaml`, `workflow.yaml` and `snakemake.yaml`):
+
+1. Replace the algorithm node id (e.g. `setup_conda_lccd_3suw9pfbqj`) with `setup_conda_{name}_` plus a new random suffix (e.g. `setup_conda_{name}_a1b2c3d4e5`). Replace every occurrence: the id also appears in the edge key, `id`, `target` and `targetHandle` in `workflow.yaml`.
+2. Then replace the remaining `setup_conda_lccd` with `setup_conda_{name}`.
 
 ---
 

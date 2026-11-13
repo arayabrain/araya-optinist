@@ -4,6 +4,7 @@ import os
 import pickle
 import re
 import shutil
+import time
 from dataclasses import asdict
 from typing import Dict
 
@@ -32,7 +33,10 @@ from studio.app.common.core.utils.datetime_utils import (
     get_datetime_for_timezone_formatted,
 )
 from studio.app.common.core.utils.filelock_handler import FileLockUtils
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
+    join_filepath,
+)
 from studio.app.common.core.workflow.workflow import (
     NodeRunStatus,
     ProcessType,
@@ -47,6 +51,9 @@ logger = AppLogger.get_logger()
 # S3 deletion retry configuration
 S3_DELETION_MAX_RETRIES = 3
 S3_DELETION_BASE_DELAY_SECONDS = 1.0
+
+# bool, int, uint, float, complex: arrays of these cannot hold a unique_id
+NUMERIC_DTYPE_KINDS = "biufc"
 
 
 class ExptConfigWriter:
@@ -67,7 +74,7 @@ class ExptConfigWriter:
         self.timezone = timezone  # User's browser timezone (IANA format)
         self.builder = ExptConfigBuilder()
 
-    def write(self) -> None:
+    def write(self) -> ExptConfig:
         expt_filepath = ExptConfigReader.get_config_yaml_path(
             self.workspace_id, self.unique_id
         )
@@ -75,7 +82,11 @@ class ExptConfigWriter:
             try:
                 expt_config = ExptConfigReader.read(self.workspace_id, self.unique_id)
                 self.builder.set_config(expt_config)
-                self.add_run_info()
+                self.add_run_info(expt_config.started_at)
+            # A rejected path is a security refusal, not corrupt data: it must not
+            # be downgraded to "no data" by the broad clause below.
+            except InvalidPathError:
+                raise
             except (AssertionError, ValueError, KeyError, yaml.YAMLError):
                 # An existing but empty/corrupt experiment.yaml would otherwise
                 # abort the run; recreate it from scratch instead.
@@ -91,9 +102,9 @@ class ExptConfigWriter:
         self.build_procs()
 
         # Write EXPERIMENT_YML
-        self._write_raw(
-            self.workspace_id, self.unique_id, config=asdict(self.builder.build())
-        )
+        expt_config = self.builder.build()
+        self._write_raw(self.workspace_id, self.unique_id, config=asdict(expt_config))
+        return expt_config
 
     @classmethod
     def _write_raw(
@@ -106,7 +117,8 @@ class ExptConfigWriter:
             auto_file_lock=auto_file_lock,
         )
 
-    def overwrite(self, update_params: dict) -> None:
+    def overwrite(self, update_params: dict, started_at: str = None) -> None:
+        """started_at: drop the write unless the config is still this run's"""
         expt_filepath = ExptConfigReader.get_config_yaml_path(
             self.workspace_id, self.unique_id
         )
@@ -116,6 +128,8 @@ class ExptConfigWriter:
         with FileLock(lock_path, ConfigWriter.FILE_LOCK_TIMEOUT):
             # Read experiment config
             config = ExptConfigReader.read(self.workspace_id, self.unique_id)
+            if started_at is not None and config.started_at != started_at:
+                return
 
             # Merge overwrite params
             config_merged = differential_deep_merge(asdict(config), update_params)
@@ -140,11 +154,15 @@ class ExptConfigWriter:
             .build()
         )
 
-    def add_run_info(self) -> ExptConfig:
+    def add_run_info(self, previous_started_at: str = None) -> ExptConfig:
+        started_at = get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
+        # started_at is the run's generation, so a same-second rerun takes the next
+        while started_at == previous_started_at:
+            time.sleep(0.05)
+            started_at = get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
+
         return (
-            self.builder.set_started_at(
-                get_datetime_for_timezone_formatted(self.timezone, DATE_FORMAT)
-            )  # Update time
+            self.builder.set_started_at(started_at)  # Update time
             .set_success(WorkflowRunStatus.RUNNING.value)
             # rewritten with started_at above, or the pair disagrees on a rerun
             .set_timezone(self.timezone)
@@ -391,20 +409,14 @@ class ExptDataWriter:
                 [DIRPATH.OUTPUT_DIR, self.workspace_id, new_unique_id]
             )
 
-            # Copy directory
-            shutil.copytree(output_dir, new_output_dir)
-
-            # Update experiment configuration and unique IDs
-            if not self.__copy_data_update_experiment_config_name(
-                self.workspace_id, new_unique_id, new_name
+            # Blocking file work: run it off the event loop
+            if not await asyncio.to_thread(
+                self.__copy_data_local,
+                output_dir,
+                new_output_dir,
+                new_unique_id,
+                new_name,
             ):
-                logger.error("Failed to update experiment.yml after copying.")
-                return False
-
-            if not self.__copy_data_replace_unique_id(
-                new_output_dir, self.unique_id, new_unique_id
-            ):
-                logger.error("Failed to update unique_id in files.")
                 return False
 
             # Operate remote storage data.
@@ -424,6 +436,56 @@ class ExptDataWriter:
             logger.error(f"Error copying data: {e}")
             return False
 
+    def __copy_data_local(
+        self, output_dir: str, new_output_dir: str, new_unique_id: str, new_name: str
+    ) -> bool:
+        logger = AppLogger.get_logger()
+
+        # Built under a dot name, which the record list's glob skips, and renamed
+        # into place once rewritten: until then its yaml holds the source's id
+        staging_name = f".{new_unique_id}.copying"
+        staging_dir = join_filepath(
+            [DIRPATH.OUTPUT_DIR, self.workspace_id, staging_name]
+        )
+
+        if os.path.exists(new_output_dir):
+            logger.error(f"Copy destination already exists: {new_output_dir}")
+            return False
+
+        # The cleanup below removes staging_dir, so claim it first: mkdir fails
+        # when another copy holds it, even one that passed the check above
+        try:
+            os.mkdir(staging_dir)
+        except FileExistsError:
+            logger.error(f"Copy build directory already exists: {staging_dir}")
+            return False
+
+        succeeded = False
+        try:
+            # Copy directory
+            shutil.copytree(output_dir, staging_dir, dirs_exist_ok=True)
+
+            # Update experiment configuration and unique IDs
+            if not self.__copy_data_update_experiment_config_name(
+                self.workspace_id, staging_name, new_name
+            ):
+                logger.error("Failed to update experiment.yml after copying.")
+                return False
+
+            if not self.__copy_data_replace_unique_id(
+                staging_dir, self.unique_id, new_unique_id
+            ):
+                logger.error("Failed to update unique_id in files.")
+                return False
+
+            os.rename(staging_dir, new_output_dir)
+            succeeded = True
+            return True
+        finally:
+            # A file left with the source's paths breaks once the source is deleted
+            if not succeeded:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+
     def __copy_data_replace_unique_id(
         self, directory: str, old_id: str, new_id: str
     ) -> bool:
@@ -437,8 +499,10 @@ class ExptDataWriter:
                 "npy": glob.glob(
                     os.path.join(directory, "**", "*.npy"), recursive=True
                 ),
-                "pkl": glob.glob(
-                    os.path.join(directory, "**", "*.pkl"), recursive=True
+                # the data filter's backups are pickles too
+                "pkl": glob.glob(os.path.join(directory, "**", "*.pkl"), recursive=True)
+                + glob.glob(
+                    os.path.join(directory, "**", "*.pkl.orig"), recursive=True
                 ),
             }
 
@@ -475,7 +539,8 @@ class ExptDataWriter:
 
             logger.debug(f"Updated YAML: {file_path}")
         except Exception as e:
-            logger.warning(f"Failed to update YAML {file_path}: {e}")
+            logger.error(f"Failed to update YAML {file_path}: {e}")
+            raise
 
     def __copy_data_update_pickle(
         self, file_path: str, old_id: str, new_id: str
@@ -491,12 +556,23 @@ class ExptDataWriter:
 
             logger.debug(f"Updated Pickle: {file_path}")
         except Exception as e:
-            logger.warning(f"Failed to update Pickle {file_path}: {e}")
+            logger.error(f"Failed to update Pickle {file_path}: {e}")
+            raise
 
     def __copy_data_update_npy(self, file_path: str, old_id: str, new_id: str) -> None:
         logger = AppLogger.get_logger()
         try:
             with open(file_path, "rb") as file:
+                major, _ = np.lib.format.read_magic(file)
+                read_header = (
+                    np.lib.format.read_array_header_1_0
+                    if major == 1
+                    else np.lib.format.read_array_header_2_0
+                )
+                _, _, dtype = read_header(file, max_header_size=2**64)
+                if dtype.kind in NUMERIC_DTYPE_KINDS:
+                    return
+                file.seek(0)
                 data = np.load(file, allow_pickle=True)
 
             updated_data = self.__replace_ids_recursive(data, old_id, new_id)
@@ -505,58 +581,86 @@ class ExptDataWriter:
 
             logger.debug(f"Updated NPY: {file_path}")
         except Exception as e:
-            logger.warning(f"Failed to update NPY {file_path}: {e}")
+            logger.error(f"Failed to update NPY {file_path}: {e}")
+            raise
 
     def __replace_ids_recursive(
-        self, obj: object, old_id: str, new_id: str, visited: set = None
+        self, obj: object, old_id: str, new_id: str, memo: dict = None
     ):
-        if visited is None:
-            visited = set()
-
-        obj_id = id(obj)
-        if obj_id in visited:
+        if isinstance(obj, type):  # a class is shared code, never per-record data
             return obj
-        visited.add(obj_id)
-
-        if isinstance(obj, dict):
-            return {
-                key: self.__replace_ids_recursive(value, old_id, new_id, visited)
-                for key, value in obj.items()
-            }
-        elif isinstance(obj, list):
-            return [
-                self.__replace_ids_recursive(item, old_id, new_id, visited)
-                for item in obj
-            ]
-        elif isinstance(obj, tuple):
-            # Convert tuple to list, process, and convert back to tuple
-            return tuple(
-                self.__replace_ids_recursive(item, old_id, new_id, visited)
-                for item in obj
-            )
-        elif isinstance(obj, np.ndarray):
-            if obj.ndim == 0:  # Handle 0D (scalar-like) arrays
-                return self.__replace_ids_recursive(obj.item(), old_id, new_id, visited)
-            else:  # Handle 1D or higher-dimensional arrays
-                return np.array(
-                    [
-                        self.__replace_ids_recursive(item, old_id, new_id, visited)
-                        for item in obj
-                    ]
-                )
-        elif isinstance(obj, str) and old_id in obj:
+        if isinstance(obj, str):
+            if old_id not in obj:
+                return obj
             # Use the custom regex pattern for strings
             pattern = re.compile(rf"(?:\b|\/){re.escape(old_id)}(?:\b|\/)(?:[^\s]*)")
             return pattern.sub(
                 lambda match: match.group(0).replace(old_id, new_id), obj
             )
+
+        # id -> (original, result); originals are held so temporaries cannot reuse ids
+        if memo is None:
+            memo = {}
+        obj_id = id(obj)
+        if obj_id in memo:
+            return memo[obj_id][1]
+
+        if isinstance(obj, dict):
+            result = {}
+            memo[obj_id] = (obj, result)
+            for key, value in obj.items():
+                result[key] = self.__replace_ids_recursive(value, old_id, new_id, memo)
+            return result
+        elif isinstance(obj, list):
+            result = []
+            memo[obj_id] = (obj, result)
+            result.extend(
+                self.__replace_ids_recursive(item, old_id, new_id, memo) for item in obj
+            )
+            return result
+        elif isinstance(obj, tuple):
+            result = tuple(
+                self.__replace_ids_recursive(item, old_id, new_id, memo) for item in obj
+            )
+            if obj_id in memo:  # a cycle through a child already copied this tuple
+                return memo[obj_id][1]
+            memo[obj_id] = (obj, result)
+            return result
+        elif isinstance(obj, np.ndarray):
+            if obj.dtype.kind == "O":
+                # Element by element: np.array() would merge equal-length elements
+                # into one numeric array and reject ragged ones
+                result = obj.copy()  # keeps the subclass and a masked array's mask
+                memo[obj_id] = (obj, result)
+                # plain views index the raw elements, masked or not
+                source, target = obj.view(np.ndarray), result.view(np.ndarray)
+                for index in np.ndindex(obj.shape):
+                    target[index] = self.__replace_ids_recursive(
+                        source[index], old_id, new_id, memo
+                    )
+                return result
+            if obj.dtype.kind != "U":  # only object and str arrays can hold an id
+                return obj
+            memo[obj_id] = (obj, obj)
+            if obj.ndim == 0:  # Handle 0D (scalar-like) arrays
+                result = self.__replace_ids_recursive(obj.item(), old_id, new_id, memo)
+            else:  # Handle 1D or higher-dimensional arrays
+                result = np.array(
+                    [
+                        self.__replace_ids_recursive(item, old_id, new_id, memo)
+                        for item in obj
+                    ]
+                )
+            memo[obj_id] = (obj, result)
+            return result
         elif hasattr(obj, "__dict__"):
             # Process custom objects
+            memo[obj_id] = (obj, obj)
             for attr, value in obj.__dict__.items():
                 setattr(
                     obj,
                     attr,
-                    self.__replace_ids_recursive(value, old_id, new_id, visited),
+                    self.__replace_ids_recursive(value, old_id, new_id, memo),
                 )
             return obj
         elif obj is None:

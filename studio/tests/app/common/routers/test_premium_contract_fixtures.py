@@ -159,7 +159,7 @@ def _run_secure_routing_middleware():
     patches = [
         mock.patch.object(srm.MODE, "IS_STANDALONE", False),
         mock.patch.object(
-            srm, "extract_uid_from_firebase_jwt", return_value=("test-uid", None)
+            srm, "extract_uid_from_firebase_jwt_async", return_value=("test-uid", None)
         ),
         mock.patch.object(srm, "get_user_tier_cached", return_value=srm.TIER_PREMIUM),
         mock.patch.object(srm, "_get_instance_id", return_value="i-0test123"),

@@ -6,12 +6,16 @@ import configureStore from "redux-mock-store"
 
 // expect is left global so the jest-dom matchers stay typed.
 import { describe, it, beforeEach, jest, afterEach } from "@jest/globals"
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
 import { SubscriptionUserStatus } from "const/Subscription"
 import Account from "pages/Account"
-import { CONSENT_STORAGE_KEY, trackEvent } from "utils/analytics"
+import {
+  CONSENT_STORAGE_KEY,
+  setAnalyticsConsent,
+  trackEvent,
+} from "utils/analytics"
 import {
   disableGtm,
   setUpAnalyticsTest,
@@ -113,6 +117,19 @@ describe("Account analytics consent control", () => {
   it("is absent while the visitor has not answered the notice", () => {
     renderAccount()
     expect(consentSwitch()).not.toBeInTheDocument()
+  })
+
+  it("appears when the notice is answered while the page is open", () => {
+    // The defect this control's subscription exists for: a first-time visitor
+    // already on /account answers the banner rendered beside it. Without the
+    // subscription the module state and localStorage update but this component
+    // never does, so the switch stays hidden until the page is remounted.
+    renderAccount()
+    expect(consentSwitch()).not.toBeInTheDocument()
+
+    act(() => setAnalyticsConsent("granted"))
+
+    expect(consentSwitch()).toBeChecked()
   })
 
   it("reflects the stored decision", () => {

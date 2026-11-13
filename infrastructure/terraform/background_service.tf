@@ -72,7 +72,7 @@ resource "aws_launch_template" "background" {
 resource "aws_instance" "background" {
   launch_template {
     id      = aws_launch_template.background.id
-    version = "$Latest"
+    version = aws_launch_template.background.latest_version
   }
 
   instance_type = var.background_instance_type
@@ -85,8 +85,14 @@ resource "aws_instance" "background" {
     Tier    = "background"
   }
 
+  # user_data comes from the launch template. The provider reads it back into
+  # state, but the attribute is not Computed, so leaving it unset here plans
+  # its removal. Applying that clears the bootstrap script and stops and
+  # starts the instance, including one that was deliberately stopped. To
+  # change user_data on an existing instance, replace it (-replace).
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [user_data]
   }
 }
 
@@ -212,6 +218,10 @@ resource "aws_ecs_task_definition" "background" {
           value = var.s3_user_bucket_prefix
         },
         {
+          name  = "S3_USER_BUCKET_SECRET"
+          value = var.s3_user_bucket_secret
+        },
+        {
           name  = "REMOTE_STORAGE_TYPE"
           value = "2"
         },
@@ -281,6 +291,16 @@ resource "aws_ecs_task_definition" "background" {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "0"
         },
+        {
+          name  = "UNVERIFIED_ACCOUNT_CLEANUP_MODE"
+          value = var.unverified_account_cleanup_mode
+        },
+        # Seeded accounts whose email_verified flag is set best-effort at
+        # provisioning time; the cleanup job must never touch them.
+        {
+          name  = "UNVERIFIED_CLEANUP_PROTECTED_UIDS"
+          value = join(",", concat([var.optinist_admin_uid], var.test_users[*].firebase_uid))
+        },
         # Single worker for background service
         {
           name  = "UVICORN_WORKERS"
@@ -289,6 +309,16 @@ resource "aws_ecs_task_definition" "background" {
         {
           name  = "PREMIUM_MANAGER_FUNCTION_NAME"
           value = "${var.environment}-premium-manager"
+        },
+        # SES sender for expiration lifecycle emails; empty disables them
+        {
+          name  = "NOTIFICATION_FROM_EMAIL"
+          value = var.notification_from_email
+        },
+        # Sign-in link used in the lifecycle emails
+        {
+          name  = "FRONTEND_URL"
+          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
         },
       ]
       mountPoints = [
@@ -363,6 +393,11 @@ resource "aws_ecs_service" "background" {
   }
 
   # No load balancer - background service doesn't serve HTTP traffic
+
+  # ECS applies the grace to container health checks too. Sized for
+  # cloud-startup.sh's DB wait (up to 600 s) plus app start; the container's
+  # startPeriod caps at 300 s.
+  health_check_grace_period_seconds = 900
 
   depends_on = [
     aws_instance.background,

@@ -1,9 +1,12 @@
 import numpy as np
 
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.dataclass.bar import BarData
 from studio.app.common.dataclass.base import BaseData
 from studio.app.common.dataclass.csv import CsvData
+from studio.app.common.dataclass.heatmap import HeatMapData
 from studio.app.common.dataclass.image import ImageData
+from studio.app.common.dataclass.scatter import ScatterData
 from studio.app.common.dataclass.timeseries import TimeSeriesData
 from studio.app.optinist.dataclass.behavior import BehaviorData
 from studio.app.optinist.dataclass.fluo import FluoData
@@ -30,8 +33,11 @@ def data_concat(
         output_dir (str): Directory to save the output data.
         params (dict, optional): Dictionary containing concatenation specifications:
                     - 'axis': Axis along which to concatenate
+                        1 on 1D inputs stacks them as columns of one
+                        (time, columns) behaviour table
                     - 'output_type': Optional output type specification
-                        (behaviors_data, neural_data, image_data, iscell_data, roi_data)
+                        (behaviors_data, neural_data, timeseries_data, image_data,
+                        iscell_data, roi_data, bar_data, heatmap_data, scatter_data)
                         If not specified, will be inferred from data1 type
                     - 'time_axis': Specified or determined by data type
                     - 'std_method': How to handle standard deviation:
@@ -110,6 +116,18 @@ def data_concat(
         logger.info(
             f"Data1 shape: {data1_array.shape}, Data2 shape: {data2_array.shape}"
         )
+
+        # axis 1 on 1D inputs stacks them as columns of one behaviour table
+        stacked_1d = axis == 1 and (data1_array.ndim == 1 or data2_array.ndim == 1)
+        if stacked_1d:
+            if data1_array.ndim == 1 and not output_type:
+                output_type = "behaviors_data"
+            if output_type == "behaviors_data" and time_axis is None:
+                time_axis = 0  # the behaviour table is time-major
+            data1_array, data2_array = (
+                a[:, np.newaxis] if a.ndim == 1 else a
+                for a in (data1_array, data2_array)
+            )
 
         # Validate axis parameter
         if axis >= data1_array.ndim or axis < -data1_array.ndim:
@@ -223,10 +241,29 @@ def data_concat(
         )
 
         data_object = list(output_data.values())[0]
+        # TimeSeriesData's index labels axis 1; BehaviorData's, a heatmap's or a
+        # bar's labels axis 0, so rebuild one the concat no longer fits
+        is_timeseries = isinstance(data_object, TimeSeriesData)
+        rows_by_time = is_timeseries and not isinstance(data_object, BehaviorData)
+        if (
+            isinstance(data_object, (TimeSeriesData, HeatMapData, BarData))
+            and data_object.data.ndim == 2
+            and data_object.index is not None
+        ):
+            labelled = data_object.data.shape[1 if rows_by_time else 0]
+            if len(data_object.index) != labelled:
+                data_object.index = np.arange(labelled)
         result = {"concatenated_data": data_object}
         if concatenated_std is not None:
-            result["concatenated_std"] = TimeSeriesData(
-                concatenated_std, index=concatenated_index, file_name="concatenated_std"
+            std_type = (
+                BehaviorData
+                if isinstance(data_object, BehaviorData)
+                else TimeSeriesData
+            )
+            result["concatenated_std"] = std_type(
+                concatenated_std,
+                index=data_object.index if is_timeseries else None,
+                file_name="concatenated_std",
             )
         return result
 
@@ -265,6 +302,20 @@ def determine_default_params(data1):
             "time_axis": None,  # Safe default (ROI data typically spatial)
             "std_axis": None,  # Compute std along concatenation dimension
             "std_method": "none",  # Compute new spatial statistics
+        }
+    elif isinstance(data1, (BarData, HeatMapData)):
+        return {
+            "axis": 0,  # concat rows
+            "time_axis": 0,  # index labels the rows, so it is joined like a time index
+            "std_axis": None,
+            "std_method": "none",
+        }
+    elif isinstance(data1, ScatterData):
+        return {
+            "axis": 1,  # stored as (2, points), so concat points
+            "time_axis": None,
+            "std_axis": None,
+            "std_method": "none",
         }
     elif isinstance(data1, RoiData):
         return {

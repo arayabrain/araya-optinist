@@ -95,7 +95,10 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
       name: "hdf5Path",
       type: "hdf5Path",
     },
-    defaultParam: {},
+    defaultParam: {
+      transpose: false,
+      dataType: "auto",
+    },
     nodeType: REACT_FLOW_NODE_TYPE_KEY.HDF5FileNode,
   },
   FLUO: {
@@ -130,7 +133,10 @@ export const FILE_TYPE_CONFIGS: Record<string, FileTypeConfig> = {
       name: "matPath",
       type: "matPath",
     },
-    defaultParam: {},
+    defaultParam: {
+      transpose: false,
+      dataType: "auto",
+    },
     nodeType: REACT_FLOW_NODE_TYPE_KEY.MatlabFileNode,
   },
   MICROSCOPE: {

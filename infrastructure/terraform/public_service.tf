@@ -102,7 +102,7 @@ resource "aws_autoscaling_group" "public" {
   name                = "${local.env_prefix}-public-asg"
   vpc_zone_identifier = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns   = [aws_lb_target_group.public.arn]
-  health_check_type   = "ELB"
+  health_check_type   = "ELB" # not EC2: only the TG check replaces a registered host with no task, or a wedged one
   # Cold boot (ECR pull + container start + ASGI lifespan + startup-sync S3
   # warm) routinely takes >5 min; 300s tripped premature unhealthy replacements.
   health_check_grace_period = 900
@@ -122,6 +122,9 @@ resource "aws_autoscaling_group" "public" {
   force_delete              = false
   termination_policies      = ["OldestInstance"]
   wait_for_capacity_timeout = "0"
+
+  # The serving-below-desired alarm's desired input
+  enabled_metrics = ["GroupDesiredCapacity"]
 
   tag {
     key                 = "Name"
@@ -178,6 +181,7 @@ resource "aws_ecs_task_definition" "public" {
       environment = [
         { name = "ENV_PREFIX", value = var.environment },
         { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+        { name = "ANNOUNCEMENT_SSM_PARAMETER", value = aws_ssm_parameter.announcement.name },
         { name = "CLOUDWATCH_LOG_GROUP", value = aws_cloudwatch_log_group.public_optinist.name },
         { name = "PYTHONPATH", value = "/app/" },
         { name = "TZ", value = "Asia/Tokyo" },
@@ -327,6 +331,11 @@ resource "aws_ecs_service" "public" {
     container_name   = "${local.env_prefix}-cloud-container"
     container_port   = 8000
   }
+
+  # Sized for cloud-startup.sh's DB wait (up to 600 s) plus app start; ECS
+  # defaults to 0. Cold starts only: past the ASG's own grace, its ELB check
+  # replaces the instance of a task that goes unhealthy.
+  health_check_grace_period_seconds = 900
 
   depends_on = [
     aws_autoscaling_group.public,

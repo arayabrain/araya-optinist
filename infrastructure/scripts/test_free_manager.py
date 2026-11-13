@@ -507,6 +507,13 @@ class FreeManagerTester:
                 print(f"Lambda returned non-200 status: {status_code}")
                 return None
 
+            # A handler that raised still returns StatusCode 200, with the
+            # failure in FunctionError and no "body" in the payload. Without
+            # this check such a run reads as a silent success.
+            if response.get("FunctionError"):
+                print(f"Lambda failed: {response['FunctionError']} - {payload}")
+                return None
+
             # Parse response body
             if "body" in payload:
                 body = json.loads(payload["body"])

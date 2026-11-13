@@ -53,6 +53,9 @@ async def get_my_storage_alert(
     Returns:
         Dict containing user's storage usage and alert information
     """
+    if current_user is None:
+        return {"has_alert": False, "alert": None}
+
     try:
         # Use the new unified storage calculation function
         from studio.app.common.core.cloud.storage_tracking import (

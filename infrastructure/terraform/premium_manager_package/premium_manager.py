@@ -39,9 +39,12 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 import boto3
 import pymysql
@@ -58,6 +61,7 @@ from aws_constants import (
     RoutingHeaders,
 )
 from botocore.exceptions import ClientError
+from pymysql.constants import ER
 
 if TYPE_CHECKING:
     from mypy_boto3_cloudwatch import CloudWatchClient
@@ -77,11 +81,15 @@ CREATE_STANDBY_LOCK = "create_standby_lock"
 CREATE_RUNNING_LOCK = "create_running_lock"
 MIGRATE_USERS_LOCK = "migrate_users_lock"
 PREMIUM_SCALING_LOCK = "premium_scaling_lock"
-ASSIGN_USER_LOCK_PREFIX = "assign_user_"
-ASSIGN_LOCK_TIMEOUT_SECONDS = (
-    10  # Short acquisition timeout so 409 fallback is reachable within Lambda timeout
-)
 LOCK_TIMEOUT_SECONDS = 60
+
+# Per-user assign claim (premium_assign_claims row)
+ASSIGN_CLAIM_WAIT_SECONDS = 10  # Bounded wait, then the 200 / 409 fallback
+ASSIGN_CLAIM_POLL_INTERVAL_SECONDS = 1
+ASSIGN_CLAIM_TTL_SECONDS = 90  # Reclaimable this long after the last renewal
+ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS = 20
+# Old assign session lock (previous release, pre-migration fallback); remove when unused
+LEGACY_ASSIGN_LOCK_PREFIX = "assign_user_"
 
 # Wait before first migration attempt to let instances boot
 MIGRATION_INITIAL_DELAY_SECONDS = 60
@@ -260,6 +268,155 @@ def distributed_lock(lock_name, timeout=LOCK_TIMEOUT_SECONDS):
                     pass
 
     return _lock_context()
+
+
+def _try_acquire_assign_claim(user_id: int, token: str) -> bool:
+    """One attempt on one connection: insert, or take over an expired claim;
+    then give it back if the previous release's session lock is in use."""
+    with get_db_connection(auto_commit=True) as connection:
+        with connection.cursor() as cursor:
+            try:
+                cursor.execute(
+                    """INSERT INTO premium_assign_claims
+                       (user_id, claim_token, claimed_at, expires_at)
+                       VALUES (%s, %s, NOW(), NOW() + INTERVAL %s SECOND)""",
+                    (user_id, token, ASSIGN_CLAIM_TTL_SECONDS),
+                )
+            except pymysql.err.IntegrityError as e:
+                if e.args[0] != ER.DUP_ENTRY:
+                    raise
+                cursor.execute(
+                    """UPDATE premium_assign_claims
+                       SET claim_token = %s, claimed_at = NOW(),
+                           expires_at = NOW() + INTERVAL %s SECOND
+                       WHERE user_id = %s AND expires_at < NOW()""",
+                    (token, ASSIGN_CLAIM_TTL_SECONDS, user_id),
+                )
+                cursor.execute(
+                    "SELECT claim_token FROM premium_assign_claims WHERE user_id = %s",
+                    (user_id,),
+                )
+                row = cursor.fetchone()
+                if not row or row["claim_token"] != token:
+                    return False
+                print(f"Reclaimed expired assign claim for user {user_id}")
+
+            # IS_FREE_LOCK: 1 free, 0 in use, NULL error (treated as in use)
+            cursor.execute(
+                "SELECT IS_FREE_LOCK(%s) AS is_free",
+                (f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}",),
+            )
+            if cursor.fetchone()["is_free"] == 1:
+                return True
+            print(f"Previous release still assigning user {user_id}; claim given back")
+            cursor.execute(
+                """DELETE FROM premium_assign_claims
+                   WHERE user_id = %s AND claim_token = %s""",
+                (user_id, token),
+            )
+            return False
+
+
+def _renew_assign_claim(user_id: int, token: str) -> bool:
+    """Push the claim's expiry forward; False once another holder owns it."""
+    with get_db_connection(auto_commit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """UPDATE premium_assign_claims
+                   SET expires_at = NOW() + INTERVAL %s SECOND
+                   WHERE user_id = %s AND claim_token = %s""",
+                (ASSIGN_CLAIM_TTL_SECONDS, user_id, token),
+            )
+            cursor.execute(
+                "SELECT claim_token FROM premium_assign_claims WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return bool(row) and row["claim_token"] == token
+
+
+def _keep_assign_claim_alive(user_id: int, token: str, stop: threading.Event):
+    """Renew the claim until ``stop`` is set or the claim is lost."""
+    while not stop.wait(ASSIGN_CLAIM_RENEW_INTERVAL_SECONDS):
+        try:
+            if not _renew_assign_claim(user_id, token):
+                print(f"Assign claim for user {user_id} was lost; renewal stopped")
+                return
+        except Exception as e:
+            print(f"Failed to renew assign claim for user {user_id}: {e}")
+
+
+def _release_assign_claim(user_id: int, token: str) -> None:
+    """Best-effort delete by token; a claim left behind expires."""
+    try:
+        with get_db_connection(auto_commit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """DELETE FROM premium_assign_claims
+                       WHERE user_id = %s AND claim_token = %s""",
+                    (user_id, token),
+                )
+                if cursor.rowcount:
+                    print(f"Released assign claim for user {user_id}")
+    except Exception as e:
+        print(f"Failed to release assign claim for user {user_id}: {e}")
+
+
+def _poll_for_assign_claim(user_id: int, token: str, wait_seconds: float) -> bool:
+    """Retry until acquired or out of time; a transient DB error is a failed attempt."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            if _try_acquire_assign_claim(user_id, token):
+                return True
+        except pymysql.err.OperationalError as e:
+            print(f"Assign claim attempt for user {user_id} failed: {e}")
+        if time.monotonic() >= deadline:
+            return False
+        # Polling gives no order: with 3+ contenders one may still get 409
+        time.sleep(ASSIGN_CLAIM_POLL_INTERVAL_SECONDS)
+
+
+@contextmanager
+def assign_claim(user_id: int, wait_seconds: Optional[float] = None):
+    """Yield True while holding the user's assign claim, renewed in the background."""
+    if wait_seconds is None:
+        wait_seconds = ASSIGN_CLAIM_WAIT_SECONDS
+    token = uuid.uuid4().hex
+    try:
+        acquired = _poll_for_assign_claim(user_id, token, wait_seconds)
+    except pymysql.err.ProgrammingError as e:
+        if e.args[0] != ER.NO_SUCH_TABLE:
+            _release_assign_claim(user_id, token)
+            raise
+        # Before the migration: the previous release's session lock, same name
+        print(f"premium_assign_claims is missing; using the session lock: {e}")
+        legacy_lock = f"{LEGACY_ASSIGN_LOCK_PREFIX}{user_id}"
+        with distributed_lock(legacy_lock, timeout=int(wait_seconds)) as locked:
+            yield locked
+        return
+    except BaseException:
+        _release_assign_claim(user_id, token)
+        raise
+
+    stop = threading.Event()
+    renewer = None
+    if acquired:
+        print(f"Acquired assign claim for user {user_id}")
+        renewer = threading.Thread(
+            target=_keep_assign_claim_alive, args=(user_id, token, stop), daemon=True
+        )
+        renewer.start()
+    else:
+        print(f"Assign claim for user {user_id} is held by another invocation")
+    try:
+        yield acquired
+    finally:
+        stop.set()
+        if renewer:
+            renewer.join(timeout=5)
+        # Also clears a row a failed attempt may have left
+        _release_assign_claim(user_id, token)
 
 
 def with_transaction(func):
@@ -870,11 +1027,16 @@ def get_assigned_users_for_instance(instance_id: str):
         return []
 
 
-def get_all_premium_instances_with_states():
+def get_all_premium_instances_with_states(raise_on_error: bool = False):
     """Get all premium instances with their AWS states.
 
     Filters by environment prefix (ENV_PREFIX) to prevent cross-environment
     contamination (e.g., development Lambda discovering production instances).
+
+    On an EC2 error, returns [] unless raise_on_error is set. A caller that
+    deletes rows for instances missing from the result, or launches instances
+    for capacity it does not see, must set it: [] would read as "no premium
+    instance exists".
     """
     ec2: "EC2Client" = boto3.client("ec2")
     env_prefix = EnvironmentConfig.get_env_prefix()
@@ -975,6 +1137,8 @@ def get_all_premium_instances_with_states():
         return instances
     except Exception as e:
         print(f"Error getting premium instances: {str(e)}")
+        if raise_on_error:
+            raise
         return []
 
 
@@ -1199,7 +1363,11 @@ def is_creation_lock_held(lock_name: str) -> bool:
 
 
 def get_available_standby_instances():
-    """Get standby instances from database (AWS state checked separately)"""
+    """Get standby instances that EC2 reports as stopped, oldest first.
+
+    Fails closed: if EC2 cannot be asked, returns no standbys rather than the
+    unchecked database list, which can include running instances.
+    """
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
@@ -1222,7 +1390,11 @@ def get_available_standby_instances():
             ec2: "EC2Client" = boto3.client("ec2")
 
             try:
-                response = ec2.describe_instances(InstanceIds=standby_instance_ids)
+                # An instance-id filter, not InstanceIds: one id missing from
+                # EC2 must not fail the call for the rest.
+                response = ec2.describe_instances(
+                    Filters=[{"Name": "instance-id", "Values": standby_instance_ids}]
+                )
                 aws_states = {}
                 for reservation in response["Reservations"]:
                     for instance in reservation["Instances"]:
@@ -1241,8 +1413,7 @@ def get_available_standby_instances():
 
             except Exception as aws_error:
                 print(f"Failed to check AWS states for standby instances: {aws_error}")
-                # Fall back to database list if AWS check fails
-                available_standby = db_standby_instances
+                available_standby = []
 
         return available_standby
 
@@ -2519,10 +2690,7 @@ def cleanup_duplicate_rules_for_routing_id(listener_arn: str, routing_id: str) -
                                     )
                                     if tg_arn and tg_arn != autoscaling_tg:
                                         try:
-                                            _delete_premium_tg_unhealthy_alarm(tg_arn)
-                                            elbv2.delete_target_group(
-                                                TargetGroupArn=tg_arn
-                                            )
+                                            _delete_premium_tg(elbv2, tg_arn)
                                             print(
                                                 f"Deleted associated "
                                                 f"target group: {tg_arn}"
@@ -2688,6 +2856,25 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
         print(f"[premium-alarm] action=delete name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"WARNING: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
+
+
+# Mirrored in premium_cleanup.py, where it returns False instead of raising.
+def _delete_premium_tg(elbv2: "ElasticLoadBalancingv2Client", tg_arn: str) -> None:
+    """Delete a premium TG, then its alarm unless a newer TG has taken its name.
+
+    Raises if the TG delete fails, and the alarm is kept. The alarm is named
+    after the TG name, and a delete may succeed for an ARN that is already
+    gone, so the alarm goes only once the name is free.
+    """
+    elbv2.delete_target_group(TargetGroupArn=tg_arn)
+    try:
+        elbv2.describe_target_groups(Names=[_tg_arn_suffix(tg_arn).split("/")[1]])
+        print(f"Keeping the alarm of {tg_arn}: its name is in use again")
+    except Exception as e:
+        if "TargetGroupNotFound" in str(e):
+            _delete_premium_tg_unhealthy_alarm(tg_arn)
+        else:
+            print(f"Keeping the alarm of {tg_arn}: cannot check its name: {e}")
 
 
 def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
@@ -2870,11 +3057,9 @@ def _assign_premium_user_impl(
 ) -> Dict[str, Any]:
     """Core premium user assignment logic.
 
-    Called from assign_premium_user UNDER the per-user distributed
-    lock to prevent concurrent calls from corrupting ALB resources
-    (issue #630).  The lock uses ASSIGN_LOCK_TIMEOUT_SECONDS (10 s)
-    so the 409 fallback is reliably reachable within the Lambda
-    invocation timeout (60 s).
+    Called from assign_premium_user while it holds the user's assign
+    claim, so concurrent calls for one user cannot corrupt each other's
+    ALB resources.
     """
     # Restore pending_release if user refreshed (beacon fired but user is back)
     try:
@@ -3600,8 +3785,7 @@ def _assign_premium_user_impl(
                         f"({old_arn}) before creating new one"
                     )
                     try:
-                        _delete_premium_tg_unhealthy_alarm(old_arn)
-                        elbv2.delete_target_group(TargetGroupArn=old_arn)
+                        _delete_premium_tg(elbv2, old_arn)
                     except Exception as del_err:
                         print(f"Warning: could not delete orphaned TG: {del_err}")
             except ClientError as desc_err:
@@ -3767,8 +3951,7 @@ def _assign_premium_user_impl(
         try:
             # Clean up target group if created (skip placeholder markers)
             if target_group_arn and target_group_arn != PremiumAssignment.RESERVING:
-                _delete_premium_tg_unhealthy_alarm(target_group_arn)
-                elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+                _delete_premium_tg(elbv2, target_group_arn)
                 print(f"Cleaned up target group after error: {target_group_arn}")
         except Exception as cleanup_error:
             print(f"Failed to cleanup target group: {str(cleanup_error)}")
@@ -3825,24 +4008,12 @@ def assign_premium_user(
             ),
         }
 
-    # Serialize concurrent assign calls for the same user_id.
-    # Without this lock, two concurrent calls can both pass the
-    # "existing assignment?" check and race through TG creation,
-    # causing the second call's orphan-cleanup to delete the first
-    # call's freshly-created target group (issue #630).
-    #
-    # The entire _assign_premium_user_impl runs under the lock.
-    # Lock timeout is short (ASSIGN_LOCK_TIMEOUT_SECONDS = 10) so
-    # the 409 fallback is reliably reachable within the Lambda
-    # invocation timeout (60 s).
-    lock_name = f"{ASSIGN_USER_LOCK_PREFIX}{user_id}"
-    with distributed_lock(lock_name, timeout=ASSIGN_LOCK_TIMEOUT_SECONDS) as acquired:
+    # One assign per user at a time, or concurrent ones delete each other's TG
+    with assign_claim(user_id) as acquired:
         if not acquired:
-            # Lock timed out -- another invocation held it.
-            # Check whether that call stored a valid assignment
-            # before giving up.
+            # Return what the holder stored, if it has finished; else 409
             print(
-                f"Per-user assign lock timed out for user {user_id}, "
+                f"Assign claim wait timed out for user {user_id}, "
                 f"checking for completed assignment"
             )
             try:
@@ -3881,7 +4052,7 @@ def assign_premium_user(
                 ),
             }
 
-        # ── Under lock: full assignment logic ──
+        # ── Under the claim: full assignment logic ──
         return _assign_premium_user_impl(
             user_id,
             event,
@@ -3983,8 +4154,9 @@ def scale_premium_instances_if_needed():
         # Get dynamic capacity limits based on premium users
         max_capacity = get_dynamic_max_capacity()
 
-        # Get all premium instances with their states
-        all_instances = get_all_premium_instances_with_states()
+        # Get all premium instances with their states. Raises on an EC2 error:
+        # [] would read as no instance running and launch new ones.
+        all_instances = get_all_premium_instances_with_states(raise_on_error=True)
         active_users = count_active_premium_users()
 
         running_instances = [
@@ -4801,8 +4973,7 @@ def _teardown_alb_resources(user_id, rule_arn, target_group_arn):
         and target_group_arn != autoscaling_tg_arn
     ):
         try:
-            _delete_premium_tg_unhealthy_alarm(target_group_arn)
-            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+            _delete_premium_tg(elbv2, target_group_arn)
             print(f"Deleted target group: {target_group_arn}")
         except Exception as tg_error:
             error_msg = f"Error deleting target group: {str(tg_error)}"
@@ -5147,13 +5318,36 @@ def convert_running_instance_to_standby(instance_id: str):
         return False
 
 
+def _base_instance_ids() -> Set[str]:
+    """Terraform-managed base premium instances (PREMIUM_INSTANCE_IDS).
+
+    They stay in Terraform state and in the dev scheduler's start/stop list,
+    so premium manager must never terminate one, even while it is a standby.
+    An unset or empty variable protects nothing, so it is logged.
+    """
+    raw = os.environ.get("PREMIUM_INSTANCE_IDS", "")
+    ids = {i.strip() for i in raw.split(",") if i.strip()}
+    if not ids:
+        print("WARNING: PREMIUM_INSTANCE_IDS is empty; no base instance is protected")
+    return ids
+
+
 def cleanup_excess_standby_instances(excess_count: int):
-    """Remove excess standby instances (terminate oldest ones)"""
+    """Remove excess standby instances (terminate oldest ones).
+
+    Base instances are not candidates: one counted as a standby still
+    occupies a pool slot, and a dynamic standby is trimmed instead.
+    """
     removed_count = 0
 
     try:
         # Get all standby instances ordered by creation time (oldest first)
-        standby_instances = get_available_standby_instances()
+        base_instance_ids = _base_instance_ids()
+        standby_instances = [
+            s
+            for s in get_available_standby_instances()
+            if s["instance_id"] not in base_instance_ids
+        ]
 
         # Terminate the oldest excess instances
         for i in range(min(excess_count, len(standby_instances))):
@@ -5185,8 +5379,18 @@ def _parse_stop_time(state_transition_reason: str):
 
 
 def terminate_aged_stopped_instances():
-    """Terminate standby instances that have been stoppedlonger than
+    """Terminate standby instances that have been stopped longer than
     PREMIUM_STOPPED_MAX_AGE_HOURS.
+
+    Every active standby row is checked against EC2, and EC2 decides; the
+    row's instance_state is not read, since it can be stale either way (the
+    dev scheduler starts instances without touching it). Premium cleanup's
+    reconcile_instance_states() corrects the rows.
+    - Only an instance EC2 reports as stopped is aged
+    - Terraform-managed base instances (PREMIUM_INSTANCE_IDS) are never
+      terminated
+    - An instance missing from EC2 is skipped; cleanup_failed_standby_instances()
+      removes its row
 
     Uses EC2 StateTransitionReason to determine when each instance was actually
     stopped. Falls back to standby_created_at when the EC2 timestamp is not
@@ -5197,40 +5401,56 @@ def terminate_aged_stopped_instances():
     convert_running_instance_to_standby(). It is not a precise "stopped at"
     timestamp but serves as a conservative fallback.
     """
-    max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
-    ec2: "EC2Client" = boto3.client("ec2")
-
     try:
-        # Get stopped standby instances with fallback timestamp from the database
+        max_age_hours = int(os.environ.get("PREMIUM_STOPPED_MAX_AGE_HOURS", "4"))
+        base_instance_ids = _base_instance_ids()
+        ec2: "EC2Client" = boto3.client("ec2")
+
+        # Every active standby, whatever its row says: EC2 decides the state
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """SELECT instance_id, standby_created_at
                        FROM premium_user_assignments
-                       WHERE is_standby = 1 AND status = 'active'
-                         AND instance_state = 'stopped'"""
+                       WHERE is_standby = 1 AND status = 'active'"""
                 )
                 standby_rows = cursor.fetchall()
 
         if not standby_rows:
-            print("No stopped standby instances to check")
+            print("No standby instances to check")
             return 0
 
-        instance_ids = [row["instance_id"] for row in standby_rows]
+        instance_ids = [
+            row["instance_id"] for row in standby_rows if row["instance_id"]
+        ]
+        if not instance_ids:
+            print("No standby instances to check")
+            return 0
         db_fallback = {
             row["instance_id"]: row["standby_created_at"] for row in standby_rows
         }
 
-        # Query EC2 for actual stop times via StateTransitionReason
-        response = ec2.describe_instances(InstanceIds=instance_ids)
+        # Query EC2 for actual state and stop time (StateTransitionReason).
+        # An instance-id filter, not InstanceIds: one id missing from EC2
+        # must not fail the call for the rest. The filter must never be empty,
+        # and the loop acts only on ids it asked for. No pagination: standby
+        # counts are far below EC2's per-filter value limit.
+        response = ec2.describe_instances(
+            Filters=[{"Name": "instance-id", "Values": instance_ids}]
+        )
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = timedelta(hours=max_age_hours)
         env_prefix = EnvironmentConfig.get_env_prefix()
         aged_instances = []
+        found_ids = set()
 
         for reservation in response["Reservations"]:
             for instance in reservation["Instances"]:
                 instance_id = instance["InstanceId"]
+                if instance_id not in db_fallback:
+                    print(f"Skipping instance {instance_id}: not a requested standby")
+                    continue
+                found_ids.add(instance_id)
 
                 # Defense-in-depth: verify instance belongs to this environment
                 tags = {t.get("Key"): t.get("Value") for t in instance.get("Tags", [])}
@@ -5240,6 +5460,23 @@ def terminate_aged_stopped_instances():
                         f"Skipping instance {instance_id}: "
                         f"Name '{name_tag}' does not match "
                         f"environment prefix '{env_prefix}'"
+                    )
+                    continue
+
+                if instance_id in base_instance_ids:
+                    print(
+                        f"Skipping instance {instance_id}: "
+                        f"Terraform-managed base instance"
+                    )
+                    continue
+
+                # A running instance has an empty StateTransitionReason, so
+                # the fallback below would date it from standby_created_at.
+                ec2_state = instance["State"]["Name"]
+                if ec2_state != InstanceState.STOPPED:
+                    print(
+                        f"Skipping instance {instance_id}: "
+                        f"EC2 state is '{ec2_state}', not stopped"
                     )
                     continue
 
@@ -5257,6 +5494,9 @@ def terminate_aged_stopped_instances():
                         )
                 if stop_time and (now - stop_time) > cutoff:
                     aged_instances.append((instance_id, stop_time))
+
+        for instance_id in set(instance_ids) - found_ids:
+            print(f"Skipping instance {instance_id}: not found in EC2")
 
         if not aged_instances:
             print(f"No stopped standby instances older than {max_age_hours} hours")
@@ -5285,11 +5525,18 @@ def terminate_aged_stopped_instances():
 
 
 def terminate_standby_instance(instance_id: str):
-    """Terminate a standby instance and clean up database entry"""
+    """Terminate a standby instance and clean up database entry.
+
+    Refuses a base instance (PREMIUM_INSTANCE_IDS) whatever the caller chose.
+    """
+    if instance_id in _base_instance_ids():
+        print(f"Refusing to terminate {instance_id}: Terraform-managed base instance")
+        return False
+
     ec2: "EC2Client" = boto3.client("ec2")
 
     try:
-        print(f"Terminating excess standby instance {instance_id}")
+        print(f"Terminating standby instance {instance_id}")
 
         # Terminate the instance
         ec2.terminate_instances(InstanceIds=[instance_id])
@@ -5317,15 +5564,17 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
     Terminate all dynamic premium instances and clean up their DB entries.
     Called by the dev scheduler before stopping the environment.
 
-    Dynamic instances are those with tag Service: premium-tier that are NOT
-    in the base_instance_ids list (Terraform-managed base instances).
+    Dynamic instances are those with tag Service: premium-tier that are
+    neither in base_instance_ids nor in PREMIUM_INSTANCE_IDS (the
+    Terraform-managed base instances).
 
     Args:
         base_instance_ids: List of Terraform-managed instance IDs to preserve
-        (stop, not terminate)
+        (stop, not terminate). PREMIUM_INSTANCE_IDS is always preserved too,
+        so an event without the list cannot terminate a base instance.
     """
     ec2_client: "EC2Client" = boto3.client("ec2")
-    base_set = set(base_instance_ids)
+    base_set = set(base_instance_ids) | _base_instance_ids()
     result = {"terminated": [], "errors": [], "db_cleaned": 0}
 
     try:
@@ -5396,8 +5645,9 @@ def cleanup_all_dynamic_instances(base_instance_ids: list) -> dict:
 def cleanup_failed_standby_instances():
     """Clean up database entries for standby instances that no longer exist in AWS"""
     try:
-        # Get all AWS premium instances
-        aws_instances = get_all_premium_instances_with_states()
+        # Get all AWS premium instances. Raises on an EC2 error, so no row is
+        # deleted on a failed discovery.
+        aws_instances = get_all_premium_instances_with_states(raise_on_error=True)
         aws_instance_ids = {i["instance_id"] for i in aws_instances}
 
         # Get all standby assignments from database
@@ -5408,6 +5658,17 @@ def cleanup_failed_standby_instances():
                        WHERE is_standby = 1 AND status = 'active'"""
                 )
                 db_standby_instances = [row["instance_id"] for row in cursor.fetchall()]
+
+                # No instance discovered while standby rows exist is more
+                # likely a discovery fault (a changed tag or filter) than
+                # every instance gone.
+                if not aws_instance_ids and db_standby_instances:
+                    print(
+                        f"Skipping failed standby cleanup: no premium instance "
+                        f"discovered, but {len(db_standby_instances)} standby "
+                        f"rows exist"
+                    )
+                    return
 
                 # Remove database entries for instances that no longer exist
                 cleanup_count = 0

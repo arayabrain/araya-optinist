@@ -5,6 +5,13 @@ import { useSelector, useDispatch } from "react-redux"
 import { LinearProgress, Typography } from "@mui/material"
 
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
+import {
+  filterHeatMapColumns,
+  filterHeatMapRows,
+  heatMapZRange,
+  manualZRangeIgnored,
+} from "components/Workspace/Visualize/Plot/heatMapRows"
+import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { getHeatMapData } from "store/slice/DisplayData/DisplayDataActions"
 import {
   selectHeatMapColumns,
@@ -18,6 +25,11 @@ import {
 } from "store/slice/DisplayData/DisplayDataSelectors"
 import {
   selectHeatMapItemColors,
+  selectHeatMapItemRefItemId,
+  selectHeatMapItemZRange,
+  selectHeatMapItemZRangeMode,
+  selectHeatMapItemZRangePercentile,
+  selectHeatMapLinkedDrawOrderList,
   selectHeatMapItemShowScale,
   selectVisualizeItemHeight,
   selectVisualizeItemWidth,
@@ -60,15 +72,61 @@ const HeatMapImple = memo(function HeatMapImple() {
   const colorscale = useSelector(selectHeatMapItemColors(itemId))
   const width = useSelector(selectVisualizeItemWidth(itemId))
   const height = useSelector(selectVisualizeItemHeight(itemId))
+  const refItemId = useSelector(selectHeatMapItemRefItemId(itemId))
+  const linkedDrawOrderList = useSelector(
+    selectHeatMapLinkedDrawOrderList(itemId),
+  )
+  const { roisClick } = useVisualize()
+  // Only outputs that label their rows with ROI numbers declare a categorical y axis;
+  // older outputs and non-ROI heatmaps keep a positional index and must not be filtered.
+  const rowsAreRois = meta?.yaxis_type === "category"
+  const columnsAreRois = meta?.xaxis_type === "category"
+  const selectedRois = useMemo(
+    () =>
+      rowsAreRois
+        ? (linkedDrawOrderList?.map(Number) ??
+          (refItemId != null ? roisClick[refItemId] : undefined))
+        : undefined,
+    [rowsAreRois, linkedDrawOrderList, refItemId, roisClick],
+  )
+  const rows = useMemo(
+    () => filterHeatMapRows(heatMapData, index, selectedRois),
+    [heatMapData, index, selectedRois],
+  )
+  const cols = useMemo(
+    () =>
+      columnsAreRois
+        ? filterHeatMapColumns(rows.z, columns, selectedRois)
+        : { z: rows.z, columns },
+    [columnsAreRois, rows, columns, selectedRois],
+  )
+  const zRangeMode = useSelector(selectHeatMapItemZRangeMode(itemId))
+  const zRangePercentile = useSelector(
+    selectHeatMapItemZRangePercentile(itemId),
+  )
+  const manualZRange = useSelector(selectHeatMapItemZRange(itemId))
+  // Colour scale stays that of the whole matrix while rows are filtered.
+  const zRange = useMemo(
+    () =>
+      heatMapZRange(heatMapData, zRangeMode, zRangePercentile, manualZRange),
+    [heatMapData, zRangeMode, zRangePercentile, manualZRange],
+  )
+  const manualIgnored = useMemo(
+    () =>
+      zRangeMode === "manual" && manualZRangeIgnored(heatMapData, manualZRange),
+    [heatMapData, zRangeMode, manualZRange],
+  )
 
   const data = useMemo(
     () =>
       heatMapData != null
         ? [
             {
-              z: heatMapData,
-              x: columns,
-              y: index,
+              z: cols.z,
+              x: cols.columns,
+              y: rows.index,
+              zmin: zRange?.[0],
+              zmax: zRange?.[1],
               type: "heatmap",
               name: "heatmap",
               colorscale: colorscale.map((value) => {
@@ -97,7 +155,7 @@ const HeatMapImple = memo(function HeatMapImple() {
             },
           ]
         : [],
-    [heatMapData, showscale, colorscale, columns, index],
+    [heatMapData, rows, cols, zRange, showscale, colorscale],
   )
 
   const layout = useMemo(
@@ -117,12 +175,15 @@ const HeatMapImple = memo(function HeatMapImple() {
       autosize: true,
       xaxis: {
         title: meta?.xlabel,
+        type: meta?.xaxis_type,
       },
       yaxis: {
         title: meta?.ylabel,
+        // A filtered subset of rows is discrete even if the full index is not.
+        type: selectedRois?.length ? "category" : meta?.yaxis_type,
       },
     }),
-    [meta, width, height],
+    [meta, width, height, selectedRois],
   )
 
   const saveFileName = useSelector(selectVisualizeSaveFilename(itemId))
@@ -137,7 +198,25 @@ const HeatMapImple = memo(function HeatMapImple() {
     },
   }
 
-  return <PlotlyChart data={data} layout={layout} config={config} />
+  if (selectedRois?.length && rows.z.length === 0) {
+    return (
+      <Typography variant="body2" sx={{ p: 2 }}>
+        None of the selected ROIs are in this heatmap.
+      </Typography>
+    )
+  }
+
+  return (
+    <>
+      {manualIgnored && (
+        <Typography variant="caption" color="error" sx={{ px: 1 }}>
+          The manual colour range is empty for this data; showing the data
+          range.
+        </Typography>
+      )}
+      <PlotlyChart data={data} layout={layout} config={config} />
+    </>
+  )
 })
 
 function heatMapDataEqualtyFn(

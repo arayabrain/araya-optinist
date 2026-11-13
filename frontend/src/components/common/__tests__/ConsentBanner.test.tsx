@@ -1,15 +1,24 @@
 import { Provider } from "react-redux"
+import { MemoryRouter } from "react-router-dom"
 
 import configureMockStore from "redux-mock-store"
 
 // expect is left global so the jest-dom matchers stay typed.
 import { beforeEach, afterEach, describe, it } from "@jest/globals"
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
-import ConsentBanner from "components/common/ConsentBanner"
+import ConsentBanner, {
+  CookieSettingsLink,
+} from "components/common/ConsentBanner"
+import PublicFooter from "components/PublicLayout/PublicFooter"
+import { Footer } from "pages/LandingPage/components/Footer"
 import { ModeType } from "store/slice/Standalone/StandaloneType"
-import { CONSENT_STORAGE_KEY, trackEvent } from "utils/analytics"
+import {
+  CONSENT_STORAGE_KEY,
+  setAnalyticsConsent,
+  trackEvent,
+} from "utils/analytics"
 import {
   disableGtm,
   setUpAnalyticsTest,
@@ -26,6 +35,17 @@ const renderBanner = (mode: ModeType = { mode: false, loading: false }) =>
       <ConsentBanner />
     </Provider>,
   )
+
+const renderWithCookieSettings = () =>
+  render(
+    <Provider store={mockStore({ mode: { mode: false, loading: false } })}>
+      <CookieSettingsLink />
+      <ConsentBanner />
+    </Provider>,
+  )
+
+const cookieSettings = () =>
+  screen.queryByRole("button", { name: "Cookie settings" })
 
 describe("ConsentBanner", () => {
   let gtag: ReturnType<typeof setUpAnalyticsTest>
@@ -63,6 +83,13 @@ describe("ConsentBanner", () => {
   it("renders when GTM is configured and no decision is stored", () => {
     renderBanner()
     expect(screen.getByTestId("consent-banner")).toBeInTheDocument()
+  })
+
+  it("links the privacy policy in a new tab", () => {
+    renderBanner()
+    const link = screen.getByTestId("consent-privacy-link")
+    expect(link).toHaveAttribute("href", "/privacy")
+    expect(link).toHaveAttribute("target", "_blank")
   })
 
   it("persists the grant, updates gtag and dismisses", async () => {
@@ -122,5 +149,69 @@ describe("ConsentBanner", () => {
     expect(
       screen.getByRole("region", { name: "Analytics cookie consent" }),
     ).toBeInTheDocument()
+  })
+
+  it("reopens from Cookie settings with the stored choice still in force", async () => {
+    localStorage.setItem(CONSENT_STORAGE_KEY, "granted")
+    renderWithCookieSettings()
+    expect(screen.queryByTestId("consent-banner")).not.toBeInTheDocument()
+
+    await userEvent.click(cookieSettings() as HTMLElement)
+
+    expect(screen.getByTestId("consent-banner")).toBeInTheDocument()
+    expect(localStorage.getItem(CONSENT_STORAGE_KEY)).toBe("granted")
+  })
+
+  it("withdraws consent when Decline is chosen after reopening", async () => {
+    localStorage.setItem(CONSENT_STORAGE_KEY, "granted")
+    renderWithCookieSettings()
+    trackEvent("route_change", { page_path: "/" })
+
+    await userEvent.click(cookieSettings() as HTMLElement)
+    await userEvent.click(screen.getByTestId("consent-decline"))
+
+    expect(localStorage.getItem(CONSENT_STORAGE_KEY)).toBe("denied")
+    expect(gtag).toHaveBeenCalledWith("consent", "update", {
+      analytics_storage: "denied",
+    })
+    expect(screen.queryByTestId("consent-banner")).not.toBeInTheDocument()
+
+    trackEvent("route_change", { page_path: "/public" })
+    expect(window.dataLayer).toEqual([
+      { event: "route_change", page_path: "/" },
+    ])
+  })
+
+  it("closes a reopened notice when the /account switch decides", async () => {
+    localStorage.setItem(CONSENT_STORAGE_KEY, "granted")
+    renderWithCookieSettings()
+
+    await userEvent.click(cookieSettings() as HTMLElement)
+    // What the switch's onChange calls
+    act(() => setAnalyticsConsent("denied"))
+
+    expect(localStorage.getItem(CONSENT_STORAGE_KEY)).toBe("denied")
+    expect(screen.queryByTestId("consent-banner")).not.toBeInTheDocument()
+  })
+
+  it("hides Cookie settings when GTM is not configured", () => {
+    disableGtm()
+    renderWithCookieSettings()
+    expect(cookieSettings()).not.toBeInTheDocument()
+  })
+})
+
+describe("Cookie settings in the footers", () => {
+  beforeEach(() => {
+    setUpAnalyticsTest()
+  })
+  afterEach(tearDownAnalyticsTest)
+
+  it.each([
+    ["landing page", <Footer key="landing" />],
+    ["/public", <PublicFooter key="public" />],
+  ])("shows the link in the %s footer", (_, footer) => {
+    render(<MemoryRouter>{footer}</MemoryRouter>)
+    expect(cookieSettings()).toBeInTheDocument()
   })
 })

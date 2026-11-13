@@ -20,8 +20,9 @@ Coordinates with premium_manager which handles all compute/capacity decisions.
 
 import json
 import os
+import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Set
 
 import boto3
 import pymysql
@@ -66,12 +67,17 @@ def _premium_tg_alarm_name(tg_arn: str) -> str | None:
 
     Must match the name used at alarm creation so deletion targets it.
     """
+    tg_name = _tg_name(tg_arn)
+    if not tg_name:
+        return None
+    return f"{EnvironmentConfig.get_env_prefix()}-{tg_name}-unhealthy-hosts"
+
+
+def _tg_name(tg_arn: str) -> str | None:
     idx = tg_arn.find(":targetgroup/")
     suffix = tg_arn[idx + 1 :] if idx != -1 else tg_arn
     parts = suffix.split("/")
-    if len(parts) < 2:
-        return None
-    return f"{EnvironmentConfig.get_env_prefix()}-{parts[1]}-unhealthy-hosts"
+    return parts[1] if len(parts) >= 2 else None
 
 
 def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
@@ -89,6 +95,28 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
         print(f"[premium-alarm] action=delete name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"Warning: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
+
+
+def _delete_premium_tg(elbv2: "ElasticLoadBalancingv2Client", tg_arn: str) -> bool:
+    """Delete a premium TG, then its alarm unless a newer TG has taken its name.
+
+    The alarm is named after the TG name, and a delete may succeed for an ARN
+    that is already gone, so the alarm goes only once the name is free.
+    """
+    try:
+        elbv2.delete_target_group(TargetGroupArn=tg_arn)
+    except Exception as e:
+        print(f"Warning: Failed to delete target group {tg_arn}: {e}")
+        return False
+    try:
+        elbv2.describe_target_groups(Names=[_tg_name(tg_arn)])
+        print(f"Keeping the alarm of {tg_arn}: its name is in use again")
+    except Exception as e:
+        if "TargetGroupNotFound" in str(e):
+            _delete_premium_tg_unhealthy_alarm(tg_arn)
+        else:
+            print(f"Keeping the alarm of {tg_arn}: cannot check its name: {e}")
+    return True
 
 
 def _cleanup_assignment_alb_resources(
@@ -117,12 +145,8 @@ def _cleanup_assignment_alb_resources(
         and target_group_arn.lower() != PremiumAssignment.STANDBY
         and target_group_arn != autoscaling_tg_arn
     ):
-        try:
-            _delete_premium_tg_unhealthy_alarm(target_group_arn)
-            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+        if _delete_premium_tg(elbv2, target_group_arn):
             print(f"Deleted target group for user {user_id}: {target_group_arn}")
-        except Exception as e:
-            print(f"Warning: Failed to delete target group {target_group_arn}: {e}")
     elif target_group_arn == autoscaling_tg_arn:
         print(
             f"Skipping deletion of shared autoscaling "
@@ -204,6 +228,77 @@ def with_transaction(func):
                 raise e
 
     return wrapper
+
+
+def get_assign_claimed_user_ids() -> Set[int]:
+    """User ids with an assign in flight; raises on DB error (callers fail closed)."""
+    with get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT user_id FROM premium_assign_claims
+                   WHERE expires_at >= NOW()"""
+            )
+            return {row["user_id"] for row in cursor.fetchall()}
+
+
+_PREMIUM_TG_NAME_RE = re.compile(r":targetgroup/premium-(\d+)-tg/")
+_PREMIUM_TG_FULL_NAME_RE = re.compile(r"^premium-([1-9]\d*)-tg$")
+MAX_RULELESS_TG_DELETES_PER_RUN = 20
+
+
+def _list_premium_target_groups(
+    elbv2: "ElasticLoadBalancingv2Client", vpc_id: str
+) -> List[tuple]:
+    """(user_id, TG) for every premium-<id>-tg in this environment's VPC."""
+    groups = []
+    for page in elbv2.get_paginator("describe_target_groups").paginate():
+        for tg in page.get("TargetGroups", []):
+            match = _PREMIUM_TG_FULL_NAME_RE.match(tg.get("TargetGroupName", ""))
+            if match and tg.get("VpcId") == vpc_id:
+                groups.append((int(match.group(1)), tg))
+    return groups
+
+
+def _delete_ruleless_target_groups(
+    elbv2: "ElasticLoadBalancingv2Client",
+    tg_snapshot: List[tuple],
+    keep_user_ids: Set[int],
+    claimed_user_ids: Set[int],
+) -> int:
+    """Delete snapshot TGs no rule forwards to and no row or claim owns."""
+    candidates = [
+        tg["TargetGroupArn"]
+        for user_id, tg in tg_snapshot
+        if not tg.get("LoadBalancerArns")
+        and user_id not in keep_user_ids
+        and user_id not in claimed_user_ids
+    ]
+    if len(candidates) > MAX_RULELESS_TG_DELETES_PER_RUN:
+        print(
+            f"Rule-less TG sweep capped: "
+            f"{len(candidates) - MAX_RULELESS_TG_DELETES_PER_RUN} left for later runs"
+        )
+    deleted = 0
+    for tg_arn in candidates[:MAX_RULELESS_TG_DELETES_PER_RUN]:
+        print(f"Deleting rule-less target group: {tg_arn}")
+        deleted += _delete_premium_tg(elbv2, tg_arn)
+    return deleted
+
+
+def _rule_may_belong_to_inflight_assign(
+    rule: Dict[str, Any],
+    claimed_user_ids: Set[int],
+) -> bool:
+    """A claimed user's premium-<id>-tg rule, or a user-less rule during any claim."""
+    if not claimed_user_ids:
+        return False
+    for action in rule.get("Actions", []):
+        if action.get("Type") != "forward":
+            continue
+        match = _PREMIUM_TG_NAME_RE.search(action.get("TargetGroupArn") or "")
+        if not match or int(match.group(1)) in claimed_user_ids:
+            return True
+    return False
 
 
 def get_assigned_users_for_instance(instance_id: str) -> List[str]:
@@ -440,6 +535,28 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
 
         print(f"Found {len(premium_rules)} premium user ALB rules")
 
+        # TG creation must stay inside the assign claim: TGs are listed before claims
+        tg_error = None
+        try:
+            tg_snapshot = _list_premium_target_groups(
+                elbv2, get_required_env_var("VPC_ID")
+            )
+        except Exception as e:
+            print(f"Skipping rule-less TG sweep: cannot list target groups: {e}")
+            tg_snapshot, tg_error = [], str(e)
+
+        # Claims before the keep-set: an assign stores its row before dropping its claim
+        try:
+            claimed_user_ids = get_assign_claimed_user_ids()
+        except Exception as claim_error:
+            print(f"Skipping orphan cleanup: cannot read assign claims: {claim_error}")
+            return {
+                "orphaned_rules_deleted": 0,
+                "orphaned_target_groups_deleted": 0,
+                "error": f"assign claims unavailable: {claim_error}",
+            }
+        autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
+
         # Keep-set: ACTIVE/MIGRATING/TERMINATING (statuses that can own a live
         # rule) plus any row touched within the grace window. TERMINATING
         # aliases PENDING_RELEASE, so an ACTIVE-only filter would reap a rule
@@ -474,19 +591,20 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
             if a["alb_rule_arn"] and a["alb_rule_arn"].startswith("arn:")
         }
         print(f"Found {len(db_rule_arns)} keep-set assignments in database")
+        # By user id too: a pool migration creates the TG before the row points at it
+        keep_user_ids = {
+            int(a["user_id"]) for a in db_assignments if a["user_id"] is not None
+        }
 
         # Find orphaned rules (in ALB but not in database)
-        orphaned_rules = [
-            rule for rule in premium_rules if rule["RuleArn"] not in db_rule_arns
-        ]
-
-        if not orphaned_rules:
-            print("No orphaned ALB resources found")
-            return {
-                "orphaned_rules_deleted": 0,
-                "orphaned_target_groups_deleted": 0,
-                "message": "No orphaned resources to clean",
-            }
+        orphaned_rules = []
+        for rule in premium_rules:
+            if rule["RuleArn"] in db_rule_arns:
+                continue
+            if _rule_may_belong_to_inflight_assign(rule, claimed_user_ids):
+                print(f"Keeping rule {rule['RuleArn']}: an assign is in flight")
+                continue
+            orphaned_rules.append(rule)
 
         print(f"Found {len(orphaned_rules)} orphaned ALB rules to clean up")
 
@@ -514,15 +632,10 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 print("Deleted ALB rule")
 
                 # Delete the target group if it exists (skip shared autoscaling TG)
-                autoscaling_tg_arn = os.environ.get("AUTOSCALING_TARGET_GROUP_ARN")
                 if target_group_arn and target_group_arn != autoscaling_tg_arn:
-                    try:
-                        _delete_premium_tg_unhealthy_alarm(target_group_arn)
-                        elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+                    if _delete_premium_tg(elbv2, target_group_arn):
                         target_groups_deleted += 1
                         print(f"Deleted target group: {target_group_arn}")
-                    except Exception as tg_error:
-                        print(f"Warning: Failed to delete target group: {tg_error}")
                 elif target_group_arn == autoscaling_tg_arn:
                     print(
                         f"Skipping deletion of shared autoscaling "
@@ -533,18 +646,28 @@ def cleanup_orphaned_alb_resources() -> Dict[str, Any]:
                 print(f"Error deleting orphaned rule {rule_arn}: {e}")
                 # Continue with other rules
 
-        print(
-            f"Orphaned resource cleanup complete: {rules_deleted} rules, "
-            f"{target_groups_deleted} target groups deleted"
+        ruleless_deleted = _delete_ruleless_target_groups(
+            elbv2, tg_snapshot, keep_user_ids, claimed_user_ids
         )
 
-        return {
+        print(
+            f"Orphaned resource cleanup complete: {rules_deleted} rules, "
+            f"{target_groups_deleted} target groups, "
+            f"{ruleless_deleted} rule-less target groups deleted"
+        )
+
+        result = {
             "orphaned_rules_deleted": rules_deleted,
             "orphaned_target_groups_deleted": target_groups_deleted,
+            "ruleless_target_groups_deleted": ruleless_deleted,
             "total_orphaned": len(orphaned_rules),
-            "message": f"Cleaned {rules_deleted} orphaned ALB rules and "
-            f"{target_groups_deleted} target groups",
+            "message": f"Cleaned {rules_deleted} orphaned ALB rules, "
+            f"{target_groups_deleted} target groups and "
+            f"{ruleless_deleted} rule-less target groups",
         }
+        if tg_error:
+            result["ruleless_tg_error"] = tg_error
+        return result
 
     except Exception as e:
         print(f"Error during orphaned resource cleanup: {str(e)}")
@@ -598,6 +721,20 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                     rules_by_routing_id[routing_id] = []
                 rules_by_routing_id[routing_id].append(rule)
 
+        # Claims before the keep-set: an assign stores its row before dropping its claim
+        try:
+            claimed_user_ids = get_assign_claimed_user_ids()
+        except Exception as claim_error:
+            print(
+                f"Skipping duplicate cleanup: cannot read assign claims: "
+                f"{claim_error}"
+            )
+            return {
+                "duplicates_deleted": 0,
+                "target_groups_deleted": 0,
+                "error": f"assign claims unavailable: {claim_error}",
+            }
+
         # Get all active assignments from database to know which rules to keep
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
@@ -634,6 +771,9 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                 if rule_arn in db_rule_arns:
                     print(f"Keeping rule {rule_arn} (in database)")
                     continue
+                if _rule_may_belong_to_inflight_assign(rule, claimed_user_ids):
+                    print(f"Keeping rule {rule_arn}: an assign is in flight")
+                    continue
 
                 # Delete this duplicate rule
                 try:
@@ -648,18 +788,9 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
                     for action in rule.get("Actions", []):
                         if action.get("Type") == "forward":
                             tg_arn = action.get("TargetGroupArn")
-                            if tg_arn:
-                                try:
-                                    _delete_premium_tg_unhealthy_alarm(tg_arn)
-                                    elbv2.delete_target_group(TargetGroupArn=tg_arn)
-                                    target_groups_deleted += 1
-                                    print(f"Deleted target group {tg_arn}")
-                                except Exception as tg_error:
-                                    # Target group might be in use by another rule
-                                    print(
-                                        f"Could not delete target group : "
-                                        f"{tg_arn}: {tg_error}"
-                                    )
+                            if tg_arn and _delete_premium_tg(elbv2, tg_arn):
+                                target_groups_deleted += 1
+                                print(f"Deleted target group {tg_arn}")
 
                 except Exception as e:
                     print(f"Failed to delete rule {rule_arn}: {e}")
@@ -686,11 +817,15 @@ def cleanup_duplicate_alb_rules() -> Dict[str, Any]:
         }
 
 
-def get_all_premium_instances_with_states():
+def get_all_premium_instances_with_states(raise_on_error: bool = False):
     """Get all premium instances with their AWS states.
 
     Filters by environment prefix (ENV_PREFIX) to prevent cross-environment
     contamination (e.g., development Lambda discovering production instances).
+
+    On an EC2 error, returns [] unless raise_on_error is set. A caller that
+    deletes rows for instances missing from the result must set it: [] would
+    read as "no premium instance exists".
     """
     ec2: "EC2Client" = boto3.client("ec2")
     env_prefix = PremiumInstanceConfig.get_env_prefix()
@@ -791,6 +926,8 @@ def get_all_premium_instances_with_states():
         return instances
     except Exception as e:
         print(f"Error getting premium instances: {str(e)}")
+        if raise_on_error:
+            raise
         return []
 
 
@@ -933,8 +1070,9 @@ def reconcile_instance_states() -> Dict[str, Any]:
     Moved from premium_manager as this is maintenance, not real-time operation
     """
     try:
-        # Get all instances from AWS using dynamic tag-based discovery
-        all_instances = get_all_premium_instances_with_states()
+        # Get all instances from AWS using dynamic tag-based discovery.
+        # Raises on an EC2 error, so no row is deleted on a failed discovery.
+        all_instances = get_all_premium_instances_with_states(raise_on_error=True)
 
         aws_instance_map = {}
         for instance in all_instances:
@@ -973,6 +1111,26 @@ def _reconcile_instance_states_transaction(
             (PremiumAssignment.ACTIVE,),
         )
         db_assignments = cursor.fetchall()
+
+        # No instance discovered while rows point at real instances is more
+        # likely a discovery fault (a changed tag or filter) than every
+        # instance gone; deleting would drop every assignment and its routing.
+        if not aws_instance_map and any(
+            a["instance_id"] != PremiumAssignment.AUTOSCALING_POOL
+            for a in db_assignments
+        ):
+            print(
+                f"Skipping reconciliation: no premium instance discovered, "
+                f"but {len(db_assignments)} active assignments exist"
+            )
+            return {
+                "skipped": True,
+                "reason": "no_instances_discovered",
+                "cleanup_count": 0,
+                "update_count": 0,
+                "total_aws_instances": 0,
+                "total_db_assignments": len(db_assignments),
+            }
 
         for assignment in db_assignments:
             assignment_id = assignment["id"]
@@ -1655,6 +1813,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         total_operations = (
             results["cleanup_stats"].get("cleaned_assignments", 0)
             + results["orphaned_cleanup_stats"].get("orphaned_rules_deleted", 0)
+            + results["orphaned_cleanup_stats"].get("ruleless_target_groups_deleted", 0)
             + results["duplicate_cleanup_stats"].get("duplicates_deleted", 0)
             + results["reconciliation_stats"].get("cleanup_count", 0)
             + results["reconciliation_stats"].get("update_count", 0)

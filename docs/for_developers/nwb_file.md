@@ -10,6 +10,14 @@
     - [Optical Channel](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.OpticalChannel)
     - [Device object](https://pynwb.readthedocs.io/en/stable/pynwb.file.html#pynwb.file.NWBFile.create_device)
 
+## Array orientation
+
+- `FluoData` / `SpikingActivityData` in memory: `(roi, time)`, matching Suite2p `F` and CaImAn `C`.
+- `Fluorescence` / `RoiResponseSeries` written to NWB: `(time, roi)`, the NWB convention. Writers pass the `(roi, time)` array as is; `NWBCreater.fluorescence` transposes the axis whose length matches the `rois` region, so configs replayed from older pickles land in the same orientation. `fluo_from_hdf5` transposes back on load.
+- `ImageData`: `(time, y, x)`.
+- ROI tables (`PlaneSegmentation`): one `pixel_mask` row per pixel of each ROI, `(row, column, weight)`, for every ROI node. pynwb names these fields `x`, `y`, `weight`: `x` holds the row (the image's first axis) and `y` the column, as suite2p writes them. A reader that takes `x` as the horizontal axis, as pynwb's own `PlaneSegmentation.pixel_to_image` does, gets transposed ROIs. Files written before held a dense `(roi, row, column)` `image_mask` instead for CaImAn, LCCD and vacant ROI.
+- With the NWB setting `ophys.plane_segmentation.save_image_mask` on (off by default), every ROI table also holds a dense float32 `image_mask` per ROI, `(roi, row, column)`, beside its `pixel_mask`: the same values the earlier files held for CaImAn, LCCD and vacant ROI. It is drawn from the pixel masks as the file is written, a few ROIs at a time (`ImageMasks` in `nwb_creater.py`), so node pickles keep the pixel lists only and memory never holds all the masks; the file grows by ROIs × height × width × 4 bytes. Every rewrite of `whole.nwb` writes the masks again, its temporary copy holding them twice on disk for a moment, and a data filter adds a `filtered_<node>` ROI table with masks of its own, the same size again.
+- `<node>_all_roi_label_img`: the all-ROI label image, `(1, row, column)`: each pixel holds the highest ROI index covering it, NaN where none does. Files written before held a per-ROI stack, `(roi, row, column)`, under `<node>_all_roi_img` instead.
 
 ## Suite2p
 
@@ -35,8 +43,10 @@ No access to NWB file
 #### Function Output
 
 info = {
+    'meanImg': ImageData(ops['meanImg'], file_name='meanImg'),
     'refImg': ImageData(ops['refImg'], file_name='refImg'),
     'meanImgE': ImageData(ops['meanImgE'], file_name='meanImgE'),
+    'mc_images': ImageData(mc_images_tif_path, file_name='mc_images'),
     'ops': Suite2pData(ops, file_name='ops'),
 }
 
@@ -47,17 +57,17 @@ info = {
 - [ophys](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule)
   - [ImageSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.data_interfaces)
     - [PlaneSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation)
-      - [pixel_mask](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html#suite2p.extraction.extract.create_masks_and_extract)
+      - [pixel_mask](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html): ypix, xpix, lam of each `stat` entry from `extraction_wrapper`
       - [columns](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation): 'iscell'
         - [description]: 'two columns - iscell & probcell'
         - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.classification.html#suite2p.classification.classify.classify)
   - [Fluorescence](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.Fluorescence)
     - [Fluorescence](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.RoiResponseSeries)
-      - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html#suite2p.extraction.extract.create_masks_and_extract):F
+      - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html): F from `extraction_wrapper`
       - [rois](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation.create_roi_table_region)
   - [Neuropil](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.Fluorescence)
     - [Neuropil](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.RoiResponseSeries)
-      - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html#suite2p.extraction.extract.create_masks_and_extract):F_neu
+      - [data](https://suite2p.readthedocs.io/en/latest/api/suite2p.extraction.html): Fneu from `extraction_wrapper`
       - [rois](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation.create_roi_table_region)
 
 #### Function Output
@@ -68,11 +78,14 @@ info = {
     'Vcorr': ImageData(ops['Vcorr'], file_name='Vcorr'),
     'fluorescence': FluoData(F, file_name='fluorescence'),
     'iscell': IscellData(iscell, file_name='iscell'),
-    'all_roi': RoiData(np.nanmax(im, axis=0), file_name='all_roi'),
-    'non_cell_roi': RoiData(np.nanmax(im[~iscell], axis=0), file_name='noncell_roi'),
-    'cell_roi': RoiData(np.nanmax(im[iscell], axis=0), file_name='cell_roi'),
+    'all_roi': RoiData(roi_images['all'], file_name='all_roi'),
+    'non_cell_roi': RoiData(roi_images['non_cell'], file_name='noncell_roi'),
+    'cell_roi': RoiData(roi_images['cell'], file_name='cell_roi'),
+    'edit_roi_data': EditRoiData(images=ImageData(ops['file_list']), roi_masks=roi_masks),
     'nwbfile': nwbfile,
 }
+
+`roi_masks` holds each ROI's pixels (`RoiMasks`, built from `stat`), `roi_images` the all / cell / non-cell label images built from the same pixel lists. The NWB `all_roi_label_img` is the all-ROI label image, as one (1, height, width) layer: each pixel holds the highest ROI index covering it, NaN where none does. Files written before held one layer per ROI under `all_roi_img` instead.
 
 ### suite2p_spike_deconv
 
@@ -90,7 +103,7 @@ info = {
 
 info = {
     'ops': Suite2pData(ops),
-    'spks': FluoData(spks, file_name='spks'),
+    'spks': SpikingActivityData(spks, file_name='spks'),
     'nwbfile': nwbfile
 }
 
@@ -113,6 +126,7 @@ info = {
 info = {
     'mc_images': mc_images,
     'meanImg': ImageData(meanImg, file_name='meanImg'),
+    'refImg': ImageData(refImg, file_name='refImg'),
     'rois': RoiData(rois, file_name='rois'),
     'nwbfile': nwbfile,
 }
@@ -124,7 +138,7 @@ info = {
 - [ophys](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule)
   - [ImageSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.data_interfaces)
     - [PlaneSegmentation](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation)
-      - [image_mask](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.estimates.Estimates)
+      - [pixel_mask](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.estimates.Estimates): (row, column, weight) of each component's non-zero pixels in `estimates.A`
       - [columns](https://pynwb.readthedocs.io/en/stable/pynwb.ophys.html#pynwb.ophys.PlaneSegmentation): 'iscell'
         - [description]: 'two columns - iscell & probcell'
         - [data](https://caiman.readthedocs.io/en/latest/core_functions.html#caiman.source_extraction.cnmf.cnmf.CNMF.fit)
@@ -141,6 +155,7 @@ info = {
 
 info = {
     'images': ImageData(np.array(Cn * 255, dtype=np.uint8), file_name='images'),
+    'meanImg': ImageData(meanImg.astype(np.float32), file_name='meanImg'),
     'fluorescence': FluoData(fluorescence, file_name='fluorescence'),
     'iscell': IscellData(iscell, file_name='iscell'),
     'all_roi': RoiData(all_roi, file_name='all_roi'),
@@ -230,23 +245,27 @@ save_data=['ops', 'fluorescence', 'all_roi', 'non_cell_roi', 'cell_roi'],
 ##### NWB Output
 
 - [optinist](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule)
-  - [mean](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container)
-  - [sem](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container)
-  - [num_sample](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container)
+  - [mean](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container): (cell, window) event-triggered average
+  - [std](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container): sample standard deviation across events (ddof 1); NaN when only one event was averaged
+  - [sem](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container): std / sqrt(num_sample)
+  - [num_sample](https://pynwb.readthedocs.io/en/stable/pynwb.base.html#pynwb.base.ProcessingModule.add_container): number of events actually averaged, after dropping events whose window crosses the recording edge and, for 'up' and 'down', events of a non-modal length
 
 ##### Function Output
 
 info['mean'] = TimeSeriesData(
     mean,
-    std=sem,
-    index=list(np.arange(params['pre_event'], params['post_event'])),
+    std=std,
+    sem=sem,
+    index=list(range(pre_event, post_event + trigger_len)),
     cell_numbers=cell_numbers if iscell is not None else None,
     file_name='mean'
 )
 info['mean_heatmap'] = HeatMapData(
     norm_mean,
-    columns=list(np.arange(params['pre_event'], params['post_event'])),
-    file_name='mean_heatmap'
+    columns=list(np.arange(pre_event, post_event + trigger_len)),
+    index=list(cell_numbers) if iscell is not None else None,
+    file_name='mean_heatmap',
+    meta=PlotMetaData(yaxis_type='category'),
 )
 info['nwbfile'] = nwbfile
 

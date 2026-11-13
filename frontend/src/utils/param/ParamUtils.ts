@@ -1,4 +1,7 @@
+import type { OptionsObject, SnackbarKey } from "notistack"
+
 import {
+  NodeParamChange,
   ParamDTO,
   ParamChild,
   ParamParent,
@@ -151,4 +154,84 @@ export function formatParamsForDisplay(
   }
 
   return formatted
+}
+
+// The backend's has_outdated_shape: such a tree is left for it to refuse
+export function hasOutdatedShape(saved: ParamMap, defaults: ParamMap): boolean {
+  const savedKeys = Object.keys(saved)
+  const unknown = savedKeys.filter((key) => !(key in defaults))
+  if (unknown.length === 0) return false
+  const noOverlap = unknown.length === savedKeys.length
+  const nested = new Set(nestedKeys(defaults))
+  const movedKey = unknown.some((key) => nested.has(key))
+  const replacedGroup =
+    unknown.some((key) => isParamParent(saved[key])) &&
+    Object.entries(defaults).some(
+      ([key, param]) => isParamParent(param) && !(key in saved),
+    )
+  return noOverlap || movedKey || replacedGroup
+}
+
+function nestedKeys(map: ParamMap): string[] {
+  return Object.values(map).flatMap((param) =>
+    isParamParent(param)
+      ? [...Object.keys(param.children), ...nestedKeys(param.children)]
+      : [],
+  )
+}
+
+/** Drop the keys the defaults lost and add the ones they gained, in their order */
+export function reconcileParamMap(
+  saved: ParamMap,
+  defaults: ParamMap,
+): { params: ParamMap; added: string[]; removed: string[] } {
+  const added: string[] = []
+  const removed: string[] = []
+  const walk = (s: ParamMap, d: ParamMap, prefix: string[]): ParamMap => {
+    Object.entries(s).forEach(([key, sParam]) => {
+      if (d[key] == null || d[key].type !== sParam.type) {
+        removed.push(prefix.concat(key).join(PATH_SEPARATOR))
+      }
+    })
+    const out: ParamMap = {}
+    Object.entries(d).forEach(([key, dParam]) => {
+      const sParam = s[key]
+      if (sParam == null || sParam.type !== dParam.type) {
+        added.push(prefix.concat(key).join(PATH_SEPARATOR))
+        out[key] = dParam
+      } else if (isParamParent(sParam) && isParamParent(dParam)) {
+        out[key] = {
+          type: "parent",
+          children: walk(sParam.children, dParam.children, prefix.concat(key)),
+        }
+      } else {
+        out[key] = sParam
+      }
+    })
+    return out
+  }
+  return { params: walk(saved, defaults, []), added, removed }
+}
+
+export function describeNodeParamChanges(changes: NodeParamChange[]): string {
+  return changes
+    .map(({ name, added, removed }) => {
+      const parts = [
+        added.length > 0 ? `added: ${added.join(", ")}` : null,
+        removed.length > 0 ? `removed: ${removed.join(", ")}` : null,
+      ].filter((part) => part != null)
+      return `${name} (${parts.join("; ")})`
+    })
+    .join(" / ")
+}
+
+export function notifyParamChanges(
+  changes: NodeParamChange[] | undefined,
+  enqueueSnackbar: (message: string, options?: OptionsObject) => SnackbarKey,
+): void {
+  if (changes == null || changes.length === 0) return
+  enqueueSnackbar(
+    `Parameters updated to the current version: ${describeNodeParamChanges(changes)}`,
+    { variant: "info", autoHideDuration: 15000 },
+  )
 }

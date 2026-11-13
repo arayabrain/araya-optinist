@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 class RoiPos(BaseModel):
     posx: int
     posy: int
-    sizex: int
-    sizey: int
+    sizex: int = Field(ge=1)
+    sizey: int = Field(ge=1)
 
 
 class RoiList(BaseModel):
@@ -18,3 +18,4 @@ class RoiStatus(BaseModel):
     temp_add_roi: List[Union[int, float]]
     temp_merge_roi: List[Union[int, float]]
     temp_delete_roi: List[Union[int, float]]
+    temp_promote_roi: List[Union[int, float]] = []

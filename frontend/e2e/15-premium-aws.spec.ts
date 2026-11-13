@@ -465,8 +465,9 @@ test.afterAll(async () => {
         `the lane finished with ${user.email} still assigned`,
       ).toBeNull()
       // The ALB half of the invariant: a hard release can delete the row and
-      // rule but fail the TG deletion, stranding a rule-less TG no sweep can
-      // find (issue #814) - so only a genuine NotFound counts as absence.
+      // rule but fail the TG deletion, stranding a rule-less TG the hourly
+      // cleanup removes only later (issue #814) - so only a genuine NotFound
+      // counts as absence.
       const me = await api.get("/users/me", {
         headers,
         timeout: STATUS_REQUEST_TIMEOUT_MS,
@@ -1528,7 +1529,7 @@ test("PREM-10 - Terminating a premium instance reconciles its database row away 
 })
 
 // Row 6204: two premium users assigning at the same moment must not corrupt the
-// pool. TestConcurrentAssignLock and the GET_LOCK integration lane pin the lock
+// pool. TestConcurrentAssignClaim and the real-MySQL claim lane pin the claim
 // itself; what is unproven is the end state on the real cascade, where every
 // contended assign now falls through to a tier the row's literal "same instance,
 // one shared" outcome never describes (the sheet's own [FLAG: codebase]). So

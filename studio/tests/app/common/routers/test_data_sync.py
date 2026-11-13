@@ -1090,6 +1090,7 @@ class TestInputDataSync:
                 MagicMock(),
                 current_user=MagicMock(id=1),
                 remote_bucket_name="bucket-under-test",
+                db=MagicMock(),
             )
 
         assert calls == ["sync", "run"]

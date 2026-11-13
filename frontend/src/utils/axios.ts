@@ -7,11 +7,18 @@ import axiosLibrary, {
 import { refreshTokenApi } from "api/auth/Auth"
 import { API_TIMEOUT, BASE_URL } from "const/API"
 import { RoutingHeaders } from "const/Subscription"
-import { getExToken, getToken, logout, saveToken } from "utils/auth/AuthUtils"
+import {
+  getExToken,
+  getToken,
+  logout,
+  restoreSession,
+  saveToken,
+} from "utils/auth/AuthUtils"
 import {
   isDataviewPublicOutputsRequest,
   DATAVIEW_PUBLIC_REQUEST_KEY,
 } from "utils/DataviewUtils"
+import { reloadIfUnderMaintenance } from "utils/maintenance"
 import {
   routingService,
   type PremiumUnreachableDetail,
@@ -38,8 +45,11 @@ const axios = axiosLibrary.create({
 
 axios.interceptors.request.use(
   async (config) => {
-    // Add authentication headers (skip if null to avoid "Bearer null")
-    const token = getToken()
+    // Add authentication headers (skip if null to avoid "Bearer null").
+    // After a reload the token is restored from the refresh cookie first.
+    const token =
+      getToken() ??
+      (config.url?.startsWith("/auth/") ? null : await restoreSession())
     const exToken = getExToken()
 
     if (token) {
@@ -429,6 +439,16 @@ axios.interceptors.response.use(
     const is502or503 =
       error?.response?.status === 502 || error?.response?.status === 503
     const isNetworkError = !error?.response && !!error?.config
+
+    // From www the CORS-less maintenance 503 arrives as a network error.
+    if (
+      (error?.response?.status === 503 ||
+        (isNetworkError && !axiosLibrary.isCancel(error))) &&
+      (await reloadIfUnderMaintenance())
+    ) {
+      return new Promise(() => {})
+    }
+
     if (
       (is502or503 || isNetworkError) &&
       routingService.requiresPremiumRouting()

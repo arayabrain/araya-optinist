@@ -13,8 +13,12 @@ import {
   ensurePublishableAccount,
   ensurePublishedRecord,
   findDataviewRecord,
+  dataviewRecord,
   setPublished,
+  filterColumn,
   filterWorkspace,
+  filterPublicToRecord,
+  publicRow,
   openWorkspace,
   apiUrl,
   RUN_TEST_TIMEOUT_MS,
@@ -167,21 +171,11 @@ test.describe("Private Dataview @slow", () => {
 
   // The grid filters server-side via per-column menus (no global search
   // box): header menu → Filter → debounced value input
-  async function applyColumnFilter(page: Page, field: string, value: string) {
-    const header = page.locator(
-      `.MuiDataGrid-columnHeader[data-field="${field}"]`,
-    )
-    await header.hover()
-    await header.locator(".MuiDataGrid-menuIcon button").click()
-    await page.getByRole("menuitem", { name: /^filter$/i }).click()
-    await page.locator(".MuiDataGrid-filterForm input").last().fill(value)
-  }
-
   const rowCount = (page: Page) =>
     page.locator('[role="grid"] [role="row"]').count()
 
   async function filterByColumn(page: Page, field: string, value: string) {
-    await applyColumnFilter(page, field, value)
+    await filterColumn(page, field, value)
     await expect(async () => {
       expect(await rowCount(page)).toBe(2) // header + 1 match
     }).toPass({ timeout: 15_000 })
@@ -284,18 +278,30 @@ test.describe("Private Dataview @slow", () => {
   })
 
   test("DV-05 - Change page size", async ({ page }) => {
-    // Custom pagination: a native <select name="limit"> (10/50/100)
+    // Custom pagination: a native <select name="limit"> (10/50/100, default 50)
     const limitSelect = page.locator('select[name="limit"]')
-    const refetch = page.waitForResponse(
-      (r) => r.url().includes("/api/dataview") && r.url().includes("limit=10"),
-    )
-    await limitSelect.selectOption("10")
-    const { items } = (await (await refetch).json()) as { items: unknown[] }
-    await expect(limitSelect).toHaveValue("10")
-    // The selector reading 10 only proves the control moved, so the page size
-    // is asserted on the response: the DataGrid virtualizes, and a grid holding
-    // 50 records can render fewer than 10 row elements.
-    expect(items.length).toBeLessThanOrEqual(10)
+    // The DataGrid virtualizes, so rendered rows cannot be counted and the page
+    // size is asserted on the request and its response instead. The fixture
+    // holds two records, so the slice itself is only provable once total
+    // exceeds a limit; the echoed limit proves the query carried it. 10 goes
+    // first: the page opens at the default 50, so 50 first would not refetch.
+    for (const limit of ["10", "50", "100"]) {
+      const refetch = page.waitForResponse(
+        (r) =>
+          r.ok() &&
+          r.url().includes("/api/dataview") &&
+          new URL(r.url()).searchParams.get("limit") === limit,
+      )
+      await limitSelect.selectOption(limit)
+      const body = (await (await refetch).json()) as {
+        items: unknown[]
+        total: number
+        limit: number
+      }
+      await expect(limitSelect).toHaveValue(limit)
+      expect(body.limit).toBe(Number(limit))
+      expect(body.items.length).toBe(Math.min(Number(limit), body.total))
+    }
     await expect(page.locator('[role="grid"] [role="row"]').nth(1)).toBeVisible(
       { timeout: 15_000 },
     )
@@ -337,9 +343,11 @@ test.describe("Private Dataview @slow", () => {
       .first()
     await expect(celloutput).toBeVisible({ timeout: 30_000 })
     await celloutput.click()
-    await expect(page.locator('[role="dialog"]')).toBeVisible({
-      timeout: 10_000,
-    })
+    const dialog = page.locator('[role="dialog"]')
+    await expect(dialog).toBeVisible({ timeout: 10_000 })
+    // Any dialog on the page satisfies [role=dialog]; the title is what makes
+    // this the outputs dialog rather than a confirm or an attribute popup
+    await expect(dialog.getByText("Workflow Outputs")).toBeVisible()
   })
 
   test("DV-08 - Details dialog opens and closes", async ({ page }) => {
@@ -351,8 +359,10 @@ test.describe("Private Dataview @slow", () => {
       .click()
     const dialog = page.locator('[role="dialog"]')
     await expect(dialog).toBeVisible({ timeout: 10_000 })
+    await expect(dialog.getByText("Workflow Details")).toBeVisible()
 
-    await page.keyboard.press("Escape")
+    // The row's second half closes it by its own button, not by Escape
+    await dialog.getByRole("button", { name: "Close" }).click()
     await expect(dialog).toBeHidden({ timeout: 5_000 })
     await expect(page.locator('[role="grid"]')).toBeVisible()
   })
@@ -402,23 +412,18 @@ test.describe("Private Dataview @slow", () => {
     if (checked !== on) await setPublish(page, name, on)
   }
 
-  const publicNameCell = (page: Page, name: string) =>
-    page
-      .locator('.MuiDataGrid-cell[data-field="name"]')
-      .getByText(name, { exact: true })
-
   test("DV-14 - Publish lists the record publicly; unpublish removes it", async ({
     page,
   }) => {
     await ensurePublish(page, "Tutorial1", false)
     await setPublish(page, "Tutorial1", true)
+    const record = await dataviewRecord(page, "Tutorial1")
 
     // Listed on the public dataview (S3 sync stays manual — the listing
     // gates on publish_status only)
     await page.goto("/public")
-    await expect(publicNameCell(page, "Tutorial1")).toBeVisible({
-      timeout: 15_000,
-    })
+    expect(await filterPublicToRecord(page, record)).toHaveLength(1)
+    await expect(publicRow(page, record)).toBeVisible({ timeout: 15_000 })
 
     // Unpublish removes it from the public page
     await page.goto(`/dataview/${dataviewId}`)
@@ -429,20 +434,21 @@ test.describe("Private Dataview @slow", () => {
     await expect(
       page.locator('.MuiDataGrid-columnHeader[data-field="name"]'),
     ).toBeVisible({ timeout: 15_000 })
-    await expect(publicNameCell(page, "Tutorial1")).toHaveCount(0)
+    expect(await filterPublicToRecord(page, record)).toHaveLength(0)
+    await expect(publicRow(page, record)).toHaveCount(0)
   })
 
   test("DV-17 - Public dataview filters by workspace", async ({ page }) => {
     await ensurePublish(page, "Tutorial1", true)
+    const record = await dataviewRecord(page, "Tutorial1")
     await page.goto("/public")
-    await expect(publicNameCell(page, "Tutorial1")).toBeVisible({
-      timeout: 15_000,
-    })
+    expect(await filterPublicToRecord(page, record)).toHaveLength(1)
+    await expect(publicRow(page, record)).toBeVisible({ timeout: 15_000 })
 
+    // The workspace filter replaces the uid one - the grid holds a single
+    // filter item
     await filterWorkspace(page, DATA_WS)
-    await expect(publicNameCell(page, "Tutorial1")).toBeVisible({
-      timeout: 15_000,
-    })
+    await expect(publicRow(page, record)).toBeVisible({ timeout: 15_000 })
     // Re-read until the grid has re-fetched: the filter is applied
     // asynchronously, so a single read can still sample the pre-filter rows.
     // Iterating an empty list asserts nothing, so the rows are counted first
@@ -697,9 +703,9 @@ test.describe("Public Dataview", () => {
       await ensurePublishedRecord(publisherPage, BASE_RECORD)
 
       // A record whose PNG generation failed falls back to its source TIFF,
-      // which the grid renders through ImagePlotSimpleWithLoading and never
-      // requests a thumbnail for. Without this the ladder below blames the ALB
-      // rule for a bad fixture.
+      // which the grid renders through ImagePlotSimple and never requests a
+      // thumbnail for. Without this the ladder below blames the ALB rule for a
+      // bad fixture.
       const published = await findDataviewRecord(publisherPage, BASE_RECORD)
       expect(
         published?.thumbnails?.image_url ?? "",

@@ -15,7 +15,7 @@ def SVM(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(score=BarData):
     # modules specific to function
     import numpy as np
     from sklearn import svm

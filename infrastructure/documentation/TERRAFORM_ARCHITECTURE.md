@@ -76,7 +76,7 @@ When you run `terraform destroy`, only the AWS resources managed by Terraform ar
 | Lambda functions and layers              | AWS IAM user credentials (if saved locally)                   |
 | Secrets Manager secrets                  |                                                               |
 | CloudWatch log groups, alarms, dashboard |                                                               |
-| IAM roles, policies, user                |                                                               |
+| IAM roles and policies                   |                                                               |
 | Security groups                          |                                                               |
 | Route53/ACM (production only)            |                                                               |
 
@@ -97,7 +97,56 @@ These variables control environment-specific behavior:
 | `frontend_domain`       | string | Custom domain                   | `"araya-optinist.com"` | `""` (uses ALB DNS)           |
 | `frontend_protocol`     | string | HTTP or HTTPS                   | `"https"`              | `"http"`                      |
 | `frontend_port`         | string | Listener port                   | `"443"`                | `"80"`                        |
+| `asg_min_size`          | number | Min ASG instances               | `1`                    | `1`                           |
 | `asg_max_size`          | number | Max ASG instances               | `3`                    | `2`                           |
+| `asg_desired_capacity`  | number | Initial ASG instances           | `1`                    | `1`                           |
+
+### Free-Tier ASG Capacity (`asg_min_size` / `asg_max_size` / `asg_desired_capacity`)
+
+The ASG carries `ignore_changes = [desired_capacity]`, and
+`aws_ecs_service.autoscaling` the same on its `desired_count`, because both are
+written at runtime and Terraform must not fight them. The two are written by
+different things:
+
+- **ASG desired capacity** — by the Free Manager Lambda (user count, both
+  directions) *and* the `-high` CPU/memory alarms (instance load, adding only).
+- **ECS desired count** — by the Free Manager Lambda only, which syncs it to
+  the ASG. That is why `sync_ecs_to_asg()` exists: the alarms move the group
+  without telling ECS.
+
+An apply that reset the ECS count to its declared `1` would leave the other
+instances task-less and unhealthy.
+
+`aws_ecs_service.premium` carries the same `ignore_changes` on its
+`desired_count`: the Premium Manager Lambda keeps it at one task per premium
+instance that is registered with ECS or still booting. A reset to `1` would
+stop the task on every other premium instance until the manager's next sync.
+
+| Variable | Effect |
+|---|---|
+| `asg_min_size` | The knob that moves steady-state capacity. Raising it makes the ASG lift desired capacity to the new minimum |
+| `asg_max_size` | The real ceiling: the Lambda clamps its target to the group's bounds, so neither scaling path can exceed it |
+| `asg_desired_capacity` | Applied at creation, and re-applied on every `dev_scheduler` start in environments where that is enabled. Otherwise ignored |
+
+**Lowering `min_size` does not lower desired capacity by itself** — the group
+keeps it, and Terraform ignores it. The Free Manager does: its next run computes
+the target from the user count and removes the surplus, choosing instances with
+no running workflow. Leave desired capacity alone when scaling back down; set by
+hand, the group would choose the instances instead.
+
+**Lowering `max_size` below the current desired capacity does lower it** — the
+group sets desired capacity to the new maximum at once and terminates the
+difference by its termination policy, blind to workloads. Lower the maximum only
+once desired capacity is at or below it, whether by CLI or by apply: a restore
+through tfvars takes two applies, `asg_min_size` first.
+
+The Lambda reads both bounds off the live ASG rather than from its own
+environment, so they can also be changed on the group (console or CLI) without
+a redeploy. That is not persistent: neither bound is under `ignore_changes`, so
+the next apply restores both declared values — the floor goes, and a declared
+maximum below the current desired capacity takes instances with it, as above.
+For sizing, lead time, checks and restore, see
+[FREE_TIER_PREPROVISIONING_RUNBOOK.md](FREE_TIER_PREPROVISIONING_RUNBOOK.md).
 
 ### Database Username (`mysql_user`)
 
@@ -126,11 +175,24 @@ infrastructure layer.
 
 | File | Role |
 | --- | --- |
-| `scripts/terraform_build_info.sh` | Emits the apply-time git commit/branch/dirty as JSON (no `jq` dependency) |
+| `scripts/git_ref_info.sh` | Shared git-ref resolution, sourced by both this script and `ecr_build_push.sh` |
+| `scripts/terraform_build_info.sh` | Emits the apply-time git commit/branch/tag/dirty as JSON (no `jq` dependency). **Fails the plan** when git metadata is absent — see below |
 | `deploy_info.tf` | `data.external.tf_build_info` runs the script at apply time |
-| `compute.tf` (`aws_ecs_cluster.main`) | Stamps `TfGitCommit` / `TfGitBranch` tags from that data |
+| `compute.tf` (`aws_ecs_cluster.main`) | Stamps `TfGitCommit` / `TfGitBranch` / `TfGitTag` tags from that data |
 
 Design notes:
+
+- **The commit is a deployment trigger, not only a tag.** `deployment.tf` keys
+  `null_resource.build_and_deploy` on it, so a new commit rebuilds the image and rolls
+  every service in the cluster. Two consequences:
+  - The script **exits non-zero** rather than falling back to `"unknown"` when git
+    metadata is missing. A constant revision would leave the trigger set identical across
+    commits, which is the condition that made a routine apply skip the image build
+    entirely — restoring it silently would be worse than refusing to plan. Run terraform
+    from a git checkout.
+  - The revision is the **repository HEAD**, which is coarser than "the image changed":
+    a docs-only commit triggers the same rebuild and cluster-wide rollout. This errs
+    towards deploying too often rather than too rarely, which is the safe direction.
 
 - The commit is stamped onto a **single** long-lived resource (the ECS cluster), not via
   `provider.default_tags`, so only that one resource changes on a real deploy instead of
@@ -139,6 +201,17 @@ Design notes:
   diff.
 - No timestamp is stored in the tag — "when was the last change-bearing apply" is already
   answered by the state file's `LastModified` in the S3 backend bucket.
+- Branch and tag are recorded as **separate** tags because a tag checkout leaves HEAD
+  detached: applying from `v1.1.10` records `TfGitTag = v1.1.10` and `TfGitBranch = -`.
+  Applying from a branch records `TfGitBranch`, and records `TfGitTag` as well when that
+  branch's HEAD carries a tag — the two are independent facts, not alternatives.
+  `TfGitBranch = -` is therefore what identifies a tag checkout; a populated `TfGitTag`
+  on its own is not. (Resolving the branch with `git rev-parse --abbrev-ref HEAD`
+  would report the literal string `HEAD` for a tag checkout and lose the tag entirely,
+  which is why `git_ref_info.sh` uses `git symbolic-ref` instead.)
+- No combined "ref" tag is stored. It would be derivable from the other three, and a tag
+  value written onto a cluster cannot be corrected afterwards if the derivation rule
+  changes; the equivalent summary is derived on read instead (`BuildInfo.GIT_REF`).
 
 See [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md) → "Check Which Git
 Revision Was Applied" for how to read it back.
@@ -241,13 +314,7 @@ The failure mode therefore is not "wrong Firebase project", it is "no credential
 
 ECS containers authenticate to AWS using the **ECS Task Role**, delivered by the ECS agent via `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` — not static IAM user keys. (Earlier task definitions injected `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from Secrets Manager; that injection has since been removed in favor of the Task Role.)
 
-A separate IAM user (`${var.environment}-optinist-cloud-user`) and its access key still exist in Terraform but are no longer injected into any container. Its policy is scoped, for example:
-
-```hcl
-secretsmanager:GetSecretValue → ${var.environment}-optinist/*
-```
-
-This scoping ensures the development IAM user can only read development secrets, not production secrets.
+Terraform creates no IAM user or access key for the application. Every Secrets Manager grant names this environment's secrets by ARN: the task role reads the Firebase secrets and the routing HMAC key, and the ECS instance role reads the application secrets. A development role therefore cannot read production secrets. S3 access is scoped the same way; see [S3 Bucket Isolation](INFRA_SECURITY_MODEL.md#s3-bucket-isolation-iam-policy).
 
 ---
 
@@ -305,7 +372,7 @@ Subnets are derived automatically via `cidrsubnet(var.vpc_cidr, 4, N)`:
 | **Secrets**        | 5 Secrets Manager secrets (firebase, database, app, stripe config)                           | `${env}-optinist/firebase/config`, etc.                            |
 | **Monitoring**     | CloudWatch log groups, alarms, dashboard                                                     | `${env}-optinist-*`                                                |
 | **DNS/SSL**        | Route53 zone, ACM certificate (production only)                                              | `araya-optinist.com`                                               |
-| **IAM**            | Task execution role, task role, instance role, IAM user, Lambda roles                        | `${env}-optinist-*`, `${env}-*`                                    |
+| **IAM**            | Task execution role, task role, instance role, Lambda roles                                  | `${env}-optinist-*`, `${env}-*`                                    |
 | **Background**     | Background ECS service, launch template, ASG                                                 | `${env}-optinist-background-*`                                     |
 
 ---

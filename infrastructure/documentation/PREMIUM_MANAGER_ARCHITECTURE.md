@@ -439,7 +439,7 @@ The `handler()` function routes events based on type:
 |---|---|---|
 | `{"action": "migrate_shared_users"}` | `_handle_migrate_shared_users()` | Async migration under MySQL `GET_LOCK` |
 | `{"action": "fix_shared_flags"}` | `fix_incorrect_is_shared_flags()` | One-time data cleanup |
-| `{"action": "cleanup_all_dynamic"}` | `cleanup_all_dynamic_instances()` | Tear down all dynamically-provisioned premium instances (dev scheduler before environment stop) |
+| `{"action": "cleanup_all_dynamic"}` | `cleanup_all_dynamic_instances()` | Tear down all dynamically-provisioned premium instances (dev scheduler before environment stop). Base instances are preserved: the event's `base_instance_ids` plus `PREMIUM_INSTANCE_IDS` |
 | CloudWatch Scheduled Event | `handle_scheduled_monitoring()` | 15-min monitoring cycle |
 | `GET` (API Gateway) | `get_premium_user_status()` | Status check |
 | `POST action=assign` | `assign_premium_user()` | User assignment |
@@ -459,8 +459,8 @@ Runs every 15 minutes. Step numbering matches the comments in the source. Some s
 6.   update_premium_service_desired_count() - Sync ECS desired count to running count
 7.   cleanup_failed_standby_instances()    - Remove DB rows for terminated standbys
 8a.  register_orphaned_stopped_instances() - Re-register stopped instances missing from DB
-8b.  terminate_aged_stopped_instances()    - Terminate standbys stopped longer than PREMIUM_STOPPED_MAX_AGE_HOURS
-9.   cleanup_excess_standby_instances()    - Trim standby pool to PREMIUM_STANDBY_POOL_SIZE
+8b.  terminate_aged_stopped_instances()    - Terminate standbys stopped longer than PREMIUM_STOPPED_MAX_AGE_HOURS (never a base instance)
+9.   cleanup_excess_standby_instances()    - Trim standby pool to PREMIUM_STANDBY_POOL_SIZE (never a base instance)
 10a. finalize_expired_pending_releases()   - Tear down ALB resources for assignments past soft-release grace
 10b. cleanup_ghost_ecs_registrations()     - Deregister ECS container instances whose EC2 is gone
 11.  cleanup_orphaned_ec2_instances()      - Stop premium-tagged EC2 not in the ECS cluster (10-min launch-age grace)
@@ -583,7 +583,7 @@ The `handler()` function supports both scheduled and manual invocations:
 All 5 steps run sequentially on each hourly invocation:
 
 1. `cleanup_stale_assignments()` -- remove idle assignments
-2. `cleanup_orphaned_alb_resources()` -- delete orphaned ALB
+2. `cleanup_orphaned_alb_resources()` -- delete orphaned ALB rules and rule-less premium target groups
 3. `cleanup_duplicate_alb_rules()` -- remove duplicate rules
 4. `reconcile_instance_states()` -- sync DB with AWS
 5. `ensure_standby_pool_capacity()` -- monitor standby health
@@ -653,7 +653,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 ┌──────────────────────────────────────────────────────────┐
 │ 2. cleanup_orphaned_alb_resources()                      │
 │    → Find ALB rules with no matching DB entry            │
-│    → Delete orphaned target groups and rules             │
+│    → Delete orphaned rules, their TGs, rule-less TGs     │
 └──────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────┐
@@ -791,6 +791,7 @@ The timeout is configurable via the `PREMIUM_IDLE_TIMEOUT_HOURS` environment var
 **Input:** None (reads from AWS EC2 and database)
 **Output:** Updates DB records; cleans terminated entries
 **Calls:** get_all_premium_instances_with_states()
+**Fails closed:** Deletes nothing if EC2 cannot be asked, or if it reports no premium instance while assignments point at real instances; the EC2 state-change reconciliation still cleans each terminated instance
 
 **Frequency:** Runs hourly to keep DB accurate
 
@@ -974,11 +975,12 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry point, routes events by type |
 | `handle_scheduled_monitoring()` | 15-min monitoring cycle (10 operations) |
-| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users` |
+| `scale_premium_instances_if_needed()` | Scale up by starting stopped or creating new instances when `running_count < active_users`; launches nothing if EC2 cannot be asked |
 | `_create_running_instances_locked()` | Create running instances under distributed lock (called by `scale_premium_instances_if_needed()`) |
 | `scale_down_if_possible()` | Conservative scale-down: requires `running_count > max(1, active_users + 1)` AND `idle_instances >= 2` |
 | `update_premium_service_desired_count()` | Sync ECS `desiredCount` to `registered + booting` instance count ([details](#ecs-service-desired-count-sync-update_premium_service_desired_count)) |
 | `assign_premium_user()` | Real-time user assignment (API) - 5-tier priority: dedicated > shared > standby > autoscaling pool > stopped > new |
+| `assign_claim()` | Per-user assign claim (`premium_assign_claims` row) serializing `assign_premium_user()` for one user; an expired claim is reclaimable |
 | `release_premium_user()` | Real-time user release (API) |
 | `handle_activity_update()` | Heartbeat/activity timestamp update (API) |
 | `get_premium_user_status()` | Get user assignment status (API) |
@@ -1002,8 +1004,9 @@ All resource names are prefixed with the Terraform `environment` variable (shown
 |---|---|
 | `handler()` | Main entry, routes scheduled vs manual actions |
 | `cleanup_stale_assignments()` | Remove idle assignments (>3h, `@with_transaction`) |
-| `cleanup_orphaned_alb_resources()` | Delete ALB rules with no DB entry |
-| `cleanup_duplicate_alb_rules()` | Remove redundant rules with same routing_id |
+| `cleanup_orphaned_alb_resources()` | Delete ALB rules with no DB entry, except those of a user whose assign is in flight; then delete this VPC's rule-less `premium-<id>-tg` groups whose user has no row and no claim |
+| `cleanup_duplicate_alb_rules()` | Remove redundant rules with same routing_id, except those of a user whose assign is in flight |
+| `get_assign_claimed_user_ids()` | Users holding an unexpired assign claim; both ALB sweeps delete nothing if it cannot be read |
 | `reconcile_instance_states()` | Sync DB with AWS reality |
 | `ensure_standby_pool_capacity()` | Monitor standby health (read-only) |
 | `cleanup_test_user_assignments()` | Manual: clean up test user assignments |

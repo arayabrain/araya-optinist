@@ -93,13 +93,15 @@ The left side of the window displays all available analysis methods. ROI detecti
   - transpose
 
     You can use transposed the data as the input by checking this box.
+    For behavior data, rows must be time, so use transpose when the file has one row per channel.
 
     <p align="center">
     <img width="400px" src="../_static/workflow/csv_transpose.png" alt="CSV transpose" />
     </p>
 
-    ETA, CCA, correlation, cross_correlation, granger, GLM, LDA, and SVM assume the input neural data shape is frames x cells matrix.
+    ETA, CCA, granger, GLM, LDA, and SVM assume the input neural data shape is frames x cells matrix.
     Because the output of CaImAn and Suite2P on the pipeline is cell x frames, the default setting for neural data for these analyses is set to transpose.
+    correlation and cross_correlation work on the cells x frames matrix directly, so their transpose default is off.
 
     PCA and TSNE can be done in either direction depending on your purpose.
     The function assumes their input to be samples x features.
@@ -136,6 +138,9 @@ The left side of the window displays all available analysis methods. ROI detecti
   <img width="400px" src="../_static/workflow/hdf5_structure.png" alt="HDF5 node" />
   </p>
 
+  - Transpose flips a 2D dataset as it is loaded, and is ignored for 3D datasets and for NWB fluorescence that is oriented on load.
+  - Behavior data means rows are time, as for the BEHAVIOR node, and makes a 1D or 2D dataset behavior data for every node it feeds.
+
 There are some additional utility nodes for processing HDF5 data.
 For example, fluo_from_hdf5 extracts fluorescence data from HDF5 data or
 roi_fluo_from_hdf5 that extracts roi and fluorescence data from HDF5 data.
@@ -150,6 +155,9 @@ For more details, refer to the [Algorithm Nodes Documentation](../specifications
 
   This node accepts `.mat` files.
   Once a file is selected, you can search through the data structure and select the data to use.
+
+  - Transpose flips a 2D variable as it is loaded, and is ignored for 3D variables.
+  - Behavior data means rows are time, as for the BEHAVIOR node, and makes a 1D or 2D variable behavior data for every node it feeds.
 
   ```{eval-rst}
   .. note::
@@ -429,6 +437,14 @@ For general information about NWB, refer to [NWB official page](https://www.nwb.
    - ``image_series.save_raw_image_to_nwb``
       If True, raw image data will be saved to NWB file's acquisition.
       If not, only the path to the image data will be saved.
+
+   - ``ophys.plane_segmentation.save_image_mask``
+      If True, each ROI table also holds a dense image_mask (one full frame per ROI)
+      beside its pixel_mask, for tools that read image masks only.
+      Off by default: with many ROIs it is large, ROIs x height x width x 4 bytes
+      in each NWB file that holds a ROI table (the node's own file and whole.nwb),
+      and each rewrite of whole.nwb briefly needs a second copy on disk.
+      A data filter adds the same size again for the filtered ROI table.
 ```
 
 ## Viewing Logs with Log Viewer

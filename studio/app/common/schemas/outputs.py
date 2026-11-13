@@ -7,6 +7,8 @@ class PlotMetaData:
     xlabel: Optional[str] = None
     ylabel: Optional[str] = None
     title: Optional[str] = None
+    xaxis_type: Optional[str] = None
+    yaxis_type: Optional[str] = None
 
     def value_present_dict(self):
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -17,6 +19,17 @@ class OutputData:
     data: Union[List, Dict, str]
     columns: List[str] = None
     index: List[str] = None
+    meta: Optional[PlotMetaData] = None
+
+
+# Not a subclass of OutputData: pydantic would take OutputData's model for it
+@dataclass
+class ImageOutputData:
+    """An image item as stored: columns and index keep the file's types."""
+
+    data: Union[List, Dict, str]
+    columns: List[Union[int, str]] = None
+    index: List[Union[int, str]] = None
     meta: Optional[PlotMetaData] = None
 
 

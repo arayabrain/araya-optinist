@@ -15,7 +15,6 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.rules.runner import Runner
 from studio.app.common.core.snakemake.smk import FlowConfig, ForceRun, Rule, SmkParam
 from studio.app.common.core.snakemake.snakemake_executor import (
-    delete_dependencies,
     delete_procs_dependencies,
     snakemake_execute,
 )
@@ -30,6 +29,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.utils.config_handler import ConfigReader
 from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone_formatted,
@@ -46,7 +46,12 @@ from studio.app.common.core.workflow.workflow import (
     RunItem,
     WorkflowRunStatus,
 )
-from studio.app.common.core.workflow.workflow_params import get_typecheck_params
+from studio.app.common.core.workflow.workflow_dependencies import delete_dependencies
+from studio.app.common.core.workflow.workflow_params import (
+    dict2nest,
+    get_typecheck_params,
+    nest2dict,
+)
 from studio.app.common.core.workflow.workflow_reader import WorkflowConfigReader
 from studio.app.common.core.workflow.workflow_writer import WorkflowConfigWriter
 from studio.app.common.schemas.workflow import WorkflowConfig
@@ -72,6 +77,46 @@ class WorkflowRunner:
         self.edgeDict = self.runItem.edgeDict
         self.logger = AppLogger.get_logger()
 
+        # Refuse a stale tree before any record is written; save a filled one
+        last_run = (
+            ConfigReader.read(
+                WorkflowConfigReader.get_config_yaml_path(workspace_id, unique_id)
+            )
+            or {}
+        ).get("nodeDict", {})
+        self.forced_by_fill: List[ForceRun] = []
+        for node in self.nodeDict.values():
+            if NodeTypeUtil.check_nodetype(node.type) == NodeType.ALGO:
+                added: List[str] = []
+                params = get_typecheck_params(node.data.param, node.data.label, added)
+                if added:
+                    node.data.param = dict2nest(params)
+                    # re-run unless the record's last run already had these params
+                    last = last_run.get(node.id, {}).get("data", {}).get("param")
+                    if last is None or nest2dict(last) != params:
+                        self.forced_by_fill.append(
+                            ForceRun(nodeId=node.id, name=node.data.label)
+                        )
+
+        # Extract timezone from nwbParam before validation (not in default params).
+        # Passed from browser in ParamChild format: {type: "child", value: "..."}
+        timezone = None
+        raw_nwb_param = self.runItem.nwbParam
+        if raw_nwb_param and isinstance(raw_nwb_param, dict):
+            timezone_param = raw_nwb_param.pop(TIMEZONE_KEY, None)
+            if timezone_param and isinstance(timezone_param, dict):
+                timezone = timezone_param.get("value")
+
+        nwb_params = get_typecheck_params(raw_nwb_param, "nwb")
+
+        # Re-add timezone to nwb_params for passing to snakemake config
+        if timezone and nwb_params:
+            nwb_params[TIMEZONE_KEY] = timezone
+
+        snakemake_params = get_typecheck_params(
+            self.runItem.snakemakeParam, "snakemake"
+        )
+
         # Log workflow start with timing
         self.workflow_start_time = time.time()
         self.logger.info(
@@ -95,29 +140,15 @@ class WorkflowRunner:
             self.edgeDict,
         ).write()
 
-        # Extract timezone from nwbParam before validation (not in default params).
-        # Passed from browser in ParamChild format: {type: "child", value: "..."}
-        timezone = None
-        raw_nwb_param = self.runItem.nwbParam
-        if raw_nwb_param and isinstance(raw_nwb_param, dict):
-            timezone_param = raw_nwb_param.pop(TIMEZONE_KEY, None)
-            if timezone_param and isinstance(timezone_param, dict):
-                timezone = timezone_param.get("value")
-
-        nwb_params = get_typecheck_params(raw_nwb_param, "nwb")
-
-        # Re-add timezone to nwb_params for passing to snakemake config
-        if timezone and nwb_params:
-            nwb_params[TIMEZONE_KEY] = timezone
-
-        ExptConfigWriter(
+        expt_config = ExptConfigWriter(
             self.workspace_id,
             self.unique_id,
             self.runItem.name,
             nwbfile=nwb_params,
-            snakemake=get_typecheck_params(self.runItem.snakemakeParam, "snakemake"),
+            snakemake=snakemake_params,
             timezone=timezone,
         ).write()
+        self.generation = expt_config.started_at
 
         Runner.clear_pid_file(self.workspace_id, self.unique_id)
 
@@ -213,6 +244,7 @@ class WorkflowRunner:
         This helps backfill metadata for files uploaded before caching was added.
         """
         from studio.app.common.routers.files import (
+            edit_cache_off_loop,
             update_hdf5_structure,
             update_image_shape,
             update_mat_structure,
@@ -225,11 +257,17 @@ class WorkflowRunner:
             try:
                 match metadata_file:
                     case MetadataCacheFile.IMAGE_SHAPE:
-                        update_image_shape(self.workspace_id, filename)
+                        await edit_cache_off_loop(
+                            update_image_shape, self.workspace_id, filename
+                        )
                     case MetadataCacheFile.HDF5_STRUCTURE:
-                        update_hdf5_structure(self.workspace_id, filename)
+                        await edit_cache_off_loop(
+                            update_hdf5_structure, self.workspace_id, filename
+                        )
                     case MetadataCacheFile.MAT_STRUCTURE:
-                        update_mat_structure(self.workspace_id, filename)
+                        await edit_cache_off_loop(
+                            update_mat_structure, self.workspace_id, filename
+                        )
                 metadata_files_updated.add(metadata_file)
                 self.logger.debug(f"Updated metadata for {filename}")
             except Exception as e:
@@ -257,6 +295,7 @@ class WorkflowRunner:
         await self._ensure_input_data_local()
 
     def run_workflow(self, background_tasks: BackgroundTasks):
+        lock_token = None
         # Operate remote storage data.
         if RemoteStorageController.is_available():
             # Check for remote-sync-lock-file
@@ -264,52 +303,61 @@ class WorkflowRunner:
             RemoteSyncLockFileUtil.check_sync_lock_file(
                 self.workspace_id, self.unique_id, raise_error=True
             )
-
-        self.set_smk_config()
-
-        snakemake_params: SmkParam = get_typecheck_params(
-            self.runItem.snakemakeParam, "snakemake"
-        )
-        snakemake_params = SmkParamReader.read(snakemake_params)
-        snakemake_params.forcerun = self.runItem.forceRunList
-
-        # delete dependencies for nodes
-        if len(snakemake_params.forcerun) > 0:
-            delete_dependencies(
-                workspace_id=self.workspace_id,
-                unique_id=self.unique_id,
-                smk_params=snakemake_params,
-                nodeDict=self.nodeDict,
-                edgeDict=self.edgeDict,
-            )
-
-        # delete dependencies for procs
-        delete_procs_dependencies(
-            workspace_id=self.workspace_id,
-            unique_id=self.unique_id,
-            forceRunList=[
-                ForceRun(
-                    nodeId=ProcessType.POST_PROCESS.id,
-                    name=ProcessType.POST_PROCESS.label,
-                )
-            ],
-        )
-
-        # Operate remote storage data.
-        if RemoteStorageController.is_available():
             # creating remote-sync-lock-file
-            RemoteSyncLockFileUtil.create_sync_lock_file(
+            lock_token = RemoteSyncLockFileUtil.create_sync_lock_file(
                 self.workspace_id, self.unique_id
             )
 
-            # creating remote_sync_status file.
-            # - The status file is used to pass bucket info to subsequent processing.
-            RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
-                self.remote_bucket_name,
-                self.workspace_id,
-                self.unique_id,
-                RemoteSyncAction.UPLOAD,
+        try:
+            self.set_smk_config()
+
+            snakemake_params: SmkParam = get_typecheck_params(
+                self.runItem.snakemakeParam, "snakemake"
             )
+            snakemake_params = SmkParamReader.read(snakemake_params)
+            forced = {p.nodeId for p in self.runItem.forceRunList}
+            snakemake_params.forcerun = self.runItem.forceRunList + [
+                p for p in self.forced_by_fill if p.nodeId not in forced
+            ]
+
+            # delete dependencies for nodes
+            if len(snakemake_params.forcerun) > 0:
+                delete_dependencies(
+                    workspace_id=self.workspace_id,
+                    unique_id=self.unique_id,
+                    node_ids=[p.nodeId for p in snakemake_params.forcerun],
+                    nodeDict=self.nodeDict,
+                    edgeDict=self.edgeDict,
+                )
+
+            # delete dependencies for procs
+            delete_procs_dependencies(
+                workspace_id=self.workspace_id,
+                unique_id=self.unique_id,
+                forceRunList=[
+                    ForceRun(
+                        nodeId=ProcessType.POST_PROCESS.id,
+                        name=ProcessType.POST_PROCESS.label,
+                    )
+                ],
+            )
+
+            if RemoteStorageController.is_available():
+                # creating remote_sync_status file.
+                # - The status file is used to pass bucket info to subsequent
+                #   processing.
+                RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
+                    self.remote_bucket_name,
+                    self.workspace_id,
+                    self.unique_id,
+                    RemoteSyncAction.UPLOAD,
+                )
+        except Exception:
+            if lock_token:
+                RemoteSyncLockFileUtil.delete_sync_lock_file(
+                    self.workspace_id, self.unique_id, lock_token
+                )
+            raise
 
         background_tasks.add_task(
             snakemake_execute,
@@ -317,6 +365,7 @@ class WorkflowRunner:
             self.unique_id,
             snakemake_params,
             self.user_id,
+            self.generation,
         )
 
     def finish_workflow_without_run(

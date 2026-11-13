@@ -58,6 +58,12 @@ test.describe("Background scheduler boot", () => {
     !process.env.RUN_RESTART,
     "restarts the backend, breaking any concurrent spec; opt in with RUN_RESTART=1",
   )
+  test.beforeEach(() => {
+    // A retry re-does the mutation instead of re-observing it
+    expect(test.info().project.retries, "run this lane with --retries 0").toBe(
+      0,
+    )
+  })
 
   test("BOOT-01 - The cleanup job's first run fires seconds after boot and skips the orphan sweep", async () => {
     test.setTimeout(360_000)

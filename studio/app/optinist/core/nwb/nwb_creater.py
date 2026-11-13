@@ -1,7 +1,12 @@
+import contextlib
 import json
 import os
 import shutil
 
+import numpy as np
+from filelock import FileLock
+from hdmf.backends.hdf5.h5_utils import H5DataIO
+from hdmf.data_utils import DataChunkIterator, GenericDataChunkIterator
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.ophys import (
     CorrectedImageStack,
@@ -20,8 +25,87 @@ from studio.app.common.core.utils.datetime_utils import (
     TIMEZONE_KEY,
     get_datetime_for_timezone,
 )
+from studio.app.common.core.utils.filelock_handler import FileLockUtils
+from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.dataclass.image import BATCH_BYTES, ImageData
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
 from studio.app.optinist.core.nwb.optinist_data import ConfigData, PostProcess
+
+# ROI frames an image_mask column holds in memory while it is written
+IMAGE_MASK_BUFFER = 16
+# HDF5 chunk of a streamed raw movie: whole frames, up to h5py's default chunk
+# cache, so a frame-by-frame reader reads each chunk once
+RAW_MOVIE_CHUNK_BYTES = 1 << 20
+# postprocess entries -> the name the same data had in files written before
+RETIRED_POSTPROCESS = {"all_roi_label_img": "all_roi_img"}
+
+
+def _raw_movie(external_file):
+    """The input movie save_raw_image_to_nwb stores: a TIFF stack is written a
+    batch of frames at a time (its `data` holds the movie twice while it
+    concatenates the files); other inputs are read whole."""
+    stream = (
+        external_file.frame_stream() if isinstance(external_file, ImageData) else None
+    )
+    if stream is None:
+        return external_file.data
+    shape, dtype, frames = stream
+    frame_bytes = int(np.prod(shape[1:])) * dtype.itemsize
+    chunk_frames = min(max(1, RAW_MOVIE_CHUNK_BYTES // frame_bytes), shape[0])
+    # an iterator cannot be stored contiguous, and h5py's guessed chunks span
+    # dozens of frames
+    return H5DataIO(
+        data=DataChunkIterator(
+            data=frames,
+            maxshape=shape,
+            dtype=dtype,
+            buffer_size=max(1, BATCH_BYTES // frame_bytes),
+        ),
+        chunks=(chunk_frames,) + shape[1:],
+    )
+
+
+def _time_first(data, n_roi):
+    # a square array counts as (roi, time); its axes cannot be told apart
+    data = np.asarray(data)
+    if data.ndim == 2 and data.shape[0] == n_roi:
+        return data.T
+    return data
+
+
+class ImageMasks(GenericDataChunkIterator):
+    """
+    A dense float32 image_mask per ROI, drawn from its (row, column, weight)
+    pixel_mask only as its chunk is written: the file gets ROIs x H x W, while
+    memory holds a buffer of IMAGE_MASK_BUFFER frames.
+    """
+
+    def __init__(self, pixel_masks: list, shape):
+        self._pixel_masks = pixel_masks
+        self._shape = tuple(shape)
+        buffer = min(IMAGE_MASK_BUFFER, len(pixel_masks))
+        super().__init__(
+            chunk_shape=(1, *self._shape), buffer_shape=(buffer, *self._shape)
+        )
+
+    def __len__(self):
+        # DynamicTable.add_column checks the column's length against the rows
+        return len(self._pixel_masks)
+
+    def _get_data(self, selection):
+        rois = range(len(self._pixel_masks))[selection[0]]
+        frames = np.zeros((len(rois), *self._shape), dtype=np.float32)
+        for k, i in enumerate(rois):
+            pixels = np.asarray(self._pixel_masks[i], dtype=float).reshape(-1, 3)
+            rows, cols = pixels[:, 0].astype(int), pixels[:, 1].astype(int)
+            frames[k, rows, cols] = pixels[:, 2]
+        return frames[(slice(None), *selection[1:])]
+
+    def _get_maxshape(self):
+        return (len(self._pixel_masks), *self._shape)
+
+    def _get_dtype(self):
+        return np.dtype("float32")
 
 
 class NWBCreater:
@@ -107,7 +191,7 @@ class NWBCreater:
                 starting_time=float(config[NWBDATASET.IMAGE_SERIES]["starting_time"]),
                 rate=float(config["imaging_plane"]["imaging_rate"]),
                 unit="normalized amplitude",
-                data=external_file.data if save_raw_image_to_nwb else None,
+                data=_raw_movie(external_file) if save_raw_image_to_nwb else None,
             )
             new_nwbfile.add_acquisition(image_series)
 
@@ -203,7 +287,7 @@ class NWBCreater:
         return nwbfile
 
     @classmethod
-    def roi(cls, nwbfile, function_id, roi_list):
+    def roi(cls, nwbfile, function_id, roi_list, image_mask_shape=None):
         nwbfile = cls.plane_segmentation(nwbfile, function_id)
         image_seg = nwbfile.processing["ophys"].data_interfaces["ImageSegmentation"]
         plane_seg = image_seg.plane_segmentations[function_id]
@@ -215,6 +299,21 @@ class NWBCreater:
 
         for col in roi_list:
             plane_seg.add_roi(**col)
+
+        # dense masks for every row, unless the rows carry their own (older configs)
+        if (
+            image_mask_shape is not None
+            and roi_list
+            and all("pixel_mask" in roi and "image_mask" not in roi for roi in roi_list)
+        ):
+            plane_seg.add_column(
+                name="image_mask",
+                description="Image masks for each ROI",
+                data=ImageMasks(
+                    [roi["pixel_mask"] for roi in roi_list], image_mask_shape
+                ),
+                check_ragged=False,
+            )
 
         return nwbfile
 
@@ -239,7 +338,7 @@ class NWBCreater:
 
             roi_resp_dict = {
                 "name": roi["name"],
-                "data": roi["data"],
+                "data": _time_first(roi["data"], len(roi["region"])),
                 "rois": region_roi,
                 "unit": roi["unit"],
                 "timestamps": roi.get("timestamps"),
@@ -286,15 +385,22 @@ class NWBCreater:
 
     @classmethod
     def postprocess(cls, nwbfile, function_id, data):
+        optinist = nwbfile.processing["optinist"]
         for key, value in data.items():
             process_name = f"{function_id}_{key}"
             postprocess = PostProcess(name=process_name, data=value)
 
             try:
-                nwbfile.processing["optinist"].add_container(postprocess)
+                optinist.add_container(postprocess)
             except ValueError:
-                nwbfile.processing["optinist"].data_interfaces.pop(process_name)
-                nwbfile.processing["optinist"].add_container(postprocess)
+                optinist.data_interfaces.pop(process_name)
+                optinist.add_container(postprocess)
+
+            # a file written before keeps what this entry replaced: drop it
+            if key in RETIRED_POSTPROCESS:
+                retired = f"{function_id}_{RETIRED_POSTPROCESS[key]}"
+                if retired in optinist.data_interfaces:
+                    optinist.data_interfaces.pop(retired)
 
         return nwbfile
 
@@ -386,14 +492,17 @@ class NWBCreater:
             imaging_planes.append(imaging_plane)
 
         # Create Acquisition
+        series = nwbfile.acquisition["TwoPhotonSeries"]
         image_series = TwoPhotonSeries(
             name="TwoPhotonSeries",
-            starting_frame=nwbfile.acquisition["TwoPhotonSeries"].starting_frame,
-            external_file=nwbfile.acquisition["TwoPhotonSeries"].external_file,
+            starting_frame=series.starting_frame,
+            external_file=series.external_file,
             imaging_plane=imaging_planes[0],
-            starting_time=nwbfile.acquisition["TwoPhotonSeries"].starting_time,
-            rate=nwbfile.acquisition["TwoPhotonSeries"].rate,
-            unit=nwbfile.acquisition["TwoPhotonSeries"].unit,
+            starting_time=series.starting_time,
+            rate=series.rate,
+            unit=series.unit,
+            # frames stored with save_raw_image_to_nwb, which leaves no external file
+            data=series.data if series.external_file is None else None,
         )
         new_nwbfile.add_acquisition(image_series)
 
@@ -431,9 +540,12 @@ def set_nwbconfig(nwbfile, config):
             )
 
     if NWBDATASET.ROI in config:
-        for function_key in config[NWBDATASET.ROI]:
+        for function_key, entry in config[NWBDATASET.ROI].items():
             nwbfile = NWBCreater.roi(
-                nwbfile, function_key, config[NWBDATASET.ROI][function_key]["roi_list"]
+                nwbfile,
+                function_key,
+                entry["roi_list"],
+                entry.get("image_mask_shape"),
             )
 
     if NWBDATASET.COLUMN in config:
@@ -464,41 +576,66 @@ def save_nwb(save_path, input_config, config):
 
     nwbfile = set_nwbconfig(nwbfile, config)
 
-    with NWBHDF5IO(save_path, "w") as f:
-        f.write(nwbfile)
+    f = NWBHDF5IO(save_path, "w")
+    try:
+        with f:
+            f.write(nwbfile)
+    except BaseException:
+        # a streamed raw movie is read during the write; a failed read must not
+        # leave a partial file at the path
+        with contextlib.suppress(OSError):
+            os.remove(save_path)
+        raise
+
+
+@contextlib.contextmanager
+def _replacing(tmp_path, path):
+    """Replace path with tmp_path, which the block writes, in one rename once it
+    ends; delete tmp_path if anything fails. path is never written in place.
+    tmp_path reaches the disk before the rename, so after a crash path holds
+    the old file or the new one. path keeps its permission bits."""
+    try:
+        yield
+        shutil.copymode(path, tmp_path)
+        with open(tmp_path, "rb+") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def overwrite_nwbfile(save_path, config):
-    tmp_save_path = os.path.join(
-        os.path.dirname(save_path),
-        "tmp_" + os.path.basename(save_path),
+    tmp_save_path = join_filepath(
+        [os.path.dirname(save_path), "tmp_" + os.path.basename(save_path)]
     )
-    with NWBHDF5IO(save_path, "r") as src_io:
+    with _replacing(tmp_save_path, save_path), NWBHDF5IO(save_path, "r") as src_io:
         old_nwbfile = src_io.read()
         nwbfile = set_nwbconfig(old_nwbfile, config)
         nwbfile.set_modified()
         with NWBHDF5IO(tmp_save_path, mode="w") as io:
             io.export(src_io=src_io, nwbfile=nwbfile)
-    shutil.copyfile(tmp_save_path, save_path)
-    os.remove(tmp_save_path)
 
 
 def overwrite_nwb(config, save_path, nwb_file_name):
     # バックアップファイルを作成
-    nwb_path = os.path.join(save_path, nwb_file_name)
-    tmp_nwb_path = os.path.join(save_path, "tmp_" + nwb_file_name)
+    nwb_path = join_filepath([save_path, nwb_file_name])
+    tmp_nwb_path = join_filepath([save_path, "tmp_" + nwb_file_name])
+
+    # one rewrite at a time, as for whole.nwb: an ROI-edit commit and a data
+    # filter can rewrite the same file, and share its temporary
+    lock = FileLock(FileLockUtils.get_lockfile_path(nwb_path), timeout=120)
 
     # NWBファイルの読み込み
-    with NWBHDF5IO(nwb_path, "r") as io:
+    with lock, _replacing(tmp_nwb_path, nwb_path), NWBHDF5IO(nwb_path, "r") as io:
         nwbfile = io.read()
         # acquisition を元ファイルから作成する
         new_nwbfile = NWBCreater.re_acquisition(nwbfile)
         new_nwbfile = set_nwbconfig(new_nwbfile, config)
 
         with NWBHDF5IO(tmp_nwb_path, "w") as io:
-            io.write(new_nwbfile)
-    shutil.copyfile(tmp_nwb_path, nwb_path)
-    os.remove(tmp_nwb_path)
+            # copy stored frames: a link would point at the file this replaces
+            io.write(new_nwbfile, link_data=False)
 
 
 def merge_nwbfile(old_nwbfile, new_nwbfile):

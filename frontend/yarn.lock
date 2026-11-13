@@ -9917,7 +9917,7 @@ playwright@1.61.1:
   optionalDependencies:
     fsevents "2.3.2"
 
-plotly.js@^2.27.1:
+plotly.js@^2.28.0:
   version "2.35.3"
   resolved "https://registry.yarnpkg.com/plotly.js/-/plotly.js-2.35.3.tgz#6a7787d63b4d334948c281aa9c8df7fb941b425e"
   integrity sha512-7RaC6FxmCUhpD6H4MpD+QLUu3hCn76I11rotRefrh3m1iDvWqGnVqVk9dSaKmRAhFD3vsNsYea0OxnR1rc2IzQ==

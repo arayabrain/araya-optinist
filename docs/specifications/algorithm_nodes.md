@@ -12,7 +12,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 - **Description:** Motion Correction ([NoRMCorre](https://caiman.readthedocs.io/en/latest/CaImAn_features_and_references.html#normcorre)). The function will perform either rigid or piecewise rigid motion correction depending on the attribute self.pw_rigid and will perform high pass spatial filtering for determining the motion (used in 1p data) if the attribute self.gSig_filt is not None.
 - **Input:** ImageData (Tiff), HDF5
-- **Output:** ImageData
+- **Output:** mc_images (ImageData), meanImg (ImageData: mean of the motion-corrected movie), refImg (ImageData: the template frames were aligned to, high-pass filtered when gSig_filt is set)
 - **Parameters:**
   - **border_nan** [true, false, copy, default: copy]: flag for allowing NaN in the boundaries. True allows NaN, whereas ‘copy’ copies the value of the nearest data point.
   - **g_Sig_filt**　[int or None, default: None]:　 Size of kernel for high-pass spatial filtering in 1P data. If None no spatial filtering is performed.
@@ -37,157 +37,196 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 - **Description:** Constrained nonnegative matrix factorization, find ROIs 2P data
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData, IsCellData
+- **Output:** FluoData (fluorescence, dff), IsCellData, meanImg (ImageData: mean of the input movie)
 - **Parameters:**
+  - The defaults follow CaImAn's own 2p demo (`demos/general/params_demo_pipeline.json`: rf 15, stride 6, K 4, tsub 2, p 1, and min_SNR 2, rval_thr 0.85, min_cnn_thr 0.99 under advanced), except do_refit, which the demo runs and the node leaves off.
   - **decay_time** [float, default: 0.4] Length of typical transient in seconds. Dependent on fluorescent indicator dynamics.
   - **use_online** Provides faster processing and reduced memory requirements, slight reduction in accuracy. Good for large data.
-  - **do_refit** Refit reprocesses data after an initial fit, refining results by using the centres of components from the initial fit as seeds for another iteration.
-  - **K [int, default: 10]: Number of components to be found. This determines how many cells can be found** (per patch or whole FOV depending on whether rf=None)
+  - **do_refit** [bool, default: False]: Refit reprocesses data after an initial fit, refining results by using the centres of components from the initial fit as seeds for another iteration. It is the refinement step of CaImAn's published pipeline: a second CNMF pass (spatial and temporal updates, merging, deconvolution) over the whole field of view, which together with the patch fit takes most of CaImAn's run time. Off by default to keep runs short; turn it on for the published pipeline.
+  - **K** [int, default: 4]: Number of components to be found, which bounds how many cells can be found. With rf set (the default) it counts components per patch, so the total grows with the field of view: K 4 at rf 15 and stride 6 is about one component per 144 pixels (see rf). With rf 0 it counts components for the whole field of view, so the node returns at most K.
   - **gSig** [default: (4,4)]: Standard deviation of neuron size along x and y.
   - **ssub** [float, default: 2]: Spatial downsampling factor.
-  - **tsub** [float, default 1, no downsampling]: temporal downsampling factor recommended for long datasets.
+  - **tsub** [float, default: 2]: Temporal downsampling factor for initialisation, recommended for long datasets. 1 is no downsampling.
   - **nb** [int, default: 2]: Number of global background components (noise complexity).
   - **method_init** [‘greedy_roi’,’corr_pnr’, default: ‘greedy_roi’]: Use ‘greedy_roi’ for standard 2P, ‘corr_pnr’ for 1p (CNMF-E).
   - **roi_thr** [scalar between 0 and 1, default: 0.9]: Energy threshold for computing contours
-  - **p** [int, default: 2]: Order of the autoregression model.
-  - **rf** [int or None, default: None]: Half-size of patch in pixels. If None, no patches are constructed and the whole FOV is processed jointly.
+  - **p** [int, default: 1]: Order of the autoregression model.
+  - **rf** [int or None, default: 15]: Half-size of patch in pixels.
+    - None or 0 processes the whole field of view at once. With only_init (default true, under advanced > patch_params) the node then runs CaImAn's initialisation only: greedy ROI and HALS, no CNMF iterations (do_refit adds them). Its peak memory is about 13 bytes x pixels x frames plus about 1 GB, in the initialisation's seed search (ssub 2): about 11 GB for 512 x 512 x 2,900 frames, twice that for twice the frames.
+    - A number fits each patch of (2 x rf + 1) x (2 x rf + 1) pixels on its own, so the fit takes about 16 bytes x (2 x rf + 1)^2 x frames per patch plus about 1.5 GB, whatever the field of view. K then counts per patch, so the node finds many more components (about 1,250 to 1,600 on a 512 x 512 movie at CaImAn's 2p demo density of one per 144 pixels, e.g. rf 15, stride 6, K 4, or rf 32, stride 16, K 16), deconvolves their traces (p) and returns different results.
+    - With many components the outputs stay small: each component is kept as its pixels, not as a full frame, so 1,500 components at 512 x 512 take about 0.3 GB on disk in the node's output files. With the CaImAn release OptiNiSt pins, CaImAn's CNN evaluation (use_cnn, under advanced > quality_evaluation_params) copies each component's crop instead of holding its frame. The NWB setting save_image_mask, off by default, adds a dense image_mask per component to each NWB file holding the ROI table, the node's own and whole.nwb: about 1.6 GB each for 1,500 components at 512 x 512 (see [NWB Settings](../gui_guide/workflow.md#nwb-settings)).
   - **stride** [int or 0, default: 6]: Overlap between neighboring patches in pixels. Used to optimize memory consumption and parallelizing computations, as it allows for the processing of data in smaller segments while maintaining some continuity between them.
-  - **merge_thr** [float, default: 0.8]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
+  - **merge_thr** [float, default: 0.85]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
+  - **n_processes** [int, default: 1, under advanced > patch_params]: CaImAn worker processes. The value is clamped to the CPUs available to the process minus one, so on a 2-CPU instance it always resolves to 1. Memory, not CPU, is the ceiling: each worker holds its own slice of the movie. With `rf` set (the default) workers fit patches in parallel; with `rf: 0` the whole field of view is one patch, so extra workers only parallelise preprocessing and residual computation.
+  - **dff** (output): CaImAn's own ΔF/F from `detrend_df_f(A, b, C, f, YrA)`: (F - F0) / (B0 + F0), where F0 is a running baseline of the trace at a percentile CaImAn picks per trace and B0 the same baseline of the background under the component. If the fit has no `b` and `f` (the ring background, `nb: 0`), B0 comes from the ring model's static background `b0`; its ring fluctuations `W` are not included. A fit with no background at all gives F - F0 only, with a warning. Rows are in the same order as fluorescence. A ROI added or merged with Edit ROI has no CaImAn ΔF/F, so its dff row is NaN. dff is not written to the NWB file. An invalid frames_window stops the node before CaImAn runs; if CaImAn itself fails, the node still finishes and dff is all NaN with the error in the log. It adds run time: about 1.5 to 4 minutes for 267 components x 39,616 frames single-threaded with frames_window 500.
+  - **frames_window** [int of at least 2, or null, default: 500, under advanced > dff_params]: Running baseline window in frames. null, or a window longer than the recording, uses one baseline for the whole recording and is the fast option. From the parameter form, which cannot set null, enter a window larger than the recording's frame count instead.
   - **advanced** (See [CaImAn documentation](https://caiman.readthedocs.io/en/latest/core_functions.html#))
 
 ###### caiman_cnmfe
 
 - **Description:** Constrained nonnegative matrix factorization-endoscope, find ROIs for 1P data.
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData, IsCellData
+- **Output:** FluoData (fluorescence, dff), IsCellData, meanImg (ImageData: mean of the input movie)
 - **Parameters:**
   - Additional information on CNMF-E can be found on [Inscopix github](https://github.com/inscopix/inscopix-cnmfe?tab=readme-ov-file#algorithm-parameters)
+  - The defaults follow CaImAn's own 1p demo (`demos/general/params_demo_pipeline_cnmfE.json`), except rf and stride, which are smaller so a long movie fits in about 5 GB. Under advanced, `use_cnn` is off because CaImAn's CNN classifier is trained on 2p data.
   - **decay_time** [float, default: 0.4] Length of typical transient in seconds. Dependent on fluorescent indicator dynamics
   - **do_refit** Refit reprocesses data after an initial fit, refining results by using the centres of components from the initial fit as seeds for another iteration.
-  - **K [int, default: 10]: Number of components to be found. This determines how many cells can be found** (per patch or whole FOV depending on whether rf=None)
-  - **gSig** [default: (4,4)]: Standard deviation of neuron size along x and y.
-  - **ssub** [float, default: 2]: Spatial downsampling factor.
-  - **tsub** [float, default 1, no downsampling]: temporal downsampling factor recommended for long datasets.
-  - **nb** [int, default: 2]: Number of global background components (noise complexity).
+  - **K [int or None, default: None]: Number of components to be found. This determines how many cells can be found** (per patch or whole FOV depending on whether rf=None). None lets CaImAn cap it at a fifth of the searched pixels.
+  - **gSig** [default: (3,3)]: Standard deviation of neuron size along x and y.
+  - **ssub** [float, default: 1]: Spatial downsampling factor.
+  - **tsub** [float, default: 2]: Temporal downsampling factor for initialisation, recommended for long datasets.
+  - **nb** [int, default: 0]: Background model. 0 is CNMF-E's exact ring model, which patch mode needs; a positive value approximates the background with that many low-rank components.
   - **roi_thr** [scalar between 0 and 1, default: 0.9]: Energy threshold for computing contours
-  - **p** [int, default: 2]: Order of the autoregression model.
-  - **rf** [int or None, default: None]: Half-size of patch in pixels. If None, no patches are constructed and the whole FOV is processed jointly.
-  - **stride** [int or 0, default: 6]: Overlap between neighboring patches in pixels. Used to optimize memory consumption and parallelizing computations, as it allows for the processing of data in smaller segments while maintaining some continuity between them.
-  - **merge_thr** [float, default: 0.8]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
+  - **p** [int, default: 1]: Order of the autoregression model.
+  - **rf** [int or None, default: 32]: Half-size of patch in pixels. Each patch is initialised on its own, so peak memory is about 24 bytes x (2 x rf + 1)^2 x frames plus about 1 GB: about 5 GB for rf 32 on a 40,000-frame movie. Halve rf for a movie four times longer. This holds for n_processes 1 (more workers multiply the per-patch term by their count) and a field of view up to about 140 x 140 pixels; above that the ring-background step after the patches needs about 5 bytes x pixels x frames whatever rf is, so crop or spatially downsample the movie first. 0 (None in a workflow file) processes the whole field of view at once, which holds about six float32 copies of the movie (more than 13 GB for 97 x 133 pixels x 40,000 frames) and only suits short movies.
+  - **stride** [int, default: 16]: Overlap between neighboring patches in pixels. Keep it at least gSiz.
+  - **merge_thr** [float, default: 0.7]: Trace correlation threshold for merging two components. A higher threshold value means that only components with very similar activity traces will be merged.
+  - **dff** (output): CaImAn's own ΔF/F from `detrend_df_f(A, b, C, f, YrA)`: (F - F0) / (B0 + F0), where F0 is a running baseline of the trace at a percentile CaImAn picks per trace and B0 the same baseline of the background under the component. The ring model (`nb: 0`) leaves no `b` and `f`, so B0 comes from its static background `b0`; the ring fluctuations `W` are not included. Rows are in the same order as fluorescence. A ROI added or merged with Edit ROI has no CaImAn ΔF/F, so its dff row is NaN. dff is not written to the NWB file. An invalid frames_window stops the node before CaImAn runs; if CaImAn itself fails, the node still finishes and dff is all NaN with the error in the log. It adds run time: about 1.5 to 4 minutes for 267 components x 39,616 frames single-threaded with frames_window 500.
+  - **frames_window** [int of at least 2, or null, default: 500, under advanced > dff_params]: Running baseline window in frames. null, or a window longer than the recording, uses one baseline for the whole recording and is the fast option. From the parameter form, which cannot set null, enter a window larger than the recording's frame count instead.
 
 ###### caiman_cnmf_multisession
 
 - **Description:** Keep union of components found in multiple sessions
 - **Input:**　 Image (Tiff), HDF5
-- **Output:** FluoData, IsCellData
-- **Parameters:** Same as caiman_cnmf with the addition of:
+- **Output:** FluoData (fluorescence, dff), IsCellData, meanImg (ImageData: mean of the input movie)
+- **Parameters:** Those of caiman_cnmf without do_refit, use_online and the online parameters, and with rf None (the whole field of view, because patch mode's session registration below grows with components x pixels), tsub 1, and min_SNR 2.5, rval_thr 0.8, min_cnn_thr 0.9 under advanced. In addition:
+  - **K**, **ssub**, **p** [default: 4, 1, 1]: as in caiman_cnmf. With rf None, K counts components for each session's whole field of view. At ssub 1 each session's fit needs about 33 bytes x pixels x the session's frames plus about 1 GB: about 14 GB per session for two sessions of 512 x 512 x 1,450 frames. In patch mode CaImAn's session registration holds both sessions' footprints as dense images, about 30 bytes x components per session x pixels: about 12 GB at 512 x 512 with rf 15, stride 6 and K 4, half that with K 2. Bound K when setting rf.
   - n_reg_files
   - reg_file_rate
+  - **session_lengths** [list of int, default: empty]: Frames per session. If set, the input movie is split at these boundaries instead of into n_reg_files equal parts (use when sessions have unequal length). The lengths must sum exactly to the number of frames; otherwise the run fails with a message naming both numbers.
   - **align_flag** [bool, default: true]: Align the templates before matching
   - **max_thr** [scalar, default 0]: Max threshold parameter before binarization.
   - **use_opt_flow** [bool, default: true]: Use dense optical flow to align templates
   - **thresh_cost** [scalar, default: 0.7]: Maximum distance considered.
   - **max_dist** [scalar, default: 10]: Maximum distance between centroids.
   - **enclosed_thr** [float or none, default: None]: If not None, set distance to at most the specified value when ground truth is a subset of inferred.
+  - **fluorescence** (output): each session's CaImAn `C` trace of the union cell, concatenated in time. A union cell with no match in a session (possible with reg_file_rate below 1) has NaN fluorescence for that session, also in the NWB file.
+  - **ROIs** (cell_roi, Edit ROI and the NWB ROI table): each union cell's footprint is the one from the first session it was matched in. With reg_file_rate 1 every kept cell is in the first session, so all footprints come from it.
+  - **dff** (output): as in caiman_cnmf, computed per session with frames_window and concatenated in time like fluorescence, so each session has its own baseline. A union cell with no match in a session (possible with reg_file_rate below 1) has NaN dff for that session. With `nb: 0` the denominator uses each session's static ring background `b0` (not its `W` fluctuations). Not written to the NWB file.
 
 ##### [Suite2p](https://suite2p.readthedocs.io/en/latest/)
 
+suite2p 1.1.0. Workflows saved with an earlier OptiNiSt carry suite2p parameter names that no longer exist: delete each suite2p node and add it again before running (the parameter panel cannot restore groups it does not show). A run with stale names fails: suite2p_registration and suite2p_spike_deconv with a `Workflow yaml error`, suite2p_roi with `parameters predate suite2p 1.1.0` after the log warns about each dropped group. A node saved without a key the yaml has since gained takes the yaml's default for it.
+
 ###### suite2p_file_convert
 
-- **Description:** Convert to int16
+- **Description:** Convert to int16 and write suite2p's binary movie (`data.bin`)
+  - Integer TIFFs with one frame per page, stored in frame order, are read in place, in batches. That includes integer HDF5 data.
+  - float32 TIFFs, including float32 / float64 HDF5 data, are first normalised to int16 into a copy in the node directory, also in batches.
+  - Everything else is first copied whole into the node directory: several series, RGB pages, ImageJ hyperstacks, OME-TIFFs whose frames are stored out of order, other float types (float64 / float16 TIFFs, float16 HDF5 data), and a file that needs a different TIFF reader from the first file.
+  - An input file rewritten or deleted while it is read (for example, uploaded again under the same name) fails the node; run the workflow again.
 - **Input:** Image (Tiff), HDF5
 - **Output:** Suite2pData
 - **Parameters:**
-  - force sktiff [boolean, default: False] Specifies whether or not to use scikit-image for reading in tiffs
-  - batch_size [int, default: 500]: How many frames to register simultaneously in each batch. This depends on memory constraints it will be faster to run if the batch is larger, but it will require more RAM.
+  - **force_sktiff** [bool, default: False]: Whether to use scikit-image for reading in tiffs
+  - **batch_size** [int, default: 500]: How many frames are converted to the binary at a time. Registration and extraction have their own batch sizes.
 
 ###### suite2p_registration
 
-- **Description:** Motion correction
+- **Description:** Motion correction. suite2p computes its own reference image from `nimg_init` frames and registers the frames of the binary written by suite2p_file_convert (below another registration node, that node's `mc_images`) into `mc_images`, the one copy of the registered movie, which suite2p_roi and ROI editing read. The binary keeps the unregistered frames, so re-running only this node registers the original movie again. The 1P pre-filtering of suite2p 0.10.3 (`1Preg`, `spatial_hp_reg`, `pre_smooth`) was removed upstream; raise `smooth_sigma` and `spatial_taper` for 1P data instead.
 - **Input:** Suite2pData
-- **Output:** Suite2pData, ImageData
+- **Output:** ops (Suite2pData), mc_images (ImageData), meanImg (ImageData: mean of the registered movie; suite2p_file_convert's meanImg is the unregistered one), refImg (ImageData: the reference frames were aligned to)
 - **Parameters:**
 
-  - **I/O:**
+  - **torch_device** [string, default: cpu]: `cpu`, `cuda` or `mps`. Falls back to cpu when the device is unavailable.
 
-    - **nplanes** [int, default: 1]: each tiff has this many planes in sequence
-    - **nchannels** [int, default: 1]: each tiff has this many channels per plane
-    - **functional_chan** [int, default: 1]: this channel is used to extract functional ROIs (e.g. 1 = first channel, and 2 = second channel)
-      **frames_include** [int, default: -1]: If greater than zero, only frames_include frames are processed. useful for testing parameters on a subset of data.
+  - **run:**
 
-  - **Registration**
+    - **do_regmetrics** [bool, default: False]: Whether to compute the registration quality metrics (regPC, tPC, regDX) by PCA over the registered movie. QC only: they are kept in the ops output and not shown in the app. Skipped below 1500 frames. The PCA reads up to 2,000 frames, or 5,000 when the movie has at least 5,000 frames and neither side exceeds 700 pixels, and its memory can set the run's peak. Measured at 512 × 512 it adds about 3 GB at 2,908 frames and about 10 GB at 5,816 frames.
 
+  - **registration:**
+
+    - **batch_size** [int, default: 100]: How many frames to register at a time. Peak memory grows with it. The results also depend on it while it is below `nimg_init`: suite2p 1.1.0 ranks the reference candidates by the last batch only ([MouseLand/suite2p#1276](https://github.com/MouseLand/suite2p/issues/1276)), so changing the batch size changes the reference image and the registration. Keep the default unless memory requires a smaller batch.
+    - **nimg_init** [int, default: 400]: How many frames to use to compute the reference image.
     - **smooth_sigma** [float, default: 1.15]: Standard deviation in pixels of the gaussian used to smooth the phase correlation between the reference image and the frame which is being registered. A value of >4 is recommended for one-photon recordings (with a 512x512 pixel FOV).
-    - **smooth_sigma_time**: [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Might need this to be set to 1 or 2 for low SNR data.
-    - **maxregshift** [float, default: 0.1]: Maximum shift as a fraction of the frame size. If the frame is Ly pixels x Lx pixels, then the maximum pixel shift in pixels will be max(Ly,Lx) \* ops[‘maxregshift’].
-    - **align_by_chan** [int, default: 1]: Which channel to use for alignment (1-based, so 1 means 1st channel and 2 means 2nd channel). If you have a non-functional channel with something like td-Tomato expression, you may want to use this channel for alignment rather than the functional channel.
-    - **reg_tif** [bool, default: False]: Whether or not to write the registered binary to tiff files
+    - **smooth_sigma_time** [float, default: 0]: Standard deviation in time frames of the gaussian used to smooth the data before phase correlation is computed. Must stay 0: suite2p 1.1.0's time smoothing fails inside registration for any positive value, so the node refuses it with a message.
+    - **maxregshift** [float, default: 0.1]: Maximum shift as a fraction of the frame size. If the frame is Ly pixels x Lx pixels, then the maximum pixel shift in pixels will be max(Ly,Lx) \* maxregshift.
     - **th_badframes** [float, default: 1.0]: Involved with setting threshold for excluding frames for cropping. Set this smaller to exclude more frames.
-
-  - **1P:**
-
-    - **1Preg** [bool, default: False]: Whether to perform high-pass spatial filtering and tapering (parameters set below), which help with 1P registration.
-    - **spatial_hp_reg** [int, default: 42]: Window in pixels for spatial high-pass filtering before registration.
-    - **pre_smooth** [float, default: 0]: If > 0, defines stddev of Gaussian smoothing, which is applied before spatial high-pass filtering.
-    - **spatial_taper** [float, default: 40]: How many pixels to ignore on edges - they are set to zero (important for vignetted windows, for FFT padding do not set BELOW 3\*ops[‘smooth_sigma’]).
-
-  - **Non-rigid:**
+    - **norm_frames** [bool, default: True]: Normalize frames when detecting shifts.
+    - **subpixel** [int, default: 10]: Precision of the subpixel registration (1/subpixel steps).
+    - **spatial_taper** [float, default: 3.45]: Slope in pixels of the sigmoid that fades the frame edges before phase correlation; its midpoint sits 2 x this value in from each edge. Larger may help 1P recordings. suite2p 0.10.3 used its `spatial_taper` (default 40) only with `1Preg` on and otherwise tapered with 3 x `smooth_sigma`, which is 3.45, the new default: carrying an old 1P value of 40 forward attenuates most of a small frame.
+    - **do_bidiphase** [bool, default: False]: Whether to estimate the bidirectional phase offset from the data.
+    - **bidiphase** [int, default: 0]: Bidirectional phase offset in pixels, applied when it is not estimated.
+    - **reg_tif** [bool, default: False]: Whether or not to also write the registered frames to tiff files in the suite2p folder, one file per registration batch
     - **nonrigid** [bool, default: True]: Whether to use nonrigid registration, which splits the field of view into blocks and computes registration offsets in each block separately.
-    - **block_size** [list of int, default: [128, 128]]: Size of blocks for non-rigid registration, in pixels. HIGHLY recommend keeping this a power of 2 and/or 3 (e.g. 128, 256, 384, etc) for efficient fft.
+    - **block_size** [list of int, default: [128, 128]]: Size of blocks for non-rigid registration, in pixels. HIGHLY recommend keeping this a power of 2 and/or 3 (e.g. 128, 256, 384, etc) for efficient fft. Must be smaller than the frame along both axes: with a single block suite2p 1.1.0 cannot interpolate the block shifts, so the node then registers rigidly and logs a warning.
     - **snr_thresh** [float, default: 1.2]: How big the phase correlation peak has to be relative to the noise in the phase correlation map for the block shift to be accepted. In low SNR recordings like one-photon, I’d recommend a larger value like 1.5, so that block shifts are only accepted if there is significant SNR in the phase correlation.
     - **maxregshiftNR** [int, default: 5]: Maximum shift in pixels of a block relative to the rigid shift.
 
 ###### suite2p_roi
 
-- **Description:** ROI detection 2P or 1P
+- **Description:** ROI detection 2P or 1P, signal extraction and cell classification. The frame rate is the NWB setting `imaging_rate`.
 - **Input:** Suite2pData
 - **Output:** Suite2pData, FluoData, IsCellData
 - **Parameters:**
 
-  - **tau** [float, default 1.0]: The timescale of the sensor (in seconds), used for deconvolution kernel. The kernel is fixed to have this decay and is not fit to the data.
+  - **tau** [float, default 1.0]: The timescale of the sensor (in seconds). Sets the detection bin size together with the frame rate, and the deconvolution kernel of suite2p_spike_deconv. The kernel is fixed to have this decay and is not fit to the data.
 
     - 0.7 for GCaMP6f
     - 1.0 for GCaMP6m
     - 1.25-1.5 for GCaMP6s
 
-  - **Classification:**
+  - **diameter** [list of int, default: [12, 12]]: Expected cell diameter in pixels (y, x). Normalises the pixel distances behind each ROI's compactness and aspect-ratio statistics (classifier inputs), and sets the cell size sourcery looks for. Must be two numbers.
 
-    - **soma_crop** [bool, default,: True] Crop dendrites for cell classification stats like compactness
+  - **detection:**
 
-  - **Cell_detection:**
-
-    - **high_pass** [int, default: 100]: Running mean subtraction across time with window of size ‘high_pass’. Values of less than 10 are recommended for 1P data where there are often large full-field changes in brightness.
-    - **sparse_mode** [bool, default: True]: Whether or not to use sparse_mode cell detection.
-    - **max_overlap** [float, default: 0.75] Overlapping ROIs are allowed during cell detection. After detection, ROIs with more than ops[‘max_overlap’] fraction of their pixels overlapping with other ROIs will be discarded. Therefore, to throw out NO ROIs, set this to 1.0.
-    - **nbinned** [int, default: 5000]: Maximum number of binned frames to use for ROI detection.
-    - **spatial_scale** [int, default: 0]: If set to 0, then the algorithm determines the optimal scale of the recording is in pixels automatically. If it seems off, set it yourself to the following values: 1 (=6 pixels), 2 (=12 pixels), 3 (=24 pixels), or 4 (=48 pixels).
+    - **algorithm** [string, default: sparsery]: `sparsery` (suite2p's default detector) or `sourcery` (the older detector). suite2p's cellpose mode is not available here.
+    - **highpass_time** [int, default: 100]: Running mean subtraction across time with a window of this many bins. Values of less than 10 are recommended for 1P data where there are often large full-field changes in brightness.
+    - **nbins** [int, default: 5000]: Maximum number of binned frames to use for ROI detection. A bin is `tau` × the frame rate in frames, or the number of frames ÷ `nbins` when that is larger.
+      - Detection's memory grows with the number of binned frames: about 4.6 MB per binned frame at 512 × 512.
+      - At 30 Hz and `tau` 1.0, detection becomes the run's peak beyond about 10 minutes of recording. From there it adds about 0.28 GB per minute, up to the 5,000-frame cap (about 83 minutes).
+      - A lower `nbins` bounds that memory on long recordings, but it widens the bin and changes the detected ROIs. On a 13-minute recording, `nbins` 500 and 250 kept a half and a third of the ROIs.
+    - **denoise** [bool, default: False]: PCA-denoise the binned movie before detection.
+      - It changes the detected ROIs substantially: measured at 512 × 512, it found 1.5 to 2.3 times as many, and kept about half of the ROIs found without it.
+      - Its memory grows with the number of binned frames: about +0.5 GB on an 8-minute recording at 30 Hz.
+    - **block_size** [list of int, default: [64, 64]]: Block size for denoising, in pixels.
     - **threshold_scaling** [float, default: 1.0]: Controls the threshold at which to detect ROIs (how much the ROIs have to stand out from the noise to be detected). If higher, then fewer ROIs will be detected, and if lower, more ROIs will be detected.
-    - **max_iterations** [int, default: 20] How many iterations over which to extract cells - at most ops[‘max_iterations’], but usually stops before due to ops[‘threshold_scaling’] criterion.
-    - **spatial_hp_detect** [int, default: 25]: Window for spatial high-pass filtering for neuropil subtracation before ROI detection takes place.
+    - **max_overlap** [float, default: 0.75]: Overlapping ROIs are allowed during cell detection. After detection, ROIs with more than this fraction of their pixels overlapping with other ROIs will be discarded. Must be below 1: ROI editing needs the overlap information suite2p only computes then.
+    - **soma_crop** [bool, default: True]: Crop dendrites for cell classification stats like compactness.
+    - **npix_norm_min** [float, default: 0.0], **npix_norm_max** [float, default: 100]: Discard ROIs whose soma area, relative to the median soma area of the first 100 detected ROIs, falls outside this range.
+    - **sparsery_settings:**
+      - **spatial_scale** [int, default: 0]: If set to 0, then the algorithm determines the optimal scale of the recording in pixels automatically. If it seems off, set it yourself to the following values: 1 (=6 pixels), 2 (=12 pixels), 3 (=24 pixels), or 4 (=48 pixels).
+      - **highpass_neuropil** [int, default: 25]: Window for spatial high-pass filtering for neuropil subtraction before ROI detection takes place.
+      - **max_ROIs** [int, default: 5000]: Stop detection after this many ROIs.
+      - **active_percentile** [float, default: 0.0]: Above 0, each ROI's active frames are those over the lower of the usual threshold (from `threshold_scaling`) and this percentile (0 to 100) of its temporal projection. A small positive value admits more frames; raising it moves the cutoff up towards the usual threshold and admits fewer. 0 keeps the usual threshold.
+    - **sourcery_settings:**
+      - **max_iterations** [int, default: 20]: How many iterations over which to extract cells - usually stops before due to the threshold_scaling criterion. In suite2p 0.10.3 this also capped sparsery at 250 x `max_iterations` ROIs; in 1.1.0 `max_ROIs` caps sparsery and this key is sourcery's alone.
+      - **connected** [bool, default: True]: Require each ROI to be a connected region.
+      - **smooth_masks** [bool, default: False]: Smooth the ROI masks.
 
-  - **Output:**
+  - **extraction:**
 
-    - **preclassify** [float, default: 0.0] Apply classifier before signal extraction with probability threshold of “preclassify”. If this is set to 0.0, then all detected ROIs are kept and signals are computed.
-
-  - **ROI_extraction:**
     - **allow_overlap** [bool, default: False]: Whether or not to extract signals from pixels which belong to two ROIs. By default, any pixels which belong to two ROIs (overlapping pixels) are excluded from the computation of the ROI trace.
+    - **inner_neuropil_radius** [int, default: 2]: Number of pixels to keep between the ROI and the neuropil donut.
     - **min_neuropil_pixels** [int, default: 350]: Minimum number of pixels used to compute neuropil for each cell.
+    - **snr_threshold** [float, default: 0.0]: Discard ROIs whose trace SNR is below this and extract again. 0 keeps all ROIs.
+    - **batch_size** [int, default: 500]: Frames per extraction batch.
+
+  - **classification:**
+
+    - **preclassify** [float, default: 0.0]: Apply classifier before signal extraction with probability threshold of “preclassify”. If this is set to 0.0, then all detected ROIs are kept and signals are computed.
+    - **use_builtin_classifier** [bool, default: False]: Use suite2p's built-in classifier even when a user classifier exists in the server's home directory.
+
+  The iscell output keeps suite2p's first column (cell or not); the probability column is not stored.
 
 ###### suite2p_spike_deconv
 
-- **Description:** Estimates voltage spikes from calcium imaging data
-- **Input:** FluoData
-- **Output:** FluoData
+- **Description:** Estimates spikes from the extracted fluorescence (OASIS non-negative deconvolution), with the `tau` and frame rate of the suite2p_roi node
+- **Input:** Suite2pData
+- **Output:** Suite2pData, SpikingActivityData
 - **Parameters:**
-  - **neucoeff** [float, default: 0.7]: Neuropil coefficient for all ROIs. Used to subtract neuropil contamination from cell fluorescence.
-  - **baseline** [string,'maximin',‘constant’,'prctile', default: maximin]: Baseline of each trace to be subtracted from each cell.
-    - maximin: computes a moving baseline by filtering the data with a Gaussian of width ops['sig_baseline'] _ ops['fs'], and then minimum filtering with a window of ops['win_baseline'] _ ops['fs'], and then maximum filtering with the same window.
-    - constant: computes a constant baseline by filtering with a Gaussian of width ops['sig_baseline'] \* ops['fs'] and then taking the minimum value of this filtered trace.
-    - prctile: computes a constant baseline by taking the ops['prctile_baseline'] percentile of the trace.
-      <!--Note to check these are actually possible-->
-  - **win_baseline** [float, default: 60.0]: Window for maximin filter in seconds
-  - **sig_baseline** [float, default: 10.0] Gaussian filter width in seconds, used before maximin filtering or taking the minimum value of the trace, ops['baseline'] = 'maximin' or 'constant'.
-  - **prctile_baseline** [float, optional, default: 8]: percentile of trace to use as baseline if ops['baseline'] = 'constant_percentile'.
+  - **extraction:**
+    - **neuropil_coefficient** [float, default: 0.7]: Neuropil coefficient for all ROIs. Used to subtract neuropil contamination from cell fluorescence.
+    - **batch_size** [int, default: 500]: Traces per preprocessing and deconvolution batch.
+  - **dcnv_preprocess:**
+    - **baseline** [string, 'maximin', 'constant' or 'prctile', default: maximin]: Baseline of each trace to be subtracted from each cell.
+      - maximin: computes a moving baseline by filtering the data with a Gaussian of width sig_baseline frames, and then minimum filtering with a window of win_baseline \* fs, and then maximum filtering with the same window.
+      - constant: computes a constant baseline by filtering with a Gaussian of width sig_baseline frames and then taking the minimum value of this filtered trace.
+      - prctile: computes a constant baseline by taking the prctile_baseline percentile of the trace.
+    - **win_baseline** [float, default: 60.0]: Window for maximin filter in seconds
+    - **sig_baseline** [float, default: 10.0]: Gaussian filter width in frames (not seconds), used before maximin filtering or taking the minimum value of the trace (baseline = 'maximin' or 'constant').
+    - **prctile_baseline** [float, default: 8.0]: Percentile of the trace to use as baseline if baseline = 'prctile'.
 
 ##### [LCCD](https://doi.org/10.1016/j.neures.2022.02.008)
 
@@ -200,27 +239,27 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
   - **blob_detector:** Initial step that identifies potential cells or "blobs" in each frame of the video.
 
-    - **filtersize1** [int (filtersize1 <= Time / 2), default: 100]: Size of the larger temporal filter for smoothing.
+    - **filtersize1** [int (filtersize1 >= 1), default: 100]: Size of the larger temporal filter for smoothing. The temporal filters run on chunks of frame_divider frames, so filtersize1 <= frame_divider is recommended; larger values degrade detection and log a warning.
     - **filtersize2** [int (filtersize2 < filtersize1), default: 4]: Size of the smaller temporal filter for edge detection.
-    - **sigma** [float, smaller than T & filtersize2 < filtersize1, default: 1.25]: Standard deviation for the Gaussian filter.
-    - **fsize** [int (odd number recommended), default: 9]: Size of the 2D Gaussian filter for spatial filtering.
-    - **min_area** [int (min_area < max_area < X * Y), default: 16]: Define the acceptable size range for detected blobs.
-    - **max_area** [int, (max_area < X * Y), default: 100]: Define the acceptable size range for detected blobs.
-    - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations.
+    - **sigma** [float (sigma > 0), default: 1.25]: Standard deviation for the Gaussian filter.
+    - **fsize** [int (1 <= fsize <= the frame's shorter side, odd number recommended), default: 9]: Size of the 2D Gaussian filter for spatial filtering.
+    - **min_area** [number (min_area < max_area), default: 16]: Define the acceptable size range for detected blobs.
+    - **max_area** [number, default: 100]: Define the acceptable size range for detected blobs.
+    - **sparse** [bool, default: True]: Determines whether to use sparse matrix operations. The ROIs found are the same either way; sparse uses less memory and time, so leave it True. Workflows saved with False keep False until it is changed.
 
   - **roi_integration:** Takes blobs detected across all frames and integrates them into coherent ROI that represent consistent cell locations over time.
 
-    - **overlap_threshold** [float (0 < overlap_threshold < 1), default: 0.25]: Threshold for determining significant overlap between ROIs
-    - **min_area** [int (min_area < max_area < X * Y), default: 16]: Define the acceptable size range for integrated ROIs.
-    - **max_area** [int (max_area < X * Y), default: 100]: Maximum acceptable size for integrated ROIs.
-    - **sparse** [bool, default: False]: Determines whether to use sparse matrix operations.
+    - **overlap_threshold** [float (0 <= overlap_threshold <= 1), default: 0.25]: Threshold for determining significant overlap between ROIs
+    - **min_area** [number (min_area < max_area), default: 16]: Define the acceptable size range for integrated ROIs.
+    - **max_area** [number, default: 100]: Maximum acceptable size for integrated ROIs.
+    - **sparse** [bool, default: True]: Determines whether to use sparse matrix operations. The ROIs found are the same either way; sparse uses less memory and time, so leave it True. Workflows saved with False keep False until it is changed.
 
   - **lccd:**
 
-    - **frame_divider** [int (Time / frame_divider >= 2), default: 100]: Divides the time dimension into segments for faster processing.
+    - **frame_divider** [int (1 <= frame_divider <= Time), default: 100]: Divides the time dimension into segments for faster processing. Frames after the last full segment are not used for detection.
 
   - **dff:**
-    - **f0_frames** [int (0, f0_frames, Time), default: 100]: Number of frames used to calculate the baseline fluorescence.
+    - **f0_frames** [int (f0_frames >= 1), default: 100]: Number of frames used to calculate the baseline fluorescence. The dff at frame k uses the window [k - f0_frames, k + f0_frames), so dff is entirely NaN unless 2 \* f0_frames < Time.
     - **f0_percentile** [float (0 <= f0_percentile <= 100), default: 8]: Percentile used for calculating the baseline fluorescence.
 
 #### OptiNiSt (Analysis)
@@ -230,20 +269,78 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 ###### ETA (Event-Triggered Average)
 
 - **Description:** Calculates the average neural response around specific events in behavioral data.
-- **Input:** FluoData, BehaviorData, IsCellData (optional)
+- **Input:** FluoData, BehaviorData, IsCellData (optional), HeatMapData `order_from` (optional)
   - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
-- **Output:** mean (TimeSeriesData), mean_heatmap (HeatMapData), nwbfile
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
+  - `order_from`: another node's heatmap, typically the `mean_heatmap` of an `eta` on a different event column or a different part of the same recording. When connected, the rows of this node's `mean_heatmap` follow that heatmap's row labels (cell numbers), so two conditions share one order and `sort_by_peak` is ignored. Every cell averaged here must have a row in the reference, so use the same `iscell` in both nodes. An `iscell` whose length differs from the number of ROIs stops the run.
+- **Output:** mean (TimeSeriesData), mean_trace (TimeSeriesData: average across cells with an error band), mean_heatmap (HeatMapData), nwbfile
 - **Parameters:**
   - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
   - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
-  - **event_col_index** [int, default 1]: Index of column in behavioral data to use for event detection.
+  - **event_col_index** [int, default 1]: Index of column in behavioral data to use for event detection. It must be a whole number from 0 to the last column; anything else, including -1, stops the run with a message.
   - **trigger_type** ['up', 'down', 'cross', default: 'up']:
-    - 'up' detects transitions 0 to trigger_threshold
-    - 'down' detects transitions trigger_threshold to 0
-    - 'cross' detects either up or down transitions.
+    - 'up' detects transitions 0 to trigger_threshold. The window runs from `pre_event` frames before the onset to `post_event` frames after the end of the event. Events whose length differs from the most common length are dropped and logged.
+    - 'down' detects transitions trigger_threshold to 0. Here the event is the below-threshold run, so the window runs from `pre_event` frames before the falling edge to `post_event` frames after the next rising edge, and the same length rule applies to that run. The run length is the gap to the next event, so irregularly spaced events are dropped and the window is as long as the most common gap.
+    - 'cross' detects both up and down transitions and averages them together with a fixed window, `pre_event` frames before each edge to `post_event` frames after it. The event length is 0 and no event is dropped for its length.
   - **trigger_threshold** [float, default 0.5]: Threshold value for trigger detection
-  - **pre_event** [int (0 < pre_event < T/2), default: -10]: Number of time points before the trigger to include.
-  - **post_event** [int (T/2 > post_event < 0), default: 10]: Number of time points after the trigger to include.
+  - **pre_event** [int, default: -10]: Number of time points before the trigger to include. The sign is ignored; -10 and 10 both mean 10 frames before the onset.
+  - **post_event** [int, default: 10]: Number of time points after the end of the trigger to include. May be negative to end the window inside the event, as long as abs(pre_event) + event length + post_event is at least 1.
+  - **baseline_window** [int, default: 0]: Number of frames immediately before the onset used as each event's own baseline. When above 0, each event window is z-scored per cell as (F - baseline mean) / baseline s.d. before averaging, as in Patel et al. 2026 (a 3 s pre-bout baseline at 10 Hz is 30). Must be 0 or a whole number from 2 to abs(pre_event), and the window must reach the onset (event length + post_event at least 0). A baseline that is constant for a cell (s.d. at most 1e-6 of its largest absolute value) or has no finite sample skips that event for that cell only, and the skipped pairs are logged with their cell numbers. mean, std and sem then use the remaining events, and a cell with no event left is NaN in `mean` and left out of `mean_trace`. With the option on, NaN samples in the input are excluded per time point, from the baseline and from the averages, instead of making the average NaN. 0 averages the raw windows.
+  - **smooth_sigma_frames** [float, default: 0]: Gaussian s.d. in frames applied along time to each cell's averaged trace. For a 500 ms window at 30 Hz (15 frames), a Gaussian with the same full width at half maximum has an s.d. of 15 / 2.355 = 6.4, and one with the same s.d. as a 15-frame moving average has 15 / sqrt(12) = 4.3. It changes the figures only, as `smooth_sigma_bins` does in `covariate_binning`: `mean_heatmap`, its `sort_by_peak` order and `mean_trace` (and its band) use the smoothed traces, while the `mean` output and its std and sem stay unsmoothed. The NWB keeps the unsmoothed `mean`, `mean_trace` and `mean_trace_band` and adds the smoothed versions as `mean_smoothed`, `mean_trace_smoothed` and `mean_trace_band_smoothed`. The Gaussian is two-sided, so a response spreads about two s.d. before the onset in the smoothed figures; read the onset latency from `mean`. NaN samples are skipped rather than spread, and the window edges are averaged over the frames that exist. 0 is off.
+  - **mean_trace_band** ['std', 'sem', default: 'sem']: Error band for the mean_trace output, computed across cells of the per-cell event-triggered means. Note the per-cell mean output's own std/sem are computed across events, not cells. The plot's STD toggle shows whichever band is selected, so with `sem` it draws the sem.
+  - **sort_by_peak** [bool, default: false]: Order the `mean_heatmap` rows by the time of each cell's peak in the averaged trace, earliest peak in the bottom row (the heatmap draws its first row at the bottom). Ties keep cell order, and a flat cell or one whose average is NaN throughout sorts with the earliest. The sort key is the same average that is plotted, so cells with no response also fall on the diagonal. Row labels keep the original cell numbers; `mean` is not reordered. `covariate_binning` defaults this to true.
+  - `mean_heatmap` scales each row to 0..1 over its finite values, so a NaN time point in a cell's average is blank and the rest of that row still shows; a row that is NaN throughout stays blank.
+  - Events whose window would cross the start or end of the recording are dropped and logged. `num_sample` in the NWB output is the number of events extracted after these drops, before any per-cell `baseline_window` skipping.
+  - `mean_trace` averages one fixed set of cells: those whose mean is finite at every time point. A cell that is NaN anywhere (from a NaN input sample without `baseline_window`, or with no event left) is left out of the whole trace and named in the log, so the trace has no step where the set of cells would change. The title's cell count is that set.
+  - The `mean_heatmap` and `mean_trace` plot titles state the number of events (and cells), whether the per-event z-score is on, and the smoothing, so a panel built from few events says so. When the length rule or the recording edge dropped events, the title reads `n = 5 of 8 events`, counting the detected events too.
+
+###### covariate_binning
+
+- **Description:** Bins neural activity by a continuous behavioural covariate, such as track position or distance to a goal, and averages each cell's activity within each bin.
+- **Input:** FluoData, BehaviorData, IsCellData (optional), HeatMapData `order_from` (optional)
+  - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
+  - `order_from`: another node's heatmap, typically the `mean_heatmap` of a `covariate_binning` on a different part of the same recording. When connected, the rows of this node's `mean_heatmap` follow that heatmap's row labels (cell numbers), so a before and an after panel share one order, and `sort_by_peak` is ignored. Every cell binned here must have a row in the reference, so use the same `iscell` in both nodes; extra rows in the reference are ignored.
+- **Output:** mean (TimeSeriesData, cells x bins, with std and sem, x axis is the bin centres), mean_heatmap (HeatMapData), nwbfile
+  - mean_heatmap is the mean scaled per cell as set by `heatmap_normalization`, one row per cell, labelled with the cell number. Empty bins are left blank.
+  - The NWB output stores mean, std, sem, `bin_centers` and `num_sample`, the number of time samples (trials in trial mode) each bin's mean is over, so a bin that `min_samples` blanks counts 0, plus `mean_smoothed` when smoothing is on. The heatmap title states the sample or trial counts per bin and the smoothing.
+- **Parameters:**
+  - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
+  - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
+  - **event_col_index** [int, default: 1]: Index of the behaviour column to bin by, a whole number from 0 to the last column.
+  - **n_bins** [int, default: 20]: Number of equal-width bins.
+  - **use_data_range** [bool, default: true]: Bin from the minimum to the maximum of the covariate. When false, bin from `bin_min` to `bin_max`.
+  - **bin_min** [float, default: 0.0]: Lower edge of the first bin, used when `use_data_range` is false.
+  - **bin_max** [float, default: 1.0]: Upper edge of the last bin, used when `use_data_range` is false.
+  - **trial_col_index** [int, default: -1]: Index of a behaviour column holding a trial id (any numeric label, for example the trial number series of a VR recording). When 0 or above, each cell's activity is first averaged per trial within each bin and then across trials, so std and sem are across trials and `num_sample` counts trials; this is the usual place-field definition ("mean activity on each trial within each position bin"). Samples without a finite trial id are excluded. Every id counts as a trial, so a column that codes the time before the first trial or between trials as 0 or -1 needs those samples split off with a `condition_split` (`trial > 0`, 'greater') first. Ids must be whole numbers: ids interpolated onto the imaging frames (1.33, 1.67 at a boundary) make one-sample pseudo-trials, so round them to the nearest trial first. The run stops with a message, naming any other column that looks like a trial id, when the column cannot be one: values that are mostly whole but not all (interpolated ids), a typical id spanning under a quarter of the binned covariate range over its frames (a continuous signal, a frame counter, a clock in seconds), an id that recurs in separate stretches of frames (an event or state code), or a single value over the binned samples (trial mode needs two trials). The hint only offers columns with at least three ids, so a two-value block or phase code is not suggested. The span is measured over all of an id's frames, so a lap still counts over a narrow `bin_min` to `bin_max` range. When there are more trials times bins than binned samples, most trial-bins are empty and a warning suggests fewer bins. -1 averages the time samples directly; any other negative or non-whole value stops the run.
+  - **min_samples** [int, default: 1]: A whole number from 1. A bin with fewer samples than this is NaN (blank in the heatmap and never a cell's peak). In trial mode the rule applies to each trial's share of the bin, so a trial that barely touched a bin does not count there.
+  - **smooth_sigma_bins** [float, default: 0]: Gaussian s.d. in bins applied along the bin axis to the heatmap (Sosa et al. 2025 smooth 10 cm bins with a 10 cm s.d., so 1). Empty bins stay blank and do not blank their neighbours. The `mean` output, its std and sem stay unsmoothed; the smoothed means go to the NWB as `mean_smoothed`. `sort_by_peak` uses the smoothed row. 0 is off.
+  - **sort_by_peak** [bool, default: true]: Order the heatmap rows by the bin of each cell's peak, lowest bin in the bottom row, with the same tie and flat-cell rules as `eta`. Only the heatmap is reordered. Ignored when `order_from` is connected.
+  - **heatmap_normalization** ['minmax', 'mean', 'none', default: 'minmax']: How each row of `mean_heatmap` is scaled. `minmax` maps each cell's binned means to 0..1. `mean` divides each cell's binned means by that cell's mean activity over every in-range sample (NaN samples excluded, and in trial mode the samples without a finite trial id), including samples in bins that `min_samples` blanks; it is a time-weighted mean, so with trials of unequal length a value of 1 in trial mode is close to, not exactly, the cell's average, the convention of place-field papers that show activity as a multiple of the session mean; it needs non-negative activity such as raw fluorescence, dF/F or deconvolved spikes, and a cell whose mean is not positive (for example after z-scoring) is blanked with a warning. `none` plots the binned means as they are. The `mean` output and the NWB file always hold the unscaled means, and the peak used by `sort_by_peak` is taken from the min-max scaled row, so the order does not depend on this choice.
+  - Every time sample whose covariate lies in the range is used; samples outside it, NaN or infinite are excluded, and with `use_data_range` the range spans the finite values only. Without `trial_col_index`, std and sem are over time samples, which are usually autocorrelated, not over trials. A NaN in a cell's fluorescence makes that cell's mean NaN for the bin it falls in (for that trial only, in trial mode), as in ETA. Frame gating such as a running-speed threshold is a `condition_split` upstream, as the paper's Methods usually describe it.
+
+###### condition_split
+
+- **Description:** Keeps only the time samples where a behaviour column meets a condition, so that a downstream node such as ETA runs on the matching part of the recording only.
+- **Input:** FluoData, BehaviorData
+  - **Neural data (X) and behavior data (Y) must have the same number of time points: X.shape[0] == Y.shape[0].**
+  - A 1D behaviour dataset (for example one column loaded from HDF5) is treated as a single column, so use `event_col_index: 0` for it.
+- **Output:** neural_data (FluoData), behaviors_data (BehaviorData)
+  - neural_data keeps the orientation of its input; behaviors_data is always (time, columns), so a downstream node reads it with `transpose_y: false`.
+- **Parameters:**
+  - **transpose_x** [bool, default: true]: Whether to transpose the neural data.
+  - **transpose_y** [bool, default: false]: Whether to transpose the behaviour data.
+  - **event_col_index** [int, default: 1]: Index of the behaviour column the condition is tested on.
+  - **condition** ['greater', 'less', 'equal', 'between', default: 'greater']:
+    - 'greater' keeps samples with value > threshold.
+    - 'less' keeps samples with value < threshold.
+    - 'equal' keeps samples with value exactly equal to threshold, for example a trial type or zone ID.
+    - 'between' keeps samples with threshold <= value <= threshold_upper.
+  - **threshold** [float, default: 0.5]: Value the column is compared with.
+  - **threshold_upper** [float, default: 1.0]: Upper bound, used by 'between' only.
+  - **margin** [int, default: 0]: Also drop kept samples within this many samples of a rejected one. Use it when the imaging frames lead or lag the behaviour stream by a frame or two, so the first frames of a rejected stretch are not kept by mistake (for example 2 for Sosa et al. 2025).
+  - **modulo** [float, default: 0]: When greater than 0, the condition is tested on the remainder of the column divided by this value instead of the column itself. With a trial-number column, `modulo: 2` and `equal` with `threshold: 1` keeps the odd-numbered trials and `threshold: 0` the even ones, which is how a cross-validated sort (order from one half, display the other) is built without a parity column. For a column that is not exactly integer, test the remainder with 'between' (0.5 to 1.5 for odd) rather than 'equal'. A column that codes the inter-trial interval as 0 or -1 puts those samples into one half, so split off `trial > 0` with a 'greater' node first.
+  - Kept samples are joined in their original order. Nothing else is filtered: there is no trial detection, and a downstream window can span the join between two kept stretches that were not adjacent in the recording. The number of kept samples and stretches is logged.
 
 ##### Dimensionality Reduction
 
@@ -259,7 +356,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **I/O:**
 
     - **target_index** [int (columns start from 0), default 1]: Index of the target behavioral variable.
-    - **transpose_x** [bool, default: False]: Whether to transpose the neural data matrix.
+    - **transpose_x** [bool, default: True]: Whether to transpose the neural data matrix.
     - **transpose_y** [bool, default: False]: Whether to transpose the behavior data matrix.
     - **standard_x_mean** [bool, default: True]: Whether to standardize X by subtracting mean.
     - **standard_x_std** [bool, default: True]: Whether to standardize X by dividing by std.
@@ -283,7 +380,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
   - **I/O:**
 
-    - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+    - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
     - **standard_mean** [bool, default: True]: Whether to standardize X by subtracting mean.
     - **standard_std** [bool, default: True]: Whether to standardize X by dividing by std.
 
@@ -298,44 +395,43 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 ###### [dPCA](https://github.com/machenslab/dPCA) (demixed Principal Component Analysis)
 
-- **Description:** Decompose neural activity into components related to task-related components.
-- **Input:** FluoData (neural activity), BehaviorData (behavioral variables) , IsCellData (optional)
-  - **Neural data should have shape (n_neurons, n_timepoints).**
-  - **Behavior data should have shape (n_timepoints, n_behavioral_variables).**
-  - **Behavior data should include columns for trigger_column and feature_columns**
-  - **Set trigger_column and feature_column indices within total number of behavioural data columns**
-- **Output:** HeatMapData (component activations for different task conditions).
+- **Description:** Decompose trial-averaged neural activity around behavioral events into components related to time and to each task condition (demixed PCA).
+- **Input:** FluoData (neural activity), BehaviorData (behavioral variables), IsCellData (optional)
+  - **Neural data should have shape (n_neurons, n_timepoints)** (the default `transpose: True` turns it into time x cells).
+  - **Behavior data should have shape (n_timepoints, n_behavioral_variables)** and the same number of time points as the neural data.
+  - **Trigger column:** thresholded per frame; a trial starts at the first frame above (or below) threshold after each transition. A signal already above threshold at frame 0 counts as an 'up' trigger, as in ETA.
+  - **Feature columns:** read at the trigger frame and treated as categorical conditions (a few discrete levels each). Every combination of levels must occur at least once. Continuous columns (many distinct values) and constant columns are rejected. Unbalanced trial counts (a condition with fewer than 3 trials, or a 10x spread) are averaged as they are and logged as a warning; the per-condition counts are stored in the NWB file.
+  - **Trials whose window leaves the recording are dropped** with a warning; conditions with unequal trial counts are averaged over all their trials.
+- **Output:** HeatMapData per selected marginalization and component: rows are the condition combinations (in level order), columns are frames relative to the trigger. The NWB file also stores the explained variance ratio per marginalization and the level values of each feature.
 - **Parameters:**
 
   - **I/O:**
 
-    - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
-    - **trigger_column** [int, default: 1]: Column index in behavior data for event triggers.
-    - **trigger_type** ['up', 'down', 'cross', default: 'up']:
-      - 'up' detects transitions 0 to trigger_threshold
-      - 'down' detects transitions trigger_threshold to 0
-      - 'cross' detects either up or down transitions.
-    - **trigger_threshold** [float, default 0.5]: Threshold value for trigger detection
-    - **trigger_duration** [list of 2 ints, default: [10, 10]]: Frames before and after trigger to include.
-    - **feature_columns** [list of ints, default: [3, 4]]: Columns in behaviors_data to use as features/conditions for the dPCA analysis.
-
+    - **transpose** [bool, default: True]: Whether to transpose the neural data matrix to (time, cells).
     - **standard_mean** [bool, default: True]: Whether to standardize by subtracting mean.
     - **standard_std** [bool, default: True]: Whether to standardize by dividing by std.
+    - **trigger_column** [int, default: 1]: Column index in behavior data for event triggers.
+    - **trigger_type** ['up', 'down', 'cross', default: 'up']:
+      - 'up' detects transitions from below to above trigger_threshold
+      - 'down' detects transitions from above to below trigger_threshold
+      - 'cross' detects either transition (the feature values at up and down edges are usually different, so prefer 'up' or 'down').
+    - **trigger_threshold** [float, default: 0.5]: Threshold value for trigger detection.
+    - **trigger_duration** [list of 2 ints, default: [-10, 10]]: Frames before (negative) and after the trigger to include; before < after.
+    - **feature_columns** [list of ints, default: [0, 2]]: Columns in behavior data used as conditions for the dPCA analysis (at least one, usually 1 to 3). The default pair is the only full-factorial design in the sample behavior CSV and is heavily unbalanced, so the defaults are a smoke test rather than an analysis.
 
   - **dPCA:**
-    <!-- check 't', 'b', 'c', 'tbc', 's', 'ts'. Are these all used correctly?-->
 
-    - **labels** [str, default: 'tbc']: list of characters with which to describe the parameter axes, e.g. 'tsd' to denote time, stimulus and decision axis. All marginalizations (e.g. time-stimulus) are referred to by subsets of those characters (e.g. 'ts'). Must match the number of dimensions in the data.
-    - **regularizer** [float, default: 0.001]: If > 0, the regularization weight is regularizer\*var(data). Helps prevent overfitting by adding a penalty term to the optimization objective.
-    <!-- check if can use 'auto' regulariser-->
-    - **n_components** [int or dict, default: 10]: Number of components to keep. If int, same number of components are kept in each marginalization (e.g. {'t' : 10, 'ts' : 5}).
-    - **join** [dict or None, default: None]: How to join task parameters. If a data set has parametrized by time t and stimulus s, then dPCA will split the data into marginalizations corresponding to 't', 's' and 'ts'. At times, we want to join different marginalizations (like 's' and 'ts'), e.g. if we are only interested in the time-modulated stimulus components. In this case,we would pass {'ts' : ['s','ts']}.
-    - **n_iter:** [int, default: 0]: Number of iterations for randomized SVD solver (sklearn).
-    - **copy** [bool, default: True]: Whether to copy X and Y before fitting and transforming. Ensures that the original data is not modified.
+    - **labels** [str, default: 'tbc']: One character per data axis: time first, then one per feature column, so its length must be 1 + number of feature columns. Marginalizations are referred to by subsets of these characters (e.g. 'tb').
+    - **regularizer** [float >= 0, default: 0]: If > 0, the regularization weight is regularizer\*var(data). Helps prevent overfitting. The library's 'auto' search is not supported.
+    - **n_components** [int, default: 8]: Number of components kept in every marginalization. Must not exceed the number of cells.
+    - **n_iter** [int, default: 0]: Number of iterations for the randomized SVD solver (sklearn).
+    - **seed** [int, default: 0]: Random seed for the SVD solver; the same seed gives the same components on the same data.
 
   - **Plot:**
-    - **figure_components** [list of ints, default: [0, 1]]: Specifies which dPCA components to plot. Default will create figures for the first two components (0 and 1).
-    - **figure_features**: ['t', 'b', 'c', 'tbc']: Defines which marginalizations or feature combinations to plot. 't' might represent time, 'b' and 'c' the two behavioral features, and 'tbc' their interaction.
+    - **figure_components** [list of ints, default: [0, 1]]: Which dPCA components to plot; each must be below n_components.
+    - **figure_features** [list of str, default: ['t', 'b', 'c', 'tbc']]: Which marginalizations to plot; each must be a subset of `labels`.
+
+- **Errors:** the node fails before fitting with a message naming the problem when the time axes differ (check `transpose`), a column index is out of range, `labels` has the wrong length, `regularizer` is negative or 'auto', a feature column is constant or continuous, a level combination has no trials, no trigger is found, or a plot selection is outside `n_components` or the marginalizations.
 
 ###### [TSNE](https://scikit-learn.org/stable/modules/generated/sklearn.manifold.TSNE.html) (t-distributed stochastic neighbor embedding)
 
@@ -347,7 +443,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
   - **I/O:**
 
-    - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+    - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
     - **standard_mean** [bool, default: True]: Whether to standardize X by subtracting mean.
     - **standard_std** [bool, default: True]: Whether to standardize X by dividing by std.
 
@@ -375,7 +471,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
     - **target_index** [int (columns start from 0), default 1]: Column index of behavioral variable to model.
     - **transpose_x** [bool, default: True]: Whether to transpose the neural data matrix.
-    - **transpose_y** [bool, default: True]: Whether to transpose the behavior data matrix.
+    - **transpose_y** [bool, default: False]: Whether to transpose the behavior data matrix.
     - **standard_x_mean** [bool, default: True]: Standardize X by subtracting mean.
     - **standard_x_std\*** [bool, default: True]: Standardize X by dividing by std.
     - **standard_y_mean** [bool, default: True]: Standardize Y by subtracting mean.
@@ -402,7 +498,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
     - **target_index** [int (columns start from 0), default 1]: Index of target behavioral variable to use as class labels.
     - **transpose_x** [bool, default: True]: Whether to transpose the neural data matrix.
-    - **transpose_y** [bool, default: True]: Whether to transpose the behavior data matrix.
+    - **transpose_y** [bool, default: False]: Whether to transpose the behavior data matrix.
     - **standard_x_mean** [bool, default: True]: Standardize X by subtracting mean.
     - **standard_x_std\*** [bool, default: True]: Standardize X by dividing by std.
 
@@ -433,7 +529,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
   - **I/O:**
   - **target_index** [int (columns start from 0), default 1]: Index of target behavioral variable to use as class labels.
   - **transpose_x** [bool, default: True]: Whether to transpose the neural data matrix.
-  - **transpose_y** [bool, default: True]: Whether to transpose the behavior data matrix.
+  - **transpose_y** [bool, default: False]: Whether to transpose the behavior data matrix.
   - **standard_x_mean** [bool, default: True]: Standardize X by subtracting mean.
   - **standard_x_std\*** [bool, default: True]: Standardize X by dividing by std.
 
@@ -487,6 +583,33 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Output:** HeatMapData (correlation matrix)
 - **Parameters:**
 - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+- **sort_by_cluster** [bool, default: False]: Order the heatmap's rows and columns by the leaf order of average-linkage hierarchical clustering on 1 - r, so correlated assemblies form blocks on the diagonal. Cells with a constant trace or a non-finite sample go last. Axis labels keep the ROI numbers; the NWB `corr` stays in cell order and `order` lists the ROI numbers in heatmap order. This sorts only; for cluster labels and cluster means use `hierarchical_clustering`.
+
+###### hierarchical_clustering
+
+- **Description:** Agglomerative hierarchical clustering of cells by their response profile, using [scipy.cluster.hierarchy](https://docs.scipy.org/doc/scipy/reference/cluster.hierarchy.html). Each row of the input is one cell's profile, such as an event-triggered average (`eta` mean) or a tuning curve (`covariate_binning` mean).
+- **Input:** TimeSeriesData, cells x features. Pooled data from several sessions can be fed through `data_concat` with `axis: 0`.
+- **Output:**
+  - sorted_heatmap (HeatMapData): the input rows in dendrogram leaf order, labelled with ROI numbers. The heatmap draws its first row at the bottom, matching the dendrogram.
+  - cluster_mean (TimeSeriesData): one row per cluster, mean across its cells with a std or sem band.
+  - cluster_size (BarData): cells per cluster.
+  - figure (HTMLData): static panel with the sorted heatmap (colour scale centred at 0), a cluster colour bar, the dendrogram and the cluster means (the means of the first 30 clusters; `cluster_mean` holds all). A cluster number that would overlap another is left out, keeping the larger cluster's.
+  - nwbfile: `labels` per input row (0 for rows left out), `cell_numbers`, `leaf_order`, `linkage`, `cut_height`, `cluster_mean`, `cluster_size` and `response_z`.
+- Clusters are numbered 1..k from the top of the figure down. All-NaN columns (for example empty covariate bins) are dropped. Rows that still hold NaN, or that are constant under the correlation metric, are left out and logged.
+- **Parameters:**
+  - **transpose** [bool, default: False]: Transpose so that rows are cells.
+  - **zscore_rows** [bool, default: False]: Z-score each row before clustering, so clusters follow response shape and not amplitude.
+  - **method** ['ward', 'average', default: 'ward']: Linkage method. Ward needs the euclidean metric.
+  - **metric** ['euclidean', 'correlation', default: 'euclidean']: Distance between rows.
+  - **cut_criterion** ['n_clusters', 'height_fraction', default: 'n_clusters']: Cut the dendrogram into a fixed number of clusters, or at a fraction of the tallest merge. Tied merges can give fewer clusters than asked, which is logged.
+  - **n_clusters** [int, default: 5]
+  - **height_fraction** [float, default: 0.5]: The cut is scale invariant, so it reads the same for dF/F and z-scored input.
+  - **band** ['std', 'sem', default: 'sem']: Band of `cluster_mean`, across the cells of each cluster.
+  - **response_start**, **response_end** [default: 0, 30]: Index range [start, end) over which each cluster's mean response is reported in the figure and NWB. Set them equal to skip. With z-scored `eta` input, a cluster whose response lies within +/-1.98 is non-responsive in the sense of Patel et al. 2026.
+  - **color_limit** [float, default: 0]: The figure's heatmap colour scale runs from -color_limit to +color_limit, centred at 0. 0 uses the 99th percentile of the absolute values.
+- **Presets:**
+  - Response types around an event (Patel et al. 2026, Nat Neurosci, Fig 3d,e): `eta` with `baseline_window` set to the pre-bout baseline (30 frames for 3 s at 10 Hz), then `ward` / `euclidean`, and lower `height_fraction` until one cluster is non-responsive.
+  - Tuning types: `covariate_binning` mean, `zscore_rows: true`, `average` / `correlation`, and `response_end` equal to `response_start` (the bin centres are in covariate units, which may lie outside the default window).
 
 ###### [cross_correlation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.correlate.html)
 
@@ -513,7 +636,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Parameters:**
 - **I/O:**
 
-  - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+  - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
   - **standard_mean** [bool, default: True]: Whether to standardize X by subtracting mean.
   - **standard_std** [bool, default: True]: Whether to standardize X by dividing by std.
 
@@ -547,6 +670,27 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 
 #### OptiNiSt (Utils)
 
+###### data_slice
+
+- **Description:** Slices data along specified dimensions, e.g. to trim or downsample a time series so its length matches another node's input.
+- **Input:** BehaviorData, CsvData, FluoData, ImageData, RoiData, IscellData, TimeSeriesData, BarData, HeatMapData, or ScatterData
+- **Output:** sliced_data, the same type as the input (CsvData is returned as BehaviorData). For FluoData and TimeSeriesData inputs a mean_timeseries plot (the mean over every axis but time) is also produced.
+- **Parameters:**
+  - **slice_dims** [list of str, default: empty]: One slice spec per dimension, in the input's axis order: FluoData (cells, time); BehaviorData and CsvData (time, columns); ImageData (frames, y, x). Each spec can be:
+    - `:` or `all`: keep the entire dimension
+    - `start:stop`: range slice (Python semantics, `stop` excluded)
+    - `start:stop:step`: strided slice, e.g. `0:8152:2` keeps every 2nd sample of the first 8152
+    - `squeeze`: remove a dimension of size 1
+    - a non-negative integer: select a single index. The dimension is removed, except that FluoData and BehaviorData outputs stay 2-D, e.g. FluoData with `1, :` gives shape (1, time). On the time axis of BehaviorData and CsvData, an integer or `squeeze` keeps the axis one sample long, e.g. `5, :` gives shape (1, columns).
+  - In the GUI, blank entries are dropped, so always write `:` for a kept dimension, e.g. `:, 0:8152:2` to keep every cell of a FluoData input and downsample time, or `0:8152:2, :` for BehaviorData.
+  - Unparsable specs, `squeeze` on a dimension of size > 1, and out-of-range integer indices keep the entire dimension and log a warning; a slice that selects no elements logs a warning, and a `start:stop:step` spec that appears to be in `start:step:stop` order logs a corrected hint.
+  - **cell_normalization** [str, default: `none`]: `none`, `zscore` or `dff`. `zscore` z-scores each row of a FluoData or TimeSeriesData input along its time axis before the mean is taken, so no single high-amplitude cell dominates mean_timeseries; a constant row becomes zeros. `dff` converts each row to `(F - F0) / |F0|` with the baseline F0 set by the `f0_` parameters below. `dff` is meant for raw fluorescence (Suite2p `F`, LCCD traces); CaImAn `C` and deconvolved traces have baselines at or near 0 and should not be fed to it. Samples where `|F0|` is at most 1e-6 times the row's range become NaN with a warning. mean_timeseries averages each sample over the rows that are not NaN there, so it is NaN only where every row is, and rows that end up entirely NaN are reported with a warning. Applied to sliced_data too; its `std` and `sem` are dropped because their units no longer match. Other inputs, and slices that remove the time axis, are left unchanged with a warning. Non-finite samples (NaN, inf) come out NaN.
+  - **f0_method** [str, default: `percentile`]: baseline for `dff`. `percentile` takes the `f0_percentile` percentile (linear interpolation, NaN samples ignored) of each row over the whole recording or over a centred sliding window, with the edges padded by the first and last sample. `maximin` is Suite2p's `extraction.dcnv.preprocess` recipe with `f0_window_frames` as `win_baseline * fs` and `f0_sigma_frames` as `sig_baseline`: a Gaussian of s.d. `f0_sigma_frames`, then a minimum and a maximum filter of `f0_window_frames`; rows with NaN samples use a NaN-aware Gaussian and rolling windows truncated at the edges. Sosa et al. 2025 use maximin with a 20 s window and give no sigma: set `f0_window_frames` to 20 s times the frame rate, e.g. 310 at 15.5 Hz.
+  - **f0_window_frames** [int, default: 0]: sliding window length in frames. `0` uses the whole recording, which `percentile` supports and `maximin` rejects. A window at least as long as the trace is clamped to the trace length with a warning (for `percentile` that is the whole recording).
+  - **f0_percentile** [float, default: 8]: percentile (0 to 100) used by `percentile`.
+  - **f0_sigma_frames** [float, default: 10]: Gaussian s.d. in frames used by `maximin`, must be finite and > 0, and a value above the trace length is clamped to it with a warning; 10 is Suite2p's `sig_baseline` default.
+  - **mean_normalization** [str, default: `none`]: `none`, `zscore` or `minmax`. Applied only to the mean_timeseries output. A NaN sample stays NaN, a constant trace becomes zeros, and an entirely non-finite trace is left unchanged with a warning.
+
 ###### microscope_to_img
 
 - **Description:** Data type conversion: Converts microscope data to image data.
@@ -566,7 +710,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
     - processing/ophys/caiman_cnmf_UNIQUE-ID/Fluorescence/data
 - **Output:** FluoData
 - **Parameters:**
-  - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+  - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
 
 ###### roi_from_hdf5
 
@@ -574,12 +718,15 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Input:** ImageData, HDF5Data, IscellData
   - If using optinist nwb format:
     - cell_img:
-      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_img/data
-      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_img/data
+      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_label_img/data
+      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_label_img/data
     - iscell:
       - processing/ophys/ImageSegmentation/suite2p_roi_UNIQUE-ID/iscell
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
-- **Output:** IscellData
+- **Output:** all_roi (RoiData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
+- `all_roi_label_img` is the all-ROI label image (one layer; each pixel holds the highest ROI covering it). cell_roi and non_cell_roi take the pixels whose ROI is in the group, so where a ROI of the other group lies on top, the pixel is empty. Files written by earlier releases hold one layer per ROI under `all_roi_img` instead, which is split by iscell as before.
+- A label image counts ROIs from 0: ROI i holds the value i, and pixels outside every ROI are NaN. A label image from a tool that counts from 1 over a 0 background (Cellpose, ImageJ) needs converting first, or its background reads as ROI 0.
+- iscell needs an entry for every ROI of cell_img (each layer of a per-ROI stack, each label up to the highest); otherwise the node stops with an error naming both counts. One layer beside a one-entry iscell reads as one ROI, whatever value its pixels hold.
 
 ###### roi_fluo_from_hdf5
 
@@ -587,17 +734,18 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Input:** ImageData, FluoData, HDF5Data, IscellData
   - If using optinist nwb format:
     - cell_img:
-      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_img/data
-      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_img/data
+      - processing/optinist/suite2p_roi_UNIQUE-ID_all_roi_label_img/data
+      - processing/optinist/caiman_cnmf_UNIQUE-ID_all_roi_label_img/data
     - iscell:
       - processing/ophys/ImageSegmentation/suite2p_roi_UNIQUE-ID/iscell
       - processing/ophys/ImageSegmentation/caiman_cnmf_UNIQUE-ID/iscell
     - fluorescence
       - processing/ophys/suite2p_roi_UNIQUE-ID/Fluorescence/data
       - processing/ophys/caiman_cnmf_UNIQUE-ID/Fluorescence/data
-- **Output:** IscellData, FluoData
+- **Output:** all_roi (RoiData), fluorescence (FluoData); with an iscell input also iscell (IscellData), cell_roi and non_cell_roi (RoiData)
+- `all_roi_label_img`, and `all_roi_img` of earlier files: read as by roi_from_hdf5.
 - **Parameters:**
-  - **transpose** [bool, default: False]: Whether to transpose the neural data matrix.
+  - **transpose** [bool, default: True]: Whether to transpose the neural data matrix.
 
 
 ###### vacant_roi
@@ -606,7 +754,7 @@ OptiNiSt includes a variety of third-party calcium (Ca<sup>2+</sup>) imaging sof
 - **Input:** ImageData
   - If using optinist nwb format:
     - cell_img:
-      - processing/ophys/ImageSegmentation/vacant_roi_UNIQUE-ID/image_mask
+      - processing/optinist/vacant_roi_UNIQUE-ID_all_roi_label_img/data
     - fluorescence
       - processing/ophys/vacant_roi_UNIQUE-ID/Fluorescence/data
 - **Output** FluoData, IscellData

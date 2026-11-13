@@ -8,6 +8,7 @@ import {
   authHeaders,
   deleteE2eWorkspaces,
   isLocalBaseUrl,
+  sweepE2eFirebaseUsers,
 } from "./helpers"
 
 // 1. Checks the credentials over the API, so a bad password fails here.
@@ -16,12 +17,16 @@ import {
 // 3. Logs in once via the UI and saves storage state for the authed specs,
 //    keeping Firebase logins per run to a handful (rate limits).
 // 4. Deletes the Firebase accounts AUTH-04 leaves behind, if admin creds exist.
-// Steps 2 and 4 run only against a local or development BASE_URL.
+// The sweep and steps 2 and 4 run only against a disposable BASE_URL.
+// The Firebase sweep runs first because AUTH-02/03/04 need no credentials: a
+// run that returns below still registers the throwaways the sweep clears.
+// E2E_OFFLINE=1 skips all of it, for the runs that touch nothing remote (the
+// load lane's unit spec and LOAD-02): e2e/.env would otherwise sign them in.
 export default async function globalSetup() {
-  const email = process.env.TEST_USER_EMAIL
-  const password = process.env.TEST_USER_PASSWORD
-  if (!email || !password) return
-
+  if (["1", "true"].includes((process.env.E2E_OFFLINE ?? "").toLowerCase())) {
+    console.log("globalSetup: skipped, E2E_OFFLINE=1")
+    return
+  }
   const baseURL = process.env.BASE_URL || "http://localhost:3000"
 
   // The read-only AWS lanes document pointing BASE_URL at production, and
@@ -29,6 +34,12 @@ export default async function globalSetup() {
   // confined to the environments whose data is disposable.
   const disposable =
     isLocalBaseUrl() || baseURL.includes("development-optinist")
+
+  sweepStaleFirebaseUsers(disposable)
+
+  const email = process.env.TEST_USER_EMAIL
+  const password = process.env.TEST_USER_PASSWORD
+  if (!email || !password) return
 
   // Before the browser login: bad credentials there are three silent 60s
   // waits for /dashboard, which reads as a hang rather than an auth error
@@ -78,6 +89,20 @@ async function saveLoginState(
     await page.context().storageState({ path: statePath })
   } finally {
     await browser.close()
+  }
+}
+
+// Firebase-side truth: catches the throwaways whose DB row is already gone, so
+// an aborted run's accounts do not pile up in the console forever.
+// E2E_SKIP_FIREBASE_SWEEP holds it off, e.g. while a throwaway is being
+// inspected. A failure never blocks the run, but a partial delete is a failure
+// too, so the warning does not call it skipped.
+function sweepStaleFirebaseUsers(disposable: boolean) {
+  if (!disposable || process.env.E2E_SKIP_FIREBASE_SWEEP) return
+  try {
+    console.log(`Swept ${sweepE2eFirebaseUsers()} stale Firebase test users`)
+  } catch (e) {
+    console.warn(`Firebase sweep did not complete: ${e}`)
   }
 }
 

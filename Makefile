@@ -20,6 +20,7 @@ define run_test_service
 endef
 
 PYTEST = poetry run pytest -s
+PYTEST_NATIVE ?= python3 -m pytest -s
 
 .PHONY: test_run_all
 test_run_all:
@@ -41,7 +42,29 @@ test_backend:
 	# cleanup
 	@$(call cleanup_test_env, test_studio_backend)
 	# build/run
-	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing")
+	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "not heavier_processing" -n logical --dist loadfile)
+
+# The tests test_backend leaves out, run by the weekly regression.
+.PHONY: test_backend_heavy
+test_backend_heavy:
+	# cleanup
+	@$(call cleanup_test_env, test_studio_backend)
+	# build/run
+	@$(call run_test_service, test_studio_backend, $(PYTEST) studio/tests/app/ -m "heavier_processing")
+
+# One file or one -k expression, same image and env as CI. Running pytest in the
+# dev container instead fails tests that pass in CI: it sets no STRIPE_* vars.
+.PHONY: test_backend_one
+test_backend_one:
+	docker compose -f docker-compose.test.yml build test_studio_backend
+	docker compose -f docker-compose.test.yml run --rm test_studio_backend $(PYTEST) $(T)
+
+# Same tests as test_backend, run against the ambient environment (conda env,
+# venv, ...) instead of a container. Override PYTEST_NATIVE to pick another one,
+# e.g. `make test_backend_native PYTEST_NATIVE="poetry run pytest -s"`.
+.PHONY: test_backend_native
+test_backend_native:
+	$(PYTEST_NATIVE) studio/tests/app/ -m "not heavier_processing"
 
 .PHONY: test_backend_full
 test_backend_full:
@@ -89,9 +112,9 @@ alembic_check:
 
 .PHONY: premium_lock_it
 premium_lock_it:
-	# Real-MySQL GET_LOCK integration test proving distributed_lock
-	# serializes concurrent sessions.
-	# Opt-in: needs a real database, so it is not part of per-PR CI.
+	# Real-MySQL integration test proving distributed_lock (GET_LOCK) and
+	# the per-user assign claim serialize concurrent sessions.
+	# Needs a real database: run per-PR by premium-lock-it.yml on premium changes.
 	# Single shell with an EXIT trap so the throwaway DB is always torn down.
 	@bash -euc '\
 		compose="docker compose -f docker-compose.premium-lock-it.yml"; \
@@ -112,6 +135,19 @@ workflow_count_it:
 		$$compose down -v; \
 		$$compose build workflow_count_it; \
 		$$compose run --rm workflow_count_it'
+
+.PHONY: expiration_it
+expiration_it:
+	# Expiration deletion integration test: the real job against a migrated
+	# MySQL and an S3 API (moto server).
+	# Needs a real database: run per-PR by expiration-it.yml on deletion changes.
+	# Single shell with an EXIT trap so the throwaway stack is always torn down.
+	@bash -euc '\
+		compose="docker compose -f docker-compose.expiration-it.yml"; \
+		trap "$$compose down -v" EXIT; \
+		$$compose down -v; \
+		$$compose build expiration_it; \
+		$$compose run --rm expiration_it'
 
 
 ############################## For Building ##############################
@@ -134,7 +170,7 @@ build_frontend:
 	docker compose -f docker-compose.build.yml run studio-build-fe
 
 ROOT_PY := *.py
-FORMAT_TARGETS := $(ROOT_PY) studio infrastructure
+FORMAT_TARGETS := $(ROOT_PY) studio infrastructure .github/scripts
 EXCLUDE_DIRS := infrastructure/terraform/.build
 
 .PHONY: format

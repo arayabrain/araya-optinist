@@ -15,7 +15,7 @@ def CCA(
     iscell: IscellData = None,
     params: dict = None,
     **kwargs,
-) -> dict():
+) -> dict(projectedNd=ScatterData, coef=BarData):
     import numpy as np
     from sklearn.cross_decomposition import CCA
 

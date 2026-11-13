@@ -1,11 +1,9 @@
-import argparse
 import os
 from contextlib import asynccontextmanager
 
-import uvicorn
 from fastapi import Depends, FastAPI, Request, Response, status
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from fastapi_pagination import add_pagination
 from starlette.middleware.cors import CORSMiddleware
 
@@ -13,21 +11,30 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_admin_user,
     get_current_user,
     get_current_user_with_dataview_outputs_check,
+    get_outputs_remote_bucket_name,
+    get_user_remote_bucket_name,
 )
+from studio.app.common.core.auth.secret_validation import validate_signing_secrets
 from studio.app.common.core.instance_mode import (
     INSTANCE_MODE_DEFAULT,
     INSTANCE_MODE_ENV,
     INSTANCE_MODE_PUBLIC,
 )
-from studio.app.common.core.logger import AppLogger, LoggingConfigHelper
+from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
+    CompressionMiddleware,
     SecureRoutingMiddleware,
     SPARoutingMiddleware,
     UserActivityMiddleware,
 )
+from studio.app.common.core.middleware.compression_middleware import (
+    PrecompressedStaticFiles,
+)
+from studio.app.common.core.middleware.cors_config import get_cors_origin_options
 from studio.app.common.core.middleware.spa_routing_middleware import (
-    INDEX_HTML_CACHE_HEADERS,
+    ROOT_SEO_FILES,
+    serve_spa_shell,
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
@@ -36,6 +43,7 @@ from studio.app.common.core.subscription.constants import (
     PremiumExpirationSweep,
     StorageReconciliation,
     SyncStatusConstants,
+    UnverifiedAccountCleanup,
 )
 
 # Background job imports (only used in non-standalone mode)
@@ -52,13 +60,18 @@ if not MODE.IS_STANDALONE:
         StorageReconciliationJob,
     )
     from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
+    from studio.app.common.core.background.unverified_account_cleanup_job import (
+        UnverifiedAccountCleanupJob,
+    )
 
+from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
 from studio.app.common.routers import (
     algolist,
+    announcement,
     auth,
     dataview,
     experiment,
@@ -99,12 +112,18 @@ async def lifespan(app: FastAPI):
 
     logger = AppLogger.get_logger()
 
+    # Fail fast, before anything reports startup or starts background work.
+    # Above one worker, studio.server.main() runs the same check in a child
+    # before uvicorn.run; this one covers one worker and other launchers.
+    validate_signing_secrets()
+
     logger.info(
         f'"Studio" application startup complete.\n'
         f"    # Platform: {platform.platform()}\n"
         f"    # Python Version: {sys_version}\n"
         f"    # App Version: {Version.APP_VERSION}\n"
         f"    # Git Commit: {BuildInfo.GIT_COMMIT}\n"
+        f"    # Git Ref: {BuildInfo.GIT_REF}\n"
         f"    # Build Time: {BuildInfo.BUILD_TIMESTAMP}\n"
         f"    # Env:DATA_DIR: {DIRPATH.DATA_DIR}\n"
         f"    # Mode: {mode}\n"
@@ -173,6 +192,14 @@ async def lifespan(app: FastAPI):
             job_id=PremiumExpirationSweep.JOB_ID,
         )
 
+        # Sweep never-verified Firebase accounts unused since registration. Dry-run
+        # unless UNVERIFIED_ACCOUNT_CLEANUP_MODE=delete.
+        BackgroundScheduler.add_job(
+            func=UnverifiedAccountCleanupJob.run,
+            interval_minutes=UnverifiedAccountCleanup.JOB_INTERVAL_MINUTES,
+            job_id=UnverifiedAccountCleanup.JOB_ID,
+        )
+
         # Start scheduler
         BackgroundScheduler.start()
         logger.info("Background job scheduler started")
@@ -192,6 +219,27 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(docs_url="/docs", openapi_url="/openapi", lifespan=lifespan)
+
+
+@app.exception_handler(InvalidPathError)
+async def invalid_path_handler(request: Request, exc: InvalidPathError):
+    """Turn a rejected path into a 400 rather than a 500.
+
+    join_filepath() raises this whenever a request value would leave the
+    directory it belongs to. Handling it here means the routers do not each
+    have to validate their own path parameters, and nothing new can slip
+    through by forgetting to.
+    """
+    # repr(): the message carries the caller's string verbatim, and a CRLF in
+    # it would otherwise forge log records. repr escapes them to the two
+    # characters \\r and \\n, which is both sufficient and lossless -- stripping
+    # them afterwards would also eat them out of a legitimate filename. CodeQL
+    # does not flag this; an exception argument is not a modelled source.
+    logger.warning(f"Rejected path parameter: {repr(str(exc))}")
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": "Invalid path parameter"},
+    )
 
 
 @app.get("/health")
@@ -238,11 +286,12 @@ def _register_public_routers(app: FastAPI) -> None:
     """Routers mounted on every tier so the SPA can bootstrap during a
     free-tier outage: auth (login/refresh), users_me (the GET /users/me +
     premium-assign / heartbeat / beacon set the SPA calls right after login),
-    public dataview, internal, outputs. Public-tier tasks still talk to the
-    same RDS and invoke the same premium-manager Lambda as free, so these
-    routes work identically whichever tier serves them.
+    public dataview, announcement, internal, outputs. Public-tier tasks still
+    talk to the same RDS and invoke the same premium-manager Lambda as free,
+    so these routes work identically whichever tier serves them.
     """
     app.include_router(dataview.public_router)
+    app.include_router(announcement.router)
     app.include_router(internal.router)  # Internal secret auth, not JWT.
     app.include_router(
         outputs.router,
@@ -252,6 +301,7 @@ def _register_public_routers(app: FastAPI) -> None:
     app.include_router(users_me.router, dependencies=[Depends(get_current_user)])
     app.include_router(users_me.beacon_router)
     app.include_router(log_report.router, dependencies=[Depends(get_current_user)])
+    app.include_router(log_report.csp_router)
 
 
 def _register_authenticated_routers(app: FastAPI) -> None:
@@ -302,6 +352,9 @@ if MODE.IS_STANDALONE:
         get_current_user_with_dataview_outputs_check
     ] = skip_dependencies
     app.dependency_overrides[get_admin_user] = skip_dependencies
+    app.dependency_overrides[
+        get_outputs_remote_bucket_name
+    ] = get_user_remote_bucket_name
     app.dependency_overrides[is_workspace_owner] = skip_dependencies
     app.dependency_overrides[is_workspace_available] = skip_dependencies
 
@@ -309,7 +362,7 @@ app.add_middleware(SecureRoutingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    **get_cors_origin_options(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -324,6 +377,9 @@ app.add_middleware(ClientIdLoggingMiddleware)
 
 app.add_middleware(UserActivityMiddleware)
 
+# Added last, so it wraps the others and compresses their responses too
+app.add_middleware(CompressionMiddleware)
+
 
 @app.get("/is_standalone", response_model=bool, tags=["others"])
 async def is_standalone():
@@ -331,9 +387,10 @@ async def is_standalone():
 
 
 os.makedirs(f"{DIRPATH.FRONTEND_DIRS.BUILD}/static", exist_ok=True)
+# The image build writes a gzip copy beside each script and stylesheet
 app.mount(
     "/static",
-    StaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/static"),
+    PrecompressedStaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/static"),
     name="static",
 )
 
@@ -345,22 +402,24 @@ app.mount(
     name="images",
 )
 
-public_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.PUBLIC)
-build_templates = Jinja2Templates(directory=DIRPATH.FRONTEND_DIRS.BUILD)
+
+@app.get("/robots.txt", include_in_schema=False)
+@app.get("/sitemap.xml", include_in_schema=False)
+@app.get("/llms.txt", include_in_schema=False)
+async def root_seo_file(request: Request):
+    """Serve crawler files as themselves; the SPA catch-all would otherwise
+    answer them with the HTML shell, which Search Console cannot read."""
+    path = request.scope["path"]
+    media_type = ROOT_SEO_FILES.get(path)
+    file_path = f"{DIRPATH.FRONTEND_DIRS.BUILD}{path}"
+    if media_type is None or not os.path.exists(file_path):
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    return FileResponse(file_path, media_type=media_type)
 
 
 @app.get("/")
 async def root(request: Request):
-    if os.path.exists(f"{DIRPATH.FRONTEND_DIRS.BUILD}/index.html"):
-        return build_templates.TemplateResponse(
-            "index.html", {"request": request}, headers=INDEX_HTML_CACHE_HEADERS
-        )
-    else:
-        return public_templates.TemplateResponse(
-            "no-built-pages.html",
-            {"request": request},
-            headers=INDEX_HTML_CACHE_HEADERS,
-        )
+    return serve_spa_shell(request)
 
 
 @app.get("/{_:path}")
@@ -375,62 +434,3 @@ async def any_pages(request: Request):
     # In all other cases, forward to frontend.
     else:
         return await root(request)
-
-
-def main(develop_mode: bool = False):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--reload", action="store_true")
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default=None,
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Override log level (takes precedence over LOG_LEVEL env var)",
-    )
-    timeout_keep_alive = 60
-    args = parser.parse_args()
-
-    logging_config = AppLogger.get_logging_config()
-
-    if args.log_level:
-        logging_config = LoggingConfigHelper._apply_log_level_override(
-            logging_config, args.log_level
-        )
-
-    effective_level = logging_config.get("root", {}).get("level", "INFO")
-    logger.info(
-        f"Starting Optinist server on {args.host}:{args.port} "
-        f"(log_level={effective_level})"
-    )
-
-    if develop_mode:
-        if args.workers > 1:
-            reload = False
-            reload_options = {}
-        else:
-            reload = args.reload
-            reload_options = {"reload_dirs": ["studio"]} if args.reload else {}
-
-        uvicorn.run(
-            "studio.__main_unit__:app",
-            host=args.host,
-            port=args.port,
-            log_config=logging_config,
-            workers=args.workers,
-            timeout_keep_alive=timeout_keep_alive,
-            reload=reload,
-            **reload_options,
-        )
-    else:
-        uvicorn.run(
-            "studio.__main_unit__:app",
-            host=args.host,
-            port=args.port,
-            log_config=logging_config,
-            workers=args.workers,
-            timeout_keep_alive=timeout_keep_alive,
-            reload=False,
-        )

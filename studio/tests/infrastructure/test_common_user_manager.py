@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
+import pymysql
 import pytest
 
 
@@ -869,3 +870,24 @@ class TestRecoverStaleWorkflowCountsPredicates:
             common_user_manager.WORKFLOW_VERY_OLD_HOURS
             > common_user_manager.WORKFLOW_USER_INACTIVITY_HOURS
         )
+
+
+class TestSslConnection:
+    def test_sets_found_rows_and_tls(self, mock_env_vars_common):
+        with patch.dict("os.environ", mock_env_vars_common):
+            import common_user_manager
+
+            with patch.object(common_user_manager.pymysql, "connect") as connect:
+                common_user_manager._create_ssl_connection(
+                    {
+                        "host": "h",
+                        "port": 3306,
+                        "user": "u",
+                        "password": "p",
+                        "database": "d",
+                    }
+                )
+
+        kwargs = connect.call_args.kwargs
+        assert kwargs["client_flag"] & pymysql.constants.CLIENT.FOUND_ROWS
+        assert kwargs["ssl"] == common_user_manager.SSL_ARGS

@@ -17,6 +17,15 @@ def create_images_list(data):
     return images
 
 
+def is_plain_number(dtype: np.dtype) -> bool:
+    """A scalar bool, integer or float dtype, so it loads as one numeric column."""
+    return dtype.shape == () and (
+        dtype == bool
+        or np.issubdtype(dtype, np.integer)
+        or np.issubdtype(dtype, np.floating)
+    )
+
+
 def save_thumbnail(plot_file):
     # Note: In the barebone-studio version, it does nothing.
     pass

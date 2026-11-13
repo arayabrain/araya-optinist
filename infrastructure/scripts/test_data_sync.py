@@ -1588,8 +1588,8 @@ def ensure_multiple_instances(current_instance: str) -> dict:
                 return wait_result
             total_wait_time += wait_result.get("elapsed_seconds", 0)
 
-    # Step 2: Wait for ECS tasks (Lambda syncs ECS to ASG via lifecycle hook)
-    # The free_manager Lambda is triggered by ASG lifecycle events and syncs ECS
+    # Step 2: Wait for ECS tasks (Lambda syncs ECS to ASG on the ASG launch event)
+    # The free_manager Lambda is triggered by ASG events and syncs ECS
     ecs_status = get_ecs_service_status()
     if ecs_status.get("running_count", 0) < 2:
         print("Waiting for ECS tasks to start (Lambda syncs ECS to ASG)...")

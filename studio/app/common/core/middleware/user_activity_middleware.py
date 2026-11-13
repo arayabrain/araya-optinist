@@ -31,7 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
+from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt_async
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware.constants import (
     SKIP_ACTIVITY_PATHS,
@@ -41,7 +41,7 @@ from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.core.utils.instance_utils import resolve_instance_id
-from studio.app.common.db.database import session_scope
+from studio.app.common.db.database import run_db_lookup, session_scope
 from studio.app.common.models import FreeUserAssignment
 from studio.app.common.models.instance_usage import InstanceUsageLog
 
@@ -127,7 +127,7 @@ class UserActivityMiddleware:
         firebase_token = auth_header[BEARER_PREFIX_LENGTH:]  # Remove "Bearer "
 
         # Extract UID from JWT
-        uid, error = extract_uid_from_firebase_jwt(firebase_token)
+        uid, error = await extract_uid_from_firebase_jwt_async(firebase_token)
         if error or not uid:
             # Invalid token, skip tracking
             await self.app(scope, receive, send)
@@ -148,8 +148,12 @@ class UserActivityMiddleware:
                 has_tracked = True
 
                 try:
-                    # Get user ID and tier from database
-                    user_id, tier = _get_user_id_and_tier(uid)
+                    # Get user ID and tier; a cache miss queries the database
+                    # off the event loop
+                    cached = _fresh_cached_user_id_and_tier(uid)
+                    user_id, tier = cached or await run_db_lookup(
+                        _get_user_id_and_tier, uid
+                    )
 
                     if user_id:
                         if tier == TIER_FREE:
@@ -199,13 +203,9 @@ def _get_user_id_and_tier(uid: str) -> Tuple[Optional[int], Optional[str]]:
     import time
 
     # Check cache first
-    with _user_tier_cache_lock:
-        cached = _user_tier_cache.get(uid)
-        if cached:
-            user_id, tier, cached_at = cached
-            if time.time() - cached_at < _USER_TIER_CACHE_TTL_SECONDS:
-                return user_id, tier
-            # Cache expired, will refresh below
+    cached = _fresh_cached_user_id_and_tier(uid)
+    if cached:
+        return cached
 
     # Cache miss or expired - query database
     try:
@@ -243,6 +243,15 @@ def _get_user_id_and_tier(uid: str) -> Tuple[Optional[int], Optional[str]]:
     except Exception as e:
         logger.warning(f"Failed to get user tier for {uid}: {e}")
         return None, None
+
+
+def _fresh_cached_user_id_and_tier(uid: str) -> Optional[Tuple[int, str]]:
+    """The cached (user_id, tier), or None if absent or older than the TTL."""
+    with _user_tier_cache_lock:
+        cached = _user_tier_cache.get(uid)
+    if cached and time.time() - cached[2] < _USER_TIER_CACHE_TTL_SECONDS:
+        return cached[0], cached[1]
+    return None
 
 
 def invalidate_user_tier_cache(uid: str) -> None:
@@ -426,13 +435,16 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
         with session_scope() as session:
             now = get_current_datetime()
 
-            # UPDATE first (common path); instance_id is refreshed to the
-            # serving instance. The ``logged_out_at IS NULL`` guard stops a
-            # stray still-authenticated request (in-flight call after logout, a
-            # second tab) from resurrecting a logged-out assignment — a
-            # cross-process guard, unlike the short-lived in-memory logout map.
-            # (instance_id write-ownership rework: separate follow-up.)
-            from sqlalchemy import select
+            # UPDATE first (common path).
+            # - instance_id follows the serving instance, except while a
+            #   workflow runs: then it stays on the host the workflow runs on
+            #   (pinned by increment_workflow_count), which the free scale-in
+            #   reads to spare that host
+            # - the ``logged_out_at IS NULL`` guard stops a stray
+            #   still-authenticated request (in-flight call after logout, a
+            #   second tab) from resurrecting a logged-out assignment — a
+            #   cross-process guard, unlike the short-lived in-memory logout map
+            from sqlalchemy import case, select
 
             stmt = (
                 update(FreeUserAssignment)
@@ -440,7 +452,13 @@ def _update_free_user_activity_sync(user_id: int) -> bool:
                 .where(FreeUserAssignment.logged_out_at.is_(None))
                 .values(
                     last_activity=now,
-                    instance_id=instance_id,
+                    instance_id=case(
+                        (
+                            FreeUserAssignment.active_workflow_count > 0,
+                            FreeUserAssignment.instance_id,
+                        ),
+                        else_=instance_id,
+                    ),
                 )
             )
             result = session.execute(stmt)

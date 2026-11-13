@@ -11,7 +11,10 @@ from studio.app.common.core.experiment.experiment_writer import ExptConfigWriter
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.utils.file_reader import get_folder_size
-from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
+    join_filepath,
+)
 from studio.app.common.db.database import session_scope
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.models.workspace import Workspace
@@ -65,8 +68,8 @@ class WorkspaceDataCapacityService:
     ):
         # Concurrent writers (main /run/result task + executor) write the same
         # row. Two safeguards:
-        #   - Core UPDATE with an existence SELECT (not UPDATE rowcount, which is
-        #     0 for a same-value write on MySQL) avoids the ORM stale-data error.
+        #   - Core UPDATE with an existence SELECT, so neither the ORM rowcount
+        #     check nor the connection's FOUND_ROWS setting can fail the write.
         #   - (workspace_id, uid) has no unique constraint, so the check-then-
         #     write is serialized by a MySQL advisory lock, held on a dedicated
         #     lock_db session and released only AFTER the inner write commits.
@@ -205,6 +208,10 @@ class WorkspaceDataCapacityService:
                         f"{workspace_id}/{unique_id}: "
                         f"experiment.yaml is missing or empty"
                     )
+                # A rejected path is a security refusal, not corrupt data: it
+                # must not be downgraded by the broad clause below.
+                except InvalidPathError:
+                    raise
                 except (ValueError, yaml.YAMLError) as yaml_error:
                     logger.warning(
                         f"Skipping YAML update for experiment "

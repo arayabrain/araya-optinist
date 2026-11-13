@@ -31,6 +31,10 @@ export const algorithmNodeSlice = createSlice({
   name: ALGORITHM_NODE_SLICE_NAME,
   initialState,
   reducers: {
+    markDownstreamStale: (state, action: PayloadAction<{ nodeId: string }>) => {
+      const node = state[action.payload.nodeId]
+      if (node) node.downstreamStale = true
+    },
     updateParam: (
       state,
       action: PayloadAction<{
@@ -122,6 +126,11 @@ export const algorithmNodeSlice = createSlice({
           importWorkflowConfig.fulfilled,
         ),
         (_, action) => {
+          const paramsAdded = new Set(
+            (action.payload.paramChanges ?? [])
+              .filter((change) => change.added.length > 0)
+              .map((change) => change.nodeId),
+          )
           const newState: AlgorithmNode = {}
           Object.values(action.payload.nodeDict)
             .filter(isAlgorithmNodePostData)
@@ -136,6 +145,9 @@ export const algorithmNodeSlice = createSlice({
                   originalValue: node.data.param,
                   isUpdate: false,
                 }
+                if (paramsAdded.has(node.id)) {
+                  newState[node.id].paramsAdded = true
+                }
               }
             })
           return newState
@@ -149,11 +161,13 @@ export const algorithmNodeSlice = createSlice({
             .filter(isAlgorithmNodePostData)
             .forEach((node) => {
               state[node.id].isUpdate = false
+              state[node.id].downstreamStale = false
+              state[node.id].paramsAdded = false
             })
         },
       )
   },
 })
 
-export const { updateParam } = algorithmNodeSlice.actions
+export const { updateParam, markDownstreamStale } = algorithmNodeSlice.actions
 export default algorithmNodeSlice.reducer

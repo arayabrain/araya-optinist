@@ -2,6 +2,8 @@ import { useState, useEffect, FC } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import { useNavigate } from "react-router-dom"
 
+import { useSnackbar } from "notistack"
+
 import ArrowBackIcon from "@mui/icons-material/ArrowBack"
 import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined"
 import {
@@ -15,6 +17,7 @@ import {
 import { styled } from "@mui/material/styles"
 
 import { InvoiceDTO } from "api/paymentMethod/PaymentMethodApiDTO"
+import { createPortalSessionApi } from "api/subscriptions/Subscriptions"
 import Loading from "components/common/Loading"
 import CardBrandIcon from "pages/Invoice/CardBrandIcon"
 import {
@@ -28,10 +31,7 @@ import {
   selectInvoicesLoading,
   selectFirstPaymentMethodsError,
 } from "store/slice/PaymentMethod/PaymentMethodSelector"
-import {
-  getUserSubscription,
-  getUTCServerTime,
-} from "store/slice/Subscriptions/SubscriptionActions"
+import { getUserSubscription } from "store/slice/Subscriptions/SubscriptionActions"
 import {
   selectUserSubscription,
   selectUserSubscriptionLoading,
@@ -300,6 +300,7 @@ const InvoicesPage: FC = () => {
   const navigate = useNavigate()
 
   const dispatch = useDispatch<AppDispatch>()
+  const { enqueueSnackbar } = useSnackbar()
 
   // Redux selectors - separate slices
   const subscription = useSelector(selectUserSubscription)
@@ -317,7 +318,6 @@ const InvoicesPage: FC = () => {
   // Local state for loading management
   const [isInitialLoading, setIsInitialLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const [serverTimeDate, setServerTimeDate] = useState<Date>(new Date())
 
   const userId = useSelector(selectCurrentUserId)
 
@@ -350,30 +350,6 @@ const InvoicesPage: FC = () => {
     }
   }, [dispatch, userId])
 
-  useEffect(() => {
-    const fetchServerTime = async (): Promise<void> => {
-      try {
-        const response = await dispatch(getUTCServerTime())
-        // Get current UTC time from server
-        if (
-          !response.payload ||
-          !(response.payload as { server_time: string }).server_time
-        ) {
-          throw new Error("Server time not available")
-        }
-        const fetchedServerTime = new Date(
-          (response.payload as { server_time: string }).server_time,
-        )
-        setServerTimeDate(fetchedServerTime)
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("Error fetching server time:", err)
-      }
-    }
-
-    fetchServerTime()
-  }, [dispatch])
-
   // Refresh data function
   const refreshData = async (): Promise<void> => {
     try {
@@ -405,17 +381,17 @@ const InvoicesPage: FC = () => {
   }
 
   const handleManageBilling = async (): Promise<void> => {
-    if (!shouldShowLoader) {
-      window.open(
-        "https://billing.stripe.com/p/login/5kQ9ATdaS2TbdknghI2wU00",
-        "_blank",
-      )
+    if (shouldShowLoader) return
+    try {
+      window.location.assign(await createPortalSessionApi())
+    } catch {
+      enqueueSnackbar("Could not open the billing portal", { variant: "error" })
     }
   }
 
   const handleViewInvoice = (invoice: InvoiceDTO): void => {
     if (!shouldShowLoader && invoice.invoice_url) {
-      window.open(invoice.invoice_url, "_blank")
+      window.open(invoice.invoice_url, "_blank", "noopener,noreferrer")
     }
   }
 
@@ -502,7 +478,7 @@ const InvoicesPage: FC = () => {
                       <PlanType>Monthly</PlanType>
                       <ExpirationText>
                         Your subscription{" "}
-                        {new Date(subscription.expiration) < serverTimeDate
+                        {subscription.is_expired
                           ? "expired on"
                           : subscription.scheduled_downgrade
                             ? "will expire on"
@@ -527,7 +503,7 @@ const InvoicesPage: FC = () => {
                 disabled={shouldShowLoader}
               >
                 {subscription
-                  ? new Date(subscription.expiration) < serverTimeDate
+                  ? subscription.is_expired
                     ? "Upgrade"
                     : "Downgrade"
                   : "Subscribe Now"}

@@ -1,7 +1,7 @@
 import os
 from dataclasses import asdict
 from glob import glob
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -11,6 +11,9 @@ from sqlmodel import Session
 from studio.app.common.core.auth.auth_dependencies import get_user_remote_bucket_name
 from studio.app.common.core.experiment.experiment import ExptConfig, ExptExtConfig
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.experiment.experiment_record_services import (
+    ExperimentRecordService,
+)
 from studio.app.common.core.experiment.experiment_services import ExperimentService
 from studio.app.common.core.experiment.experiment_writer import ExptDataWriter
 from studio.app.common.core.logger import AppLogger
@@ -71,6 +74,7 @@ def _get_experiment_data_flags(
         ExperimentRecord.has_outputs,
         ExperimentRecord.has_inputs,
         ExperimentRecord.has_nwb,
+        ExperimentRecord.analyzed_at,
     ).where(ExperimentRecord.workspace_id == ws_id)
     result = db.execute(statement)
     return {
@@ -79,9 +83,20 @@ def _get_experiment_data_flags(
             "has_outputs": row[2],
             "has_inputs": row[3],
             "has_nwb": row[4],
+            # Set by finalisation; the run-start placeholder row has default flags
+            "finalized": row[5] is not None,
         }
         for row in result
     }
+
+
+def _apply_record_flags(config: ExptExtConfig, flags: Optional[Dict]) -> None:
+    if not flags or not flags["finalized"]:
+        return
+    config.has_intermediates = flags["has_intermediates"]
+    config.has_outputs = flags["has_outputs"]
+    config.has_inputs = flags["has_inputs"]
+    config.hasNWB = flags["has_nwb"]
 
 
 @router.get(
@@ -172,16 +187,11 @@ async def get_experiments(
             logger.error(e, exc_info=True)
             pass
 
-    if exp_config:
+    if exp_config and ExperimentRecordService.is_available():
         data_flags = _get_experiment_data_flags(db, workspace_id)
         for uid, config in exp_config.items():
-            flags = data_flags.get(uid)
-            if flags:
-                config.has_intermediates = flags["has_intermediates"]
-                config.has_outputs = flags["has_outputs"]
-                config.has_inputs = flags["has_inputs"]
-                # DB has_nwb is authoritative, overrides YAML hasNWB
-                config.hasNWB = flags["has_nwb"]
+            # A finalised DB record overrides the yaml, e.g. after expiration
+            _apply_record_flags(config, data_flags.get(uid))
 
     return exp_config
 

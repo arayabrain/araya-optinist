@@ -66,18 +66,19 @@ const EXPECTED_ALARMS = [
   `${ENV}-background-cpu-high`,
   `${ENV}-background-memory-high`,
   `${ENV}-background-task-stopped`,
+  `${ENV}-free-manager-errors`,
   `${ENV}-optinist-alb-5xx-errors`,
   `${ENV}-optinist-cpu-high`,
-  `${ENV}-optinist-cpu-low`,
   `${ENV}-optinist-ebs-queue-length-high`,
   `${ENV}-optinist-efs-burst-credits-low`,
   `${ENV}-optinist-efs-throughput-high`,
+  `${ENV}-optinist-free-serving-below-desired`,
   `${ENV}-optinist-free-tg-response-time-high`,
   `${ENV}-optinist-free-tg-unhealthy-hosts`,
   `${ENV}-optinist-high-iowait`,
   `${ENV}-optinist-load-average-high`,
   `${ENV}-optinist-memory-high`,
-  `${ENV}-optinist-memory-low`,
+  `${ENV}-optinist-public-serving-below-desired`,
   `${ENV}-optinist-public-tg-response-time-high`,
   `${ENV}-optinist-public-tg-unhealthy-hosts`,
   `${ENV}-optinist-rds-connections-high`,
@@ -92,22 +93,17 @@ const EXPECTED_ALARMS = [
 // nothing, so it says nothing about whether the environment is serving.
 const COST_ALARM = `${ENV}-monthly-cost-high`
 
-// An idle environment holds its scale-in trigger in ALARM by design: that is
-// what tells the ASG to give an instance back. Recognise it by what it does
-// rather than by its name, so a new scale-in alarm needs no edit here - and so
-// a "-low" alarm that grew a real action stops being waved through.
-function isScaleInTrigger(alarm: { name: string; actions: string[] }): boolean {
-  return (
-    alarm.actions.length > 0 &&
-    alarm.actions.every((a) =>
-      /^arn:aws:autoscaling:.*:scalingPolicy:/.test(a),
-    ) &&
-    /-low$/.test(alarm.name)
-  )
-}
+// No alarm is waved through for being a scale-in trigger: the free tier has
+// none. Scale-in is the free-manager Lambda's, by user count, and the former
+// cpu-low / memory-low alarms that sat in ALARM on an idle environment by
+// design are gone with the scale-down policy they drove. An alarm in ALARM
+// with an Auto Scaling policy as its action is now a -high alarm adding
+// capacity, which HEALTH-11 should report like any other.
 
 // An alarm's own metric, over the window it evaluates. Only ever called for an
 // alarm already in ALARM, so the happy path pays nothing.
+type MetricQuery = { Id: string; ReturnData?: boolean; [key: string]: unknown }
+
 type AlarmDetail = {
   name: string
   state: string
@@ -121,6 +117,7 @@ type AlarmDetail = {
   threshold: number
   operator: string
   evaluationPeriods: number
+  metrics: MetricQuery[] | null
 }
 
 function breaches(value: number, threshold: number, operator: string): boolean {
@@ -144,39 +141,56 @@ function breaches(value: number, threshold: number, operator: string): boolean {
 // state indefinitely once the metric stops publishing, so "the state says
 // ALARM" and "the environment is unhealthy" are different questions. A metric
 // that has gone quiet answers "unknown", which counts as still breaching:
-// silence is not evidence of health.
+// silence is not evidence of health. A metric-math result is read at the newest
+// minute every source metric reported: a FILL over a minute not yet published
+// is a placeholder, not a reading.
 //
 // get-metric-data, not get-metric-statistics: it takes a percentile and a plain
 // statistic as the same `Stat` string and answers with one flat Values array
 // either way, where get-metric-statistics puts a plain statistic at the
 // datapoint's top level and a percentile inside ExtendedStatistics.
 function stillBreaching(alarm: AlarmDetail): boolean {
-  const window = Math.max(alarm.period * alarm.evaluationPeriods, 300)
-  const query = JSON.stringify([
-    {
-      Id: "m",
-      MetricStat: {
-        Metric: {
-          Namespace: alarm.namespace,
-          MetricName: alarm.metric,
-          Dimensions: alarm.dimensions,
+  // A metric-math alarm carries its own queries and no top-level period.
+  const window = Math.max((alarm.period ?? 60) * alarm.evaluationPeriods, 300)
+  const queries: MetricQuery[] = alarm.metrics?.length
+    ? alarm.metrics
+    : [
+        {
+          Id: "m",
+          MetricStat: {
+            Metric: {
+              Namespace: alarm.namespace,
+              MetricName: alarm.metric,
+              Dimensions: alarm.dimensions,
+            },
+            Period: alarm.period,
+            Stat: alarm.extendedStatistic || alarm.statistic || "Maximum",
+          },
         },
-        Period: alarm.period,
-        Stat: alarm.extendedStatistic || alarm.statistic || "Maximum",
-      },
-    },
-  ])
+      ]
+  const resultId = queries.find((q) => q.ReturnData !== false)!.Id
+  // Every query returns data, so each source metric's minutes can be checked.
+  const query = JSON.stringify(queries.map((q) => ({ ...q, ReturnData: true })))
   // The query rides inside single quotes in the shell command below.
   expect(query, "alarm metadata carries a quote character").not.toContain("'")
-  const values = awsJson<number[]>(
+  const results = awsJson<
+    { Id: string; Timestamps: string[]; Values: number[] }[]
+  >(
     `cloudwatch get-metric-data --metric-data-queries '${query}' ` +
       `--start-time ${new Date(Date.now() - window * 1000).toISOString()} ` +
       `--end-time ${new Date().toISOString()} ` +
       `--scan-by TimestampDescending ` +
-      `--query 'MetricDataResults[0].Values'`,
+      `--query 'MetricDataResults[].{Id:Id,Timestamps:Timestamps,Values:Values}'`,
   )
-  if (!values.length) return true
-  return breaches(values[0], alarm.threshold, alarm.operator)
+  const result = results.find((r) => r.Id === resultId)
+  const sources = results.filter(
+    (r) => "MetricStat" in queries.find((q) => q.Id === r.Id)!,
+  )
+  const newest = (result?.Timestamps ?? []).findIndex((t) =>
+    sources.every((s) => s.Timestamps.includes(t)),
+  )
+  if (newest < 0) return true
+  return breaches(result!.Values[newest], alarm.threshold, alarm.operator)
 }
 
 // The dev scheduler starts this environment at 23:00 UTC Sun-Thu (08:00 JST) and
@@ -341,12 +355,17 @@ test.describe("Compute and routing", () => {
           `--query 'tasks[].{group:group,reason:stoppedReason}'`,
       )
       // A scale-down or a deployment replaces tasks by design; an OOM kill, a
-      // failed container or an essential-container exit does not.
+      // failed container or an essential-container exit does not. A free-tier
+      // scale-in drains its instance (ECS managed draining), so the exact
+      // ECS reason for that, "container instance is in DRAINING state", is a
+      // routine stop too. A manual drain or an instance refresh produces the
+      // same reason, so this cannot tell them apart; the lane only asks
+      // whether the stop was a fault.
       for (const task of details) {
         expect(
           task.reason || "",
           `${task.group} stopped for a non-routine reason`,
-        ).toMatch(/scal|deployment|Scaling|user|service/i)
+        ).toMatch(/scal|deployment|Scaling|user|service|in DRAINING state/i)
       }
     }
   })
@@ -503,6 +522,48 @@ test.describe("Compute and routing", () => {
         group.desired,
       )
     }
+
+    // Free tier: one task per instance (distinctInstance), ECS synced to the
+    // ASG by the free-manager Lambda on launch/terminate events. A missed sync
+    // leaves a task-less instance - HEALTH-03 sees the unhealthy target, this
+    // sees the cause.
+    // Strict, like the inService == desired check above: mid-scale-out an
+    // instance is InService before its task is placed, so the lane assumes a
+    // settled environment.
+    const free = groups.find((g) => g.name === `${ENV}-optinist-asg`)!
+    const freeTasks = awsJson<number>(
+      `ecs describe-services --cluster ${CLUSTER} ` +
+        `--services ${ENV}-optinist-cloud-service ` +
+        `--query 'services[0].runningCount'`,
+    )
+    expect(freeTasks, `free ECS tasks vs ${free.name} in-service`).toBe(
+      free.inService,
+    )
+  })
+
+  test("HEALTH-30 - the free ASG carries the launch hook and ECS's draining hook only", () => {
+    skipUnlessDeployed("none, a configuration guard")
+
+    // Terraform ignores initial_lifecycle_hook on this group, so the retired
+    // terminate hook left in AWS plans clean; this is what notices it.
+    // - launch hook: Terraform's boot wait (aws_autoscaling_lifecycle_hook)
+    // - terminate hook: retired; it held every scale-in for its timeout
+    // - ecs-managed-draining-termination-hook: ECS installs and completes it
+    const hooks = awsJson<string[]>(
+      `autoscaling describe-lifecycle-hooks ` +
+        `--auto-scaling-group-name ${ENV}-optinist-asg ` +
+        `--query 'LifecycleHooks[].LifecycleHookName'`,
+    )
+    expect(
+      hooks.sort(),
+      `${ENV}-optinist-asg lifecycle hooks; to delete a retired one see ` +
+        `FREE_MANAGER_ARCHITECTURE.md, Lifecycle Hooks`,
+    ).toEqual(
+      [
+        `${ENV}-optinist-launch-hook`,
+        "ecs-managed-draining-termination-hook",
+      ].sort(),
+    )
   })
 })
 
@@ -600,17 +661,26 @@ test.describe("Storage and database", () => {
       "no active user names a remote bucket: the query or the schema moved",
     ).toBeGreaterThan(0)
 
+    // The seeded admin account points at the shared app-storage bucket, so the
+    // naming contract only binds the buckets that are per-user. Counting them
+    // is also what keeps this test honest: with a wrong prefix every declared
+    // name still answers head-bucket and the contract loop iterates nothing.
+    const perUserRows = declaredRows.filter(([, name]) =>
+      name.startsWith(BUCKET_PREFIX),
+    )
+    expect(
+      perUserRows.length,
+      `no declared bucket starts with ${BUCKET_PREFIX} - the prefix or the ` +
+        `attributes key changed, and the contract below checks nothing`,
+    ).toBeGreaterThan(0)
+
+    // One listing for the common case; head-bucket is the per-name fallback
     const live = new Set(
       awsJson<string[]>(
         `s3api list-buckets --query 'Buckets[?starts_with(Name, ` +
           `\`${BUCKET_PREFIX}\`)].Name'`,
       ),
     )
-    expect(
-      declared.length,
-      `no declared bucket starts with ${BUCKET_PREFIX} - the prefix or the ` +
-        `attributes key changed, and the contract below checks nothing`,
-    ).toBeGreaterThan(0)
     const missing = declared.filter(
       (name) => !live.has(name) && !bucketExists(name),
     )
@@ -618,12 +688,8 @@ test.describe("Storage and database", () => {
       [],
     )
 
-    // The seeded admin account points at the shared app-storage bucket, so the
-    // naming contract only binds the buckets that are per-user - and each of
-    // those must carry its OWN user's id, or two users share a bucket.
-    for (const [id, name] of declaredRows.filter(([, n]) =>
-      n.startsWith(BUCKET_PREFIX),
-    )) {
+    // Each per-user bucket must carry its OWN user's id, or two users share one.
+    for (const [id, name] of perUserRows) {
       expect(name, `user ${id}'s bucket naming contract`).toMatch(
         new RegExp(`^${BUCKET_PREFIX}${id}-[0-9a-f]{10}$`),
       )
@@ -684,7 +750,8 @@ test.describe("Alarms, logs and metrics", () => {
         `actions:AlarmActions,namespace:Namespace,metric:MetricName,` +
         `dimensions:Dimensions,period:Period,statistic:Statistic,` +
         `extendedStatistic:ExtendedStatistic,threshold:Threshold,` +
-        `operator:ComparisonOperator,evaluationPeriods:EvaluationPeriods}'`,
+        `operator:ComparisonOperator,evaluationPeriods:EvaluationPeriods,` +
+        `metrics:Metrics}'`,
     )
     // Filtering server-side on ALARM would let a mistyped prefix answer with an
     // empty list, which reads as "nothing is firing" instead of "nothing was
@@ -695,7 +762,7 @@ test.describe("Alarms, logs and metrics", () => {
     ).toBeGreaterThan(EXPECTED_ALARMS.length - 1)
     const inAlarm = alarms
       .filter((a) => a.state === "ALARM")
-      .filter((a) => a.name !== COST_ALARM && !isScaleInTrigger(a))
+      .filter((a) => a.name !== COST_ALARM)
     // An alarm whose metric has already recovered is reported, not failed: with
     // two evaluation periods the state trails the metric by minutes, so a run
     // that lands in that gap was describing the clock. The scheduled 08:00 JST

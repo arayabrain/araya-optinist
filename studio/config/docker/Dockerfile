@@ -1,4 +1,5 @@
-FROM --platform=linux/amd64 python:3.11-slim
+# bookworm: glibc 2.41 (trixie) refuses to dlopen the Olympus SDK, which needs an executable stack
+FROM --platform=linux/amd64 python:3.11-slim-bookworm
 
 WORKDIR /app
 
@@ -58,6 +59,10 @@ RUN bash run_download_model_files.sh && rm run_download_model_files.sh
 
 # copy optinist files
 COPY frontend/build /app/frontend/build
+# gzip copies of the bundle, served to browsers that accept gzip (PrecompressedStaticFiles)
+RUN find /app/frontend/build/static -type f \
+        \( -name '*.js' -o -name '*.css' -o -name '*.svg' \) \
+        -exec gzip -9 -k -n -f {} +
 COPY studio /app/studio
 COPY sample_data /app/sample_data
 COPY infrastructure/scripts /app/scripts
@@ -77,12 +82,27 @@ RUN chmod +x cloud-startup.sh
 
 # Build metadata — placed last so the changing ARG values only
 # invalidate this layer, not the COPY layers above.
+# Supplied by ecr_build_push.sh, resolved in scripts/git_ref_info.sh:
+#
+#   GIT_BRANCH  empty when built from a detached HEAD, i.e. a tag checkout
+#   GIT_TAG     empty when HEAD carries no tag
+#
+# Normally exactly one of the two is set. Both default to empty rather than
+# "unknown" so that image.version below never asserts a version; a build that
+# bypassed ecr_build_push.sh is recognisable from GIT_COMMIT instead.
 ARG GIT_COMMIT=unknown
-ARG GIT_BRANCH=unknown
+ARG GIT_BRANCH=
+ARG GIT_TAG=
 ARG BUILD_TIMESTAMP=unknown
 
+# image.version is the git tag, deliberately not Version.APP_VERSION: that is
+# bumped once at release and then stays put, so branch builds would claim to be
+# the release they are merely descended from. Empty means "not built from a
+# tagged release", which is what this label is read to answer. APP_VERSION
+# remains available from pyproject.toml and on the startup log line.
 LABEL org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.version="${GIT_TAG}" \
       org.opencontainers.image.created="${BUILD_TIMESTAMP}" \
       org.opencontainers.image.source="https://github.com/arayabrain/araya-optinist"
 
-RUN python3 -c "import json,os,sys; json.dump({'git_commit':os.environ.get('GIT_COMMIT','unknown'),'git_branch':os.environ.get('GIT_BRANCH','unknown'),'build_timestamp':os.environ.get('BUILD_TIMESTAMP','unknown')}, sys.stdout)" > /app/BUILD_INFO
+RUN python3 -c "import json,os,sys; json.dump({'git_commit':os.environ.get('GIT_COMMIT','unknown'),'git_branch':os.environ.get('GIT_BRANCH',''),'git_tag':os.environ.get('GIT_TAG',''),'build_timestamp':os.environ.get('BUILD_TIMESTAMP','unknown')}, sys.stdout)" > /app/BUILD_INFO

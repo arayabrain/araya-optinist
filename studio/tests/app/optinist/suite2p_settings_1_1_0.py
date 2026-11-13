@@ -1,0 +1,110 @@
+"""The leaf set of suite2p.default_settings() at 1.1.0, the version the conda
+env pins, so tests of the suite2p nodes need no conda env.
+"""
+import copy
+
+SETTINGS_1_1_0 = {
+    "torch_device": "cuda",
+    "tau": 1.0,
+    "fs": 10.0,
+    "diameter": [12.0, 12.0],
+    "run": {
+        "do_registration": 1,
+        "do_regmetrics": True,
+        "do_detection": True,
+        "do_deconvolution": True,
+        "multiplane_parallel": False,
+    },
+    "io": {
+        "combined": True,
+        "save_mat": False,
+        "save_NWB": False,
+        "save_ops_orig": True,
+        "delete_bin": False,
+        "move_bin": False,
+    },
+    "registration": {
+        "align_by_chan2": False,
+        "nimg_init": 400,
+        "maxregshift": 0.1,
+        "do_bidiphase": False,
+        "bidiphase": 0.0,
+        "batch_size": 100,
+        "nonrigid": True,
+        "maxregshiftNR": 5,
+        "block_size": (128, 128),
+        "smooth_sigma_time": 0,
+        "smooth_sigma": 1.15,
+        "spatial_taper": 3.45,
+        "th_badframes": 1.0,
+        "norm_frames": True,
+        "snr_thresh": 1.2,
+        "subpixel": 10,
+        "two_step_registration": False,
+        "reg_tif": False,
+        "reg_tif_chan2": False,
+        "upsample_meanImg": None,
+    },
+    "detection": {
+        "algorithm": "sparsery",
+        "denoise": False,
+        "block_size": (64, 64),
+        "nbins": 5000,
+        "bin_size": None,
+        "highpass_time": 100,
+        "threshold_scaling": 1.0,
+        "npix_norm_min": 0.0,
+        "npix_norm_max": 100,
+        "max_overlap": 0.75,
+        "soma_crop": True,
+        "chan2_threshold": 0.25,
+        "cellpose_chan2": False,
+        "sparsery_settings": {
+            "highpass_neuropil": 25,
+            "max_ROIs": 5000,
+            "spatial_scale": 0,
+            "active_percentile": 0.0,
+        },
+        "sourcery_settings": {
+            "connected": True,
+            "max_iterations": 20,
+            "smooth_masks": False,
+        },
+        "cellpose_settings": {
+            "cellpose_model": "cpsam",
+            "img": "max_proj / meanImg",
+            "highpass_spatial": 0,
+            "flow_threshold": 0.4,
+            "cellprob_threshold": 0.0,
+            "params": None,
+            "params_chan2": None,
+        },
+    },
+    "classification": {
+        "classifier_path": None,
+        "use_builtin_classifier": False,
+        "preclassify": 0.0,
+    },
+    "extraction": {
+        "snr_threshold": 0.0,
+        "batch_size": 500,
+        "neuropil_extract": True,
+        "neuropil_coefficient": 0.7,
+        "inner_neuropil_radius": 2,
+        "min_neuropil_pixels": 350,
+        "lam_percentile": 50.0,
+        "allow_overlap": False,
+        "circular_neuropil": False,
+    },
+    "dcnv_preprocess": {
+        "baseline": "maximin",
+        "win_baseline": 60.0,
+        "sig_baseline": 10.0,
+        "prctile_baseline": 8.0,
+    },
+    "version": "1.1.0",
+}
+
+
+def default_settings():
+    return copy.deepcopy(SETTINGS_1_1_0)

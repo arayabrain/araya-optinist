@@ -1,3 +1,14 @@
+import shutil
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
+
+from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
+from studio.app.common.core.storage.mock_storage_controller import MockStorageController
+from studio.app.dir_path import DIRPATH
+
 workspace_id = "default"
 unique_id = "0123"
 
@@ -8,3 +19,77 @@ def test_import(client):
 
     assert response.status_code == 200
     assert isinstance(data, dict)
+
+
+def test_reproduce_keeps_data_usage(client, monkeypatch):
+    read = ExptConfigReader.read
+    monkeypatch.setattr(
+        ExptConfigReader,
+        "read",
+        classmethod(lambda cls, ws, uid: replace(read(ws, uid), data_usage=1234)),
+    )
+    response = client.get(f"/workflow/reproduce/{workspace_id}/{unique_id}")
+    assert response.json()["data_usage"] == 1234
+
+
+SAMPLE_WORKSPACE_ID = "9875"
+SAMPLE_DATA_DIR = Path(DIRPATH.ROOT_DIR) / "sample_data"
+SAMPLES = sorted(
+    (category, uid.name)
+    for category in ["tutorial", "maintenance"]
+    for uid in (SAMPLE_DATA_DIR / category / "output").iterdir()
+)
+
+
+@pytest.fixture()
+def sample_workspace(monkeypatch, tmp_path):
+    monkeypatch.setattr(MockStorageController, "MOCK_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(MockStorageController, "MOCK_INPUT_DIR", f"{tmp_path}/input")
+    monkeypatch.setattr(MockStorageController, "MOCK_OUTPUT_DIR", f"{tmp_path}/output")
+    yield
+    for folder in ["input", "output"]:
+        shutil.rmtree(
+            Path(DIRPATH.DATA_DIR) / folder / SAMPLE_WORKSPACE_ID, ignore_errors=True
+        )
+
+
+# The samples ship workflow yaml only, so a claimed output can only 404
+@pytest.mark.parametrize("category, uid", SAMPLES)
+def test_a_reproduced_sample_claims_no_outputs(client, sample_workspace, category, uid):
+    assert client.get(f"/workflow/sample_data/{SAMPLE_WORKSPACE_ID}/{category}").json()
+
+    response = client.get(f"/workflow/reproduce/{SAMPLE_WORKSPACE_ID}/{uid}")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["hasNWB"] is False
+    for node in data["function"].values():
+        assert (node["outputPaths"], node["hasNWB"]) == (None, False)
+
+
+@pytest.mark.parametrize("category", ["tutorial", "maintenance"])
+def test_the_sample_import_copies_every_input_to_remote_storage(
+    client, sample_workspace, tmp_path, category
+):
+    """The maintenance input is not named sample_*; left on local disk only, it
+    kept the cleanup job from ever removing the workspace's inputs."""
+    assert client.get(f"/workflow/sample_data/{SAMPLE_WORKSPACE_ID}/{category}").json()
+    inputs = sorted(p.name for p in (SAMPLE_DATA_DIR / category / "input").iterdir())
+    remote = tmp_path / "input" / SAMPLE_WORKSPACE_ID
+    assert (
+        sorted(p.name for p in remote.iterdir() if not p.name.startswith(".")) == inputs
+    )
+    assert (remote / ".image_shape.json").is_file()
+
+
+def test_the_sample_import_fails_when_an_input_copy_fails(
+    client, sample_workspace, monkeypatch
+):
+    """upload_input_data swallows its errors and returns False; dropped, the
+    input stays local only and the cleanup job never removes the workspace."""
+    monkeypatch.setattr(
+        MockStorageController, "upload_input_data", AsyncMock(return_value=False)
+    )
+    res = client.get(f"/workflow/sample_data/{SAMPLE_WORKSPACE_ID}/tutorial")
+    assert res.status_code == 502
+    assert "remote storage failed" in res.json()["detail"]

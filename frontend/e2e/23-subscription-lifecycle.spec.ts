@@ -9,6 +9,7 @@ import {
   authHeaders,
   confirmDialog,
   ERROR_RED,
+  FIREBASE_PYTHON,
   isLocalBaseUrl,
   login,
   REPO_ROOT,
@@ -84,13 +85,9 @@ async function loginKeepWarnings(page: Page) {
 }
 
 // helpers.ts forces email_verified through the backend container, which a
-// deployed run has no local copy of. Firebase is the shared dev project either
-// way, so the same Admin SDK call works from here - it just needs an
-// interpreter that has firebase_admin. Named rather than guessed, because the
-// alternative is a test that fails for a missing dependency and reads like a
-// product bug.
-const FIREBASE_PYTHON = process.env.FIREBASE_ADMIN_PYTHON || "python3"
-
+// deployed run has no local copy of; FIREBASE_PYTHON reaches the same shared
+// project from the host. Skip with a name when it cannot import firebase_admin,
+// because the alternative is a failure that reads like a product bug.
 function firebaseAdminSkipReason(): string {
   try {
     execFileSync(FIREBASE_PYTHON, ["-c", "import firebase_admin"], {
@@ -214,20 +211,26 @@ test.describe.serial("Subscription state lifecycle", () => {
     )
   })
 
-  test("LC-06 - Expired premium (grace period): expiry warning on login", async ({
+  test("LC-06 - Expired premium (grace period) under the free limit: no expiry modal", async ({
     page,
   }) => {
     setPlan(2, "INTERVAL -1 DAY")
     setStorage(0, PREMIUM_QUOTA)
+    // The modal is rendered from this response, so a hidden-modal assertion made
+    // before it resolves passes for an over-quota user too
+    const warningSeen = page.waitForResponse((r) =>
+      r.url().endsWith("/storage-limit-alerts/limit-warning"),
+    )
     await loginKeepWarnings(page)
 
-    const modal = dialog(page)
+    const warning = await (await warningSeen).json()
+    expect(warning?.has_alert ?? false).toBe(false)
+    await expect(page.getByRole("link", { name: "Workspaces" })).toBeVisible({
+      timeout: 30_000,
+    })
     await expect(
-      modal.getByText("Premium Subscription Expired", { exact: true }),
-    ).toBeVisible({ timeout: 30_000 })
-    await expect(modal.getByRole("button", { name: "Upgrade" })).toBeVisible()
-    await modal.getByRole("button", { name: "Handle later" }).click()
-    await expect(modal).toBeHidden()
+      dialog(page).getByText("Premium Subscription Expired", { exact: true }),
+    ).toBeHidden()
 
     // An expired premium account offers both recovery paths
     await page.goto("/account")
@@ -377,19 +380,12 @@ test.describe.serial("Subscription state lifecycle", () => {
     expect(refused.status(), await refused.text()).toBe(403)
     expect(await refused.text()).toContain("Premium subscription required")
 
-    // The expiry modal carries its own Upgrade button and re-renders on this
-    // route, so dismiss the one on the page under test, not the dashboard's
     await page.goto("/account")
-    const modal = dialog(page)
-    await expect(
-      modal.getByText("Premium Subscription Expired", { exact: true }),
-    ).toBeVisible({ timeout: 30_000 })
-    await modal.getByRole("button", { name: "Handle later" }).click()
-    await expect(modal).toBeHidden()
-
     await expect(page.locator("text=/\\(Expired on/").first()).toBeVisible({
       timeout: 15_000,
     })
+    // Under the free limit there is nothing to clean up, so no overdue modal
+    await expect(dialog(page)).toBeHidden()
   })
 
   test("LC-13 - Cancelled subscription shows banner and Continue Plan", async ({

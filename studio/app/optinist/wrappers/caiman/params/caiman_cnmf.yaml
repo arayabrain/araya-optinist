@@ -14,20 +14,20 @@ init_params:
   use_online: False  # If True, use CNMF Online instead of CNMF.
   do_refit: False
 
-  K: 10
+  K: 4  # per patch; for the whole field of view when rf is 0
   gSig: [4, 4]
   ssub: 2
-  tsub: 1
+  tsub: 2
   nb: 2
   method_init: "greedy_roi"
 
   roi_thr: 0.9  # Note: Extended param for ROI
 
 preprocess_params:
-  p: 2
+  p: 1
 
 patch_params:
-  rf: null
+  rf: 15  # 0: whole field of view at once; memory grows with pixels x frames
   stride: 6
 
 merge_params:
@@ -103,22 +103,21 @@ advanced:
     p_ssub: 2
     p_tsub: 2
     memory_fact: 1
-    n_processes: 1
+    n_processes: 1  # CaImAn worker processes; 1 = no worker pool
     in_memory: True
 
   merge_params:
     do_merge: True
     merge_parallel: False
-    max_merge_area: null
 
   quality_evaluation_params:
     SNR_lowest: 0.5
     cnn_lowest: 0.1
     gSig_range: null
-    min_SNR: 2.5
-    min_cnn_thr: 0.9
+    min_SNR: 2
+    min_cnn_thr: 0.99
     rval_lowest: -1
-    rval_thr: 0.8
+    rval_thr: 0.85
     use_cnn: True
     use_ecc: False
     max_ecc: 3
@@ -165,3 +164,6 @@ advanced:
     use_dense: True                 # flag for representation and storing of A and b
     use_peak_max: True              # flag for finding candidate centroids
     W_update_factor: 1              # update W less often than shapes by a given factor
+
+  dff_params:  # dff output, from CaImAn detrend_df_f
+    frames_window: 500  # running baseline window in frames, >= 2; null = whole recording

@@ -27,6 +27,7 @@ Weekly and monthly checks are automated by maintenance scripts that collect data
 - [Weekly Checks — weekly-maintenance.sh](#weekly-checks--weekly-maintenancesh)
 - [Monthly Checks — monthly-maintenance.sh](#monthly-checks--monthly-maintenancesh)
 - [Quarterly Checks](#quarterly-checks)
+- [Planned Downtime: Announcement and Maintenance Page](#planned-downtime-announcement-and-maintenance-page)
 - [Reference: CloudWatch Dashboard](#reference-cloudwatch-dashboard)
 - [Reference: Log Groups and Error Patterns](#reference-log-groups-and-error-patterns)
 - [Reference: Alarm Response Procedures](#reference-alarm-response-procedures)
@@ -79,10 +80,12 @@ The infrastructure lead has Terraform access and handles infrastructure-level ch
 | **Weekly** | Full weekly health check | On-call maintainer | Run `weekly-maintenance.sh` |
 | **Monthly** | Full monthly review | On-call maintainer + Infrastructure lead | Run `monthly-maintenance.sh` |
 | **Monthly** | Post monthly summary | On-call maintainer | Fill in rotation summary in monthly report |
+| **Monthly** | Refresh the NAT instance AMI if a newer one exists (development, then production) | Infrastructure lead | Manual (see [NAT Instance AMI Refresh](#nat-instance-ami-refresh)) |
 | **Quarterly** | Rotate AWS secrets | Infrastructure lead | Manual (see [Quarterly Checks](#quarterly-checks)) |
 | **Quarterly** | Review and update ASG capacity settings | Infrastructure lead | Manual |
 | **Quarterly** | Review RDS storage growth | Infrastructure lead | Manual |
 | **Quarterly** | Security audit (dependencies, IAM) | Infrastructure lead | Manual |
+| **Every 6 h, and after each deploy** | Docker hygiene on every ECS host (prune stopped containers and unused images) | Automatic | SSM association `<env>-docker-hygiene` (see [Host Root Volume Hygiene](#host-root-volume-hygiene)) |
 
 ---
 
@@ -157,7 +160,7 @@ The script checks all three ECS services (free tier, premium, background) and re
 
 The script reports ASG scaling events, autoscaling alarm transitions, and current ASG capacity for the past 7 days.
 
-The 4 autoscaling alarms (`cpu-high`, `cpu-low`, `memory-high`, `memory-low`) do not send email notifications since they self-heal via ASG scaling. **This report section is the primary visibility for autoscaling behavior.**
+The 2 autoscaling alarms (`cpu-high`, `memory-high`) do not send email notifications since they self-heal via ASG scaling. They only add capacity; scale-in is the free-manager Lambda's, by user count, and shows in its log and in the `TargetInstances` metric on the dashboard. **This report section is the primary visibility for autoscaling behavior.**
 
 **What to look for:**
 - Frequent scaling events may indicate the ASG is undersized or workload is spiky
@@ -349,6 +352,67 @@ The RDS instance has 20GB gp3 storage. Plan to increase if free storage trends b
 
 ---
 
+## Planned Downtime: Announcement and Maintenance Page
+
+Two operator switches tell users about planned downtime. Neither needs a deploy or a Terraform apply.
+
+| Switch | What users see | Set with |
+|--------|----------------|----------|
+| Announcement | A warning in the centre of the header on signed-in pages; clicking it opens the full text | SSM parameter `/<environment>/optinist/announcement` |
+| Maintenance page | A static 503 page on every path instead of the app | `infrastructure/scripts/maintenance_mode.sh` |
+
+`<environment>` is the Terraform `var.environment` value: `development` or `subscr`.
+
+### Announcement
+
+The value is JSON. `message` is plain text, up to 500 characters; state the date, time and time zone of the downtime in it. The header shows the first line; the window shows the whole text, so put details after a `\n\n`. `until` is an ISO 8601 time with a time zone; the notice disappears after it. `from` is optional, in the same format; the notice appears only once it has passed, so it can be set ahead of time. Without `from` it shows at once.
+
+```bash
+aws ssm put-parameter --overwrite --region ap-northeast-1 \
+  --name /<environment>/optinist/announcement \
+  --value '{"message": "Scheduled maintenance Wed 5 Nov 13:00-14:00 JST\n\nThe site will be unavailable.", "until": "2026-11-05T05:00:00Z"}'
+```
+
+Clear it early with `--value '{}'`.
+
+- Each backend worker caches the value for 60 seconds. A fresh page load shows a change within about a minute; open tabs re-check every 10 minutes.
+- "Hide until next sign-in" in the window dismisses it. A dismissal lasts until the next sign-in in that browser, or until the message text changes. Editing the message shows it again to everyone.
+- A value that is not JSON, lacks a field, or has a `from` or `until` that is not ISO 8601 or has no time zone shows nothing and logs a warning starting `Announcement` in the ECS logs. An `until` in the past or a `from` in the future also shows nothing, without a warning.
+- Standalone installs never show announcements.
+- Check it with `curl -s https://<host>/announcement`, which returns `{"id": ..., "message": ...}` while the notice is live.
+- Anyone with `ssm:PutParameter` on the parameter can change it. The ECS task role can only read it.
+
+### Maintenance page
+
+```bash
+infrastructure/scripts/maintenance_mode.sh <environment> on
+infrastructure/scripts/maintenance_mode.sh <environment> status
+infrastructure/scripts/maintenance_mode.sh <environment> off
+```
+
+- `on` adds a listener rule at priority 10 on the HTTPS listener that answers every path with the 503 page in `infrastructure/scripts/maintenance_page.html`. The page must stay under the ALB's 1024-character limit; the script refuses a longer one.
+- Terraform does not manage the rule, so an apply during the window leaves it in place. `status` is the only record that it is on.
+- Target-group health checks bypass listener rules, so targets stay healthy and the autoscaling groups do not react.
+- The 503 comes from the ALB, so it counts toward `HTTPCode_ELB_5XX_Count`, not the target 5XX alarm.
+- Every request through the ALB is blocked, including Stripe webhooks (Stripe retries them) and the premium manager's experiment-sync trigger (it logs the failure and continues).
+- Open tabs reload onto the page at their next failed API call. The page reloads itself every 5 minutes, so tabs return to the app once it is off.
+- `robots.txt` also returns 503, which pauses search-engine crawling. Keep windows under a day.
+
+### Runbook
+
+1. A week ahead, post the announcement. Load the site in a private window to check it.
+2. At the start of the window, run `maintenance_mode.sh <environment> on`. Check that `curl -si https://<host>/ | head -1` shows 503.
+3. Do the work. Check the backend from inside a container with ECS Exec, since the browser app cannot be reached past the rule:
+   ```bash
+   aws ecs execute-command --region ap-northeast-1 --cluster <environment>-optinist-cloud-cluster \
+     --task <task-id> --container <environment>-optinist-cloud-container --interactive \
+     --command "python -c \"import urllib.request as u; print(u.urlopen('http://localhost:8000/health').read())\""
+   ```
+4. Run `maintenance_mode.sh <environment> off`. Check that `curl -si https://<host>/ | head -1` shows 200.
+5. Clear the announcement, or let `until` pass.
+
+---
+
 ## Reference: CloudWatch Dashboard
 
 **Dashboard name:** `subscr-optinist-monitoring`
@@ -412,9 +476,9 @@ When an alarm fires, follow the procedure for that alarm category.
 | Alarm | Threshold | Action |
 |---|---|---|
 | `subscr-optinist-cpu-high` | ECS CPU > 60% (2 periods) | Auto-triggers scale-up. Monitor if scaling resolves the issue. If sustained at max capacity, consider increasing ASG max. |
-| `subscr-optinist-cpu-low` | ECS CPU < 20% (2 periods) | Auto-triggers scale-down. Informational only. |
 | `subscr-optinist-memory-high` | ECS Memory > 80% (3 periods) | Auto-triggers scale-up. If sustained, check for memory leaks in application logs. |
-| `subscr-optinist-memory-low` | ECS Memory < 10% (3 periods) | Auto-triggers scale-down. Informational only. |
+
+There is no scale-down alarm. The free-manager Lambda removes capacity by user count, choosing an instance with no running workflow, and removes nothing while a `-high` alarm is in ALARM or for 15 minutes after it clears; an instance a `-high` alarm added goes on the first run after that, if the user count does not need it.
 
 ### EC2 Alarms
 
@@ -448,6 +512,8 @@ When an alarm fires, follow the procedure for that alarm category.
 | `subscr-optinist-public-tg-response-time-high` | p95 > 5s for 25 of 30 min | Sustained SPA/public-dataview latency. Check public instance health and cold-cache reads. |
 | `subscr-optinist-free-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Free workflow instance failing health checks. Check ECS task and EBS I/O. |
 | `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | SPA delivery / public-dataview at risk. Check public ASG instances. |
+| `subscr-optinist-free-serving-below-desired` | Healthy targets < ASG desired hosts for 25 of 30 min, outside an ECS deployment | A host the ASG does not replace (ECS deregistered its target). Check ASG activity first: a refresh or scale-out in progress is expected. Otherwise find the host with no healthy target and set it unhealthy in the ASG. |
+| `subscr-optinist-public-serving-below-desired` | Healthy targets < ASG desired hosts for 35 of 40 min, outside an ECS deployment | Same check on the public tier. The other public host keeps serving meanwhile. A host replacement is short for about 25 min (two 600 s drains), so the window is longer than free's. |
 
 ### Background Service Alarms
 
@@ -494,6 +560,8 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 | `subscr-optinist-public-tg-response-time-high` | `monitoring.tf` | Persistent high latency on the public tier |
 | `subscr-optinist-free-tg-unhealthy-hosts` | `monitoring.tf` | Free workflow instance down |
 | `subscr-optinist-public-tg-unhealthy-hosts` | `monitoring.tf` | SPA delivery / public-dataview at risk |
+| `subscr-optinist-free-serving-below-desired` | `monitoring.tf` | Free tier down with no automatic replacement |
+| `subscr-optinist-public-serving-below-desired` | `monitoring.tf` | Public tier short of a host with no automatic replacement |
 | `subscr-optinist-ebs-queue-length-high` | `monitoring.tf` | Disk saturation can fail health checks and evict the instance |
 | `subscr-optinist-load-average-high` | `monitoring.tf` | EC2 hosts saturated, all services degrade |
 | `subscr-monthly-cost-high` | `monitoring.tf` | Unexpected cost spike |
@@ -514,8 +582,8 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 
 | Alarm | Why no email |
 |---|---|
-| `subscr-optinist-cpu-high` / `cpu-low` | Triggers ASG scale up/down automatically |
-| `subscr-optinist-memory-high` / `memory-low` | Triggers ASG scale up/down automatically |
+| `subscr-optinist-cpu-high` | Triggers ASG scale-up automatically |
+| `subscr-optinist-memory-high` | Triggers ASG scale-up automatically |
 
 ---
 
@@ -559,6 +627,64 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 - **Quarterly:** Check storage growth trend and plan increases (see [Quarterly Checks](#3-rds-storage-growth))
 - **As needed:** If connection count alarms fire, review application connection pooling
 
+### Host Root Volume Hygiene
+
+Every ECS host keeps docker's images and the app's working data (`/app/studio_data`, the container's
+writable layer) on one root volume. Each deploy adds a 2.1 GB image and leaves the stopped container of
+the previous task definition, and nothing in ECS reclaims them fast enough: on 2026-11-04 the dev
+premium host filled its 48 GB root with 11 images and 19 containers, every run failed with `ENOSPC`,
+and once at 100 % the SSM agent and cloud-init could not write either, so the host was unreachable.
+
+Two layers keep that from happening again:
+
+- **Host side.** The SSM association `<env>-docker-hygiene` (`deployment.tf`) runs
+  `infrastructure/scripts/docker_hygiene.sh` on every host launched from one of the four launch
+  templates (free, premium, background, public), every 6 hours and once after each deploy
+  (`null_resource.deploy_to_ecs` and `ecr_build_push.sh --deploy` call `start-associations-once`).
+  It prunes stopped containers created more than 10 minutes ago, then, only when the ECS agent
+  reports at least one RUNNING task and none mid-start, every image no container uses. The log is
+  `/var/log/docker_hygiene.log` on the host. A host still over 80 % used after pruning exits 2,
+  which shows as **non-compliant** on the State Manager dashboard; that is a flag to look at, not
+  an alarm (a CloudWatch disk alarm was deliberately left out).
+- **App side.** A run or upload is refused with HTTP 507 when starting it would leave less than
+  `OPTINIST_MIN_FREE_DISK_GIB` (default 8) free on the data disk, after first deleting leftovers
+  no run references (CaImAn memmaps, interrupted atomic writes, orphaned CaImAn temp dirs). CaImAn
+  nodes also check the size of the memmap they are about to write and fail the node, with the sizes
+  in the error, rather than take the host under the reserve. Users are told to delete records they
+  no longer need: deleting a record frees local disk.
+
+To run the hygiene by hand (for example after a rollback that pulled an old image):
+
+```bash
+ASSOC_ID=$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)
+aws ssm start-associations-once --association-ids "$ASSOC_ID" --region ap-northeast-1
+# A few minutes later, one line per host with its exit code
+aws ssm describe-association-executions --association-id "$ASSOC_ID" --region ap-northeast-1 \
+  --max-results 1 --query 'AssociationExecutions[0].[Status,ExecutionId]' --output text
+```
+
+The 10 minutes count from when a container was created, not from when it stopped, so the old
+task's container (created when that task started) and with it the previous image go on the first
+post-deploy run. A second `start-associations-once` helps only when an old task was still draining
+during the first; the 6-hour run catches that anyway.
+
+### Emergency: EC2 Root Volume Full
+
+Symptoms: runs fail with `No space left on device` or `SIGBUS`, records stay "running",
+`DELETE /experiments/{ws}/{uid}` returns 500, and SSM Run Command on the host fails in 0 s with no
+output (Session Manager and ECS Exec say "Plugin with name Standard_Stream not found").
+
+1. If SSM still answers, run the hygiene association (above) or, on the host,
+   `docker container prune -f; docker image prune -af`, then delete records the user no longer
+   needs. Check with `df -h /` and `docker system df`.
+2. If SSM does not answer, the host cannot be repaired in place: growing the volume does not help
+   because cloud-init fails with `ENOSPC` before it reaches `growpart`. Either replace the instance
+   (`terraform apply -replace=aws_instance.premium[0]`, at a time with no premium run active) or
+   rescue the volume: stop the instance, attach its root volume to the free-tier host in the same
+   AZ, `growpart` partition 1, `mount -o nouuid`, `xfs_growfs`, reattach, start, then prune docker.
+3. Afterwards, confirm the association is targeting the host
+   (`aws ssm describe-association-execution-targets`) so it does not happen again.
+
 ### Emergency: RDS Storage Full
 
 If `subscr-optinist-rds-storage-low` fires:
@@ -597,159 +723,215 @@ If `subscr-optinist-rds-storage-low` fires:
 ### Emergency: Restore the Database from a Snapshot
 
 **A snapshot restore is the only way back from a corrupted or mis-migrated database, and from a bad engine
-upgrade.** There is no engine downgrade: AWS states it directly, and the reason is that **the engine version
-is a property of the snapshot** — `RestoreDBInstanceFromDBSnapshot` has no engine-version parameter. So
-restoring a pre-change snapshot is the rollback, whatever the change was.
+upgrade.** There is no engine downgrade: **the engine version is a property of the snapshot** —
+`RestoreDBInstanceFromDBSnapshot` has no engine-version parameter — so restoring a pre-change snapshot is the
+rollback, whatever the change was.
 
-Three things to know before starting. All three were measured, not assumed.
+Three things to know before starting, all measured rather than assumed:
 
 | | |
 |---|---|
 | **A restore creates a new instance** | It does not modify the existing one. The original identifier has to be **freed first**, or the restore has to land on a temporary identifier and be renamed afterwards |
-| **The identifier carries the ARN and the endpoint hostname; `DbiResourceId` does not** | Restoring onto the original identifier reproduces the original endpoint, so nothing that resolves the hostname needs reconfiguring. **`DbiResourceId` is the one attribute that moves**, and that is what forces the proxy re-registration in step 5 |
-| **The snapshot does not carry the instance's configuration** | Instance class, storage type, subnet group, security groups and parameter group are **restore arguments**, not snapshot contents. Read them off the instance before deleting it (step 2); the declared values are in `infrastructure/terraform/infrastructure.tf` |
+| **The identifier carries the ARN and the endpoint hostname; `DbiResourceId` does not** | Restoring onto the original identifier reproduces the original endpoint, so nothing that resolves the hostname needs reconfiguring. **`DbiResourceId` is the one attribute that moves**, and that is what forces the proxy re-registration in step 6 |
+| **The snapshot does not carry the instance's configuration** | Instance class, storage type, subnet group, security groups and parameter group are **restore arguments**, not snapshot contents. Read them off the instance before deleting it (step 3); the declared values are in `infrastructure/terraform/infrastructure.tf` |
 
-**Measured durations**, from the rehearsal drill rather than estimated: **about 13 min 30 s end to end — 5
-minutes for the delete, 8 min 30 s for the restore.** Creating a fresh manual snapshot first adds about a
-minute. Budget the announcement against those figures.
+**Measured durations**, from the rehearsal drill: **about 13 min 30 s end to end — 5 minutes for the delete,
+8 min 30 s for the restore.** Creating a fresh manual snapshot first adds about a minute. Budget the
+announcement against those figures, and say in it that **a rollback loses every write made since the
+snapshot**.
 
-**For a bad engine upgrade specifically**, use
-[RDS_ENGINE_UPGRADE_PROCEDURE.md](RDS_ENGINE_UPGRADE_PROCEDURE.md)'s Rollback section instead: it adds the
-traffic-stop and rule-disable steps that an upgrade rollback needs, and it names the retained
-outgoing-family parameter group to attach.
+**For a bad engine upgrade**, follow this runbook from
+[RDS_ENGINE_UPGRADE_PROCEDURE.md](RDS_ENGINE_UPGRADE_PROCEDURE.md)'s Rollback section, which supplies the
+outgoing-family parameter group to attach and the Terraform revert to run before step 7.
+
+```bash
+export AWS_PROFILE=<the profile for this account>
+export AWS_REGION=ap-northeast-1
+ENV=<the Terraform var.environment value: development or subscr>
+DB=${ENV}-optinist-cloud-rds
+RESTORE_PG=          # leave empty unless the restored version needs a parameter group of
+                     # another family; an engine-upgrade rollback sets it
+```
 
 **Step 1. Choose the restore source and confirm it.**
 
 ```bash
 # EVERY manual snapshot, newest first. An empty filtered result and an empty snapshot
-# list mean different things, so filter as a COLUMN rather than as a WHERE clause.
-aws rds describe-db-snapshots \
-  --db-instance-identifier subscr-optinist-cloud-rds --snapshot-type manual \
-  --region ap-northeast-1 \
+# list mean different things, so list them all rather than filtering.
+aws rds describe-db-snapshots --db-instance-identifier "$DB" --snapshot-type manual \
   --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[].{
              id:DBSnapshotIdentifier,ev:EngineVersion,status:Status,
              created:SnapshotCreateTime}' --output table
 
-# The fallback: automated backups, which also cover point-in-time recovery for 35 days.
-aws rds describe-db-snapshots \
-  --db-instance-identifier subscr-optinist-cloud-rds --snapshot-type automated \
-  --region ap-northeast-1 \
+# The fallback: automated backups, which also cover point-in-time recovery.
+aws rds describe-db-snapshots --db-instance-identifier "$DB" --snapshot-type automated \
   --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[:3].{
              id:DBSnapshotIdentifier,ev:EngineVersion,created:SnapshotCreateTime}' \
   --output table
+
+RESTORE_FROM=<the chosen snapshot id>
 ```
 
 **Prefer a manual snapshot: its contents are known and it survives an instance delete.** Verify the engine
 version on the row you pick — a snapshot restores the version it was taken on, which is the whole mechanism.
 
-**Step 2. Read the restore parameters off the instance, while it still exists.**
+**Step 2. Stop application traffic, and preserve the evidence.** Nothing should write to an instance that is
+about to be replaced. Scaling to zero does not hold on its own: the manager Lambdas re-scale on their own
+schedules, so disable their EventBridge rules first, as the development scheduler's own stop path does.
+
+> `for R in $(echo "$RULES")`, never `for R in $RULES`: zsh does not word-split an unquoted parameter
+> expansion, so the bare form iterates once over the whole string — and in step 7 that would set the *first*
+> service to the *last* service's count.
+
+```bash
+# Record the current state as "name=count" pairs that step 7 replays. The counts are NOT
+# all 1. WRITE THIS LINE DOWN alongside RULES: a restore can outlive the shell it started in.
+COUNTS=$(aws ecs describe-services --cluster "${ENV}-optinist-cloud-cluster" \
+  --services "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
+             "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service" \
+  --query 'services[].[serviceName,desiredCount]' --output text | awk '{print $1"="$2}' | tr '\n' ' ')
+echo "COUNTS=$COUNTS"
+# Expected: four name=count pairs.
+
+# DERIVE the rule list from the scheduler Lambda rather than transcribing it: a hand-copied
+# list drifts, and the rule most easily missed, free-manager-asg-events, is triggered BY
+# scaling ECS to zero. Production has no scheduler, so fall back to the rules that exist.
+RULES=$(aws lambda get-function-configuration --function-name "${ENV}-dev-scheduler" \
+  --query 'Environment.Variables.[SCHEDULE_RULE_NAMES,DELAYED_RULE_NAMES]' --output text 2>/dev/null \
+  | tr '\t' '\n' | python3 -c 'import json,sys;print(" ".join(n for l in sys.stdin for n in json.loads(l)))')
+[ -n "$RULES" ] || RULES=$(aws events list-rules --name-prefix "${ENV}-" \
+  --query "Rules[?contains(Name,'manager')||contains(Name,'cleanup')||contains(Name,'tracker')].Name" \
+  --output text | tr '\t' ' ')
+echo "RULES=$RULES"
+# Expected: five names on development - free-manager-schedule, free-manager-asg-events,
+# cost-tracker-schedule, premium-manager-schedule, premium-cleanup-schedule. WRITE THIS
+# LINE DOWN: step 7 re-enables exactly this set.
+
+for R in $(echo "$RULES"); do aws events disable-rule --name "$R" && echo "disabled $R"; done
+for R in $(echo "$RULES"); do aws events describe-rule --name "$R" --query '[Name,State]' --output text; done
+# Expected: DISABLED for every line. A rule missed here is a service that scales back up
+# mid-restore.
+
+for S in "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
+         "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service"; do
+  aws ecs update-service --cluster "${ENV}-optinist-cloud-cluster" --service "$S" \
+    --desired-count 0 --query 'service.{name:serviceName,desired:desiredCount}'
+done
+# Expected: desired 0 for all four, and still 0 a few minutes later. If one has come
+# back, a rule is still enabled.
+```
+
+**Step 3. Read the restore parameters off the instance, while it still exists.**
 
 ```bash
 read -r CLASS STORAGE SUBNET SG <<<"$(aws rds describe-db-instances \
-  --db-instance-identifier subscr-optinist-cloud-rds \
-  --region ap-northeast-1 --output text \
+  --db-instance-identifier "$DB" --output text \
   --query 'DBInstances[0].[DBInstanceClass,StorageType,DBSubnetGroup.DBSubnetGroupName,
            VpcSecurityGroups[0].VpcSecurityGroupId]')"
 echo "$CLASS $STORAGE $SUBNET $SG"
 # Expected: four non-empty values. They are unavailable once the instance is gone.
 ```
 
-**Step 3. Clear deletion protection — production only.**
-
-`DeleteDBInstance` is **refused outright** while protection is on, so a legitimate delete stops here with
-nothing but an error message to explain why.
+**Step 4. Clear deletion protection — production only.** `DeleteDBInstance` is **refused outright** while
+protection is on, so a legitimate delete stops here with nothing but an error message to explain why.
 
 ```bash
-aws rds describe-db-instances --db-instance-identifier subscr-optinist-cloud-rds \
-  --region ap-northeast-1 --query 'DBInstances[0].DeletionProtection'
-# true on production, false on development. Only continue if it said true.
+aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].DeletionProtection'
+# Expected: true on production, false on development. Only continue if it said true.
 
-aws rds modify-db-instance --db-instance-identifier subscr-optinist-cloud-rds \
-  --no-deletion-protection --apply-immediately --region ap-northeast-1 \
-  --query 'DBInstance.DBInstanceIdentifier'
-aws rds describe-db-instances --db-instance-identifier subscr-optinist-cloud-rds \
-  --region ap-northeast-1 --query 'DBInstances[0].DeletionProtection'
+aws rds modify-db-instance --db-instance-identifier "$DB" \
+  --no-deletion-protection --apply-immediately --query 'DBInstance.DBInstanceIdentifier'
+aws rds describe-db-instances --db-instance-identifier "$DB" \
+  --query 'DBInstances[0].DeletionProtection'
 # Expected: false. Confirm it rather than assuming.
 ```
 
 **Terraform puts it back on the next apply**, because `deletion_protection` is declared — so there is no
 separate re-enable step to forget. If the restore is abandoned before that apply, re-enable it by hand.
 
-**Step 4. Free the identifier, then restore under it.**
+**Step 5. Free the identifier, then restore under it.**
 
 ```bash
 date -u
 # The final snapshot IS the diagnostic copy of the broken instance. Keep the automated
 # backups too: --no-delete-automated-backups, because the flag DEFAULTS TO TRUE and a
 # delete written without it takes the point-in-time window with the instance.
-aws rds delete-db-instance --db-instance-identifier subscr-optinist-cloud-rds \
-  --final-db-snapshot-identifier "subscr-optinist-broken-$(date +%Y%m%d-%H%M)" \
-  --no-delete-automated-backups --region ap-northeast-1
-aws rds wait db-instance-deleted --db-instance-identifier subscr-optinist-cloud-rds \
-  --region ap-northeast-1
+aws rds delete-db-instance --db-instance-identifier "$DB" \
+  --final-db-snapshot-identifier "${DB}-broken-$(date +%Y%m%d-%H%M)" \
+  --no-delete-automated-backups
+aws rds wait db-instance-deleted --db-instance-identifier "$DB"
 
-aws rds restore-db-instance-from-db-snapshot --region ap-northeast-1 \
-  --db-instance-identifier subscr-optinist-cloud-rds \
-  --db-snapshot-identifier "<the snapshot chosen in step 1>" \
+# An instance cannot attach a group from another engine family, and the restore fails on
+# that argument AFTER it has been committed - hence RESTORE_PG, set at the top.
+aws rds restore-db-instance-from-db-snapshot \
+  --db-instance-identifier "$DB" --db-snapshot-identifier "$RESTORE_FROM" \
   --db-instance-class "$CLASS" --storage-type "$STORAGE" --port 3306 \
   --db-subnet-group-name "$SUBNET" --vpc-security-group-ids "$SG" \
+  ${RESTORE_PG:+--db-parameter-group-name "$RESTORE_PG"} \
   --no-publicly-accessible --no-multi-az
-aws rds wait db-instance-available --db-instance-identifier subscr-optinist-cloud-rds \
-  --region ap-northeast-1
+aws rds wait db-instance-available --db-instance-identifier "$DB"
 date -u
 
-aws rds describe-db-instances --db-instance-identifier subscr-optinist-cloud-rds \
-  --region ap-northeast-1 \
+aws rds describe-db-instances --db-instance-identifier "$DB" \
   --query 'DBInstances[0].{ev:EngineVersion,endpoint:Endpoint.Address,rid:DbiResourceId,
            pg:DBParameterGroups[0].DBParameterGroupName,
            pgs:DBParameterGroups[0].ParameterApplyStatus,
            retention:BackupRetentionPeriod}'
 # Expected: the snapshot's engine version, the ORIGINAL endpoint hostname, a NEW
-# DbiResourceId, the parameter group in-sync, and retention unchanged.
-# A changed endpoint means the restore did not land on the original identifier - stop
-# and rename before continuing.
+# DbiResourceId, the parameter group in-sync, and retention unchanged. A changed endpoint
+# means the restore did not land on the original identifier - stop and rename before
+# continuing.
 ```
 
-**Add `--db-parameter-group-name` if the restored version needs a different parameter-group family** from the
-one currently declared. An instance cannot attach a group from another engine family, and the restore fails
-on that argument *after* it has been committed.
-
-**Step 5. Re-register the RDS Proxy target.**
-
-The restored instance has a new `DbiResourceId`, and **the proxy does not pick up a replacement on its own.**
+**Step 6. Re-register the RDS Proxy target.** The restored instance has a new `DbiResourceId`, and **the proxy
+does not pick up a replacement on its own.** On development the scheduler's next start would do this through
+`ensure_rds_proxy_target()`, but a restore should not wait until morning; on production it is manual and
+load-bearing.
 
 ```bash
-aws rds register-db-proxy-targets --db-proxy-name subscr-optinist-rds-proxy \
-  --target-group-name default \
-  --db-instance-identifiers subscr-optinist-cloud-rds --region ap-northeast-1
-aws rds describe-db-proxy-targets --db-proxy-name subscr-optinist-rds-proxy \
-  --region ap-northeast-1 \
+aws rds register-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
+  --target-group-name default --db-instance-identifiers "$DB"
+aws rds describe-db-proxy-targets --db-proxy-name "${ENV}-optinist-rds-proxy" \
   --query '{found:length(Targets),
             targets:Targets[].{id:RdsResourceId,state:TargetHealth.State}}'
 # Expected: found == 1, AVAILABLE. REGISTERING for a minute or two is normal.
 ```
 
-**On development this step happens by itself**, on the scheduler's next start through
-`ensure_rds_proxy_target()`. **Production has no scheduler, so it is manual and load-bearing** — the
-application cannot reach the database until it completes.
-
-**Step 6. Prove the database serves — metadata is not proof.**
-
-The control plane reporting the right version, endpoint and parameter group says nothing about whether the
-database answers. **A restore that produces correct metadata and an unreachable database is a failed
-restore.** Connect over TLS and read the version from the engine, then cycle the ECS services so no
-connection pool is left holding a dead connection:
+**Step 7. Bring traffic back, and prove the database serves.** The control plane reporting the right version,
+endpoint and parameter group says nothing about whether the database answers: **a restore with correct
+metadata and an unreachable database is a failed restore.**
 
 ```bash
-# Health check through the application
-curl -fsS https://araya-optinist.com/api/health && echo
+# If the shell from step 2 is gone, redeclare both from the lines written down there. An
+# empty value makes the loops run zero times and print nothing, so refuse rather than proceed.
+[ -n "$COUNTS" ] && [ -n "$RULES" ] || {
+  echo "ABORT: COUNTS and RULES must be set - redeclare them from step 2's output" >&2; }
 
-# Then force each service to start fresh tasks
-for S in subscr-optinist-cloud-service subscr-premium-optinist-cloud-service \
-         subscr-background-optinist-cloud-service subscr-public-optinist-cloud-service; do
-  aws ecs update-service --cluster subscr-optinist-cloud-cluster --service "$S" \
-    --force-new-deployment --region ap-northeast-1 --query 'service.serviceName'
+# Restore each service to ITS OWN recorded count, with fresh tasks so no connection pool
+# is left holding a dead connection.
+for P in $(echo "$COUNTS"); do
+  aws ecs update-service --cluster "${ENV}-optinist-cloud-cluster" \
+    --service "${P%%=*}" --desired-count "${P##*=}" --force-new-deployment >/dev/null \
+    && echo "restored ${P%%=*} to ${P##*=}"
 done
+
+# Re-enable every rule disabled in step 2. Leaving one disabled silently stops
+# autoscaling, premium assignment cleanup or cost metrics, with no alarm for it.
+for R in $(echo "$RULES"); do aws events enable-rule --name "$R" && echo "enabled $R"; done
+for R in $(echo "$RULES"); do aws events describe-rule --name "$R" --query '[Name,State]' --output text; done
+# Expected: ENABLED for every one, and the count matches what step 2 disabled.
+
+aws ecs describe-services --cluster "${ENV}-optinist-cloud-cluster" \
+  --services "${ENV}-optinist-cloud-service" "${ENV}-premium-optinist-cloud-service" \
+             "${ENV}-background-optinist-cloud-service" "${ENV}-public-optinist-cloud-service" \
+  --query 'services[].{name:serviceName,desired:desiredCount,running:runningCount,
+           rollout:deployments[0].rolloutState}'
+# Expected: running == desired, COMPLETED, at the recorded counts.
+
+curl -fsS "<the environment's base URL>/api/health" && echo
+# Expected: a healthy response through the application, which reaches the database over
+# TLS through the proxy.
 ```
 
 **Afterwards: check Terraform converges.** Run `terraform plan` and confirm `aws_db_instance.main` shows
@@ -767,6 +949,7 @@ else aborts. Each delete that retained its automated backups leaves its own set,
 - Review GitHub security alerts (Dependabot)
 - Run `pip audit` on Python dependencies
 - Run `npm audit` on frontend dependencies
+- Refresh the NAT instance AMI if a newer one exists (development, then production; [NAT Instance AMI Refresh](#nat-instance-ami-refresh))
 
 ### Quarterly
 
@@ -780,6 +963,207 @@ else aborts. Each delete that retained its automated backups leaves its own set,
 
 - Apply critical security patches immediately (hotfix procedure in DEPLOYMENT_PROCEDURE.md)
 - Respond to AWS security advisories
+
+### NAT Instance AMI Refresh
+
+The NAT instances (`aws_instance.nat`, and `aws_instance.nat2` when `enable_second_nat` is set) run the
+AMI pinned in the SSM parameter `/<environment>/optinist/nat-ami-id` (`/development/...` and
+`/subscr/...`). Every apply reads the same value, whichever branch or tfvars copy it runs from. A newer
+image is taken by bumping the parameter; Terraform then plans the replacement. AL2023 locks `dnf` to the
+release its image was built from, so the patch level of a NAT instance is the image it was launched
+from: refreshing means a newer image, not an update on the running instance.
+
+Terraform resolves the pin through `data.aws_ami.nat_pinned`, so a pin that does not exist in this
+region, is not Amazon's or is not x86_64 fails the plan before anything is destroyed. The instances are
+`create_before_destroy`: a failed create leaves the old NAT running. `user_data` is ignored (a change
+would stop and start the instance in place, and runs only on first boot), so an edit to the NAT
+`user_data` takes effect at the next replacement.
+
+**Why it is deliberate.** A replacement pauses private-subnet internet egress from the moment the
+Elastic IP moves to the new instance until its `user_data` has set up forwarding — about a minute on
+development, where the `iptables-nft` install finished about 50 seconds after boot: SSM sessions,
+Firebase authentication and any external API call fail meanwhile. `create_before_destroy` protects
+against a failed create, not against an instance that is created and does not forward, which is what
+step 5 checks. With `enable_second_nat` (production) both NAT
+instances are replaced in the same apply, so **both AZs pause together**. The replacement must also be
+applied together with its dependents — the Elastic IP and both private route tables — or they keep
+pointing at the old instance. A `-target` apply never includes them, so **never replace a NAT instance
+in a targeted apply**.
+
+**Rules.**
+
+- **Development first.** Production gets only an id development has already run, in the same region
+  (AMI ids are regional).
+- **Full-apply a bump straight away**, on the environment bumped. Until it is applied, any targeted apply
+  that reaches the NAT through a dependency (the dev scheduler Lambda, for one) pulls the replacement in
+  without the Elastic IP and the routes.
+- **Production in its own apply**, not inside a release apply: a release apply that also replaces the NAT
+  mixes an egress gap into an apply that is about something else. It can follow the release in the same
+  window, announced as an egress gap.
+- **Apply only from a branch that reads the pin.** A branch cut before the pin still takes the newest
+  image itself and plans a NAT replacement on most applies; merge `develop-main` into it first.
+- SSM keeps each bump: `aws ssm get-parameter-history --name /<environment>/optinist/nat-ami-id`.
+
+**0. Set up for the environment.** Profile and backend first, so a plan cannot read one environment's
+tfvars against the other's state:
+
+```bash
+export AWS_PROFILE=<the profile for the account hosting the environment>
+TF_ENV=development   # the tfvars and backend file names: development or production
+ENV=development      # the Terraform var.environment value: development or subscr
+ENV_PREFIX=${ENV}-optinist
+cd infrastructure/terraform
+terraform init -reconfigure -backend-config="backends/${TF_ENV}.hcl"
+```
+
+**1. Check whether a refresh is due.** Full plans and applies warn when the pin is over 30 days older
+than the latest AL2023 image on the default kernel line (`check "nat_ami_freshness"`; a warning, never
+an error; `-target` skips it). To check by hand, compare the pin and each NAT instance's image with the
+latest one, and its `user_data` with the configuration about to be applied:
+
+```bash
+aws ssm get-parameter --region ap-northeast-1 --name "/${ENV}/optinist/nat-ami-id" \
+  --query Parameter.Value --output text
+
+aws ec2 describe-instances --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-nat-instance*" \
+            "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,ImageId]' \
+  --output table
+
+# The latest AL2023 image on the default kernel line (what the check compares the pin with)
+aws ssm get-parameter --region ap-northeast-1 \
+  --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+  --query Parameter.Value --output text
+
+# The user_data an instance launched with, against local.nat_user_data on the checked-out
+# branch (run from the repository root, once per instance id above). No output: identical
+NAT_ID=<instance id>
+diff <(aws ec2 describe-instance-attribute --region ap-northeast-1 --instance-id "$NAT_ID" \
+         --attribute userData --query UserData.Value --output text | base64 --decode) \
+     <(awk '/nat_user_data = <<-EOF/{f=1;next} /^  EOF$/{f=0} f' \
+         infrastructure/terraform/infrastructure.tf | sed 's/^    //')
+```
+
+The `user_data` comparison is what shows whether a `user_data` change is pending. The launch time does
+not: a stop and start resets it (development's NAT restarts every day), but `user_data` runs only on
+first boot.
+
+If the pin and every NAT instance are on the latest image, and the `user_data` matches, there is nothing
+to do.
+
+**2. Choose the window.** Production: a low-traffic time, announced like any other maintenance, as an
+egress pause in both AZs. Development: during the dev scheduler's daytime hours, while the NAT is running.
+
+**3. Bump the pin and plan as a full plan**, without `-target`, and save it. Note the current id first:
+it is the rollback (step 6). The new id: on development, the latest one from step 1; on production, the
+one development runs (`/development/optinist/nat-ami-id`). If only the `user_data` changed and the id
+stays, skip the bump and add `-replace=aws_instance.nat` to the plan (and `-replace='aws_instance.nat2[0]'`
+with `enable_second_nat = true`).
+
+```bash
+OLD_AMI=$(aws ssm get-parameter --region ap-northeast-1 --name "/${ENV}/optinist/nat-ami-id" \
+  --query Parameter.Value --output text); echo "rollback id: ${OLD_AMI}"
+aws ssm put-parameter --region ap-northeast-1 --name "/${ENV}/optinist/nat-ami-id" \
+  --type String --overwrite --value <new id>
+
+# Outside the tree, and removed however the shell exits: a saved plan holds every variable value
+PLAN=$(mktemp "${TMPDIR:-/tmp}/tfplan-nat-refresh.XXXXXX"); trap 'rm -f "$PLAN"' EXIT
+terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN"
+```
+
+A pin the plan cannot resolve fails it (`Your query returned no results`): put the old id back and check
+the new one's region and architecture. The plan must contain all of these together:
+
+| Resource | Expected change |
+|---|---|
+| `aws_instance.nat` (and `aws_instance.nat2[0]`) | Replaced, create before destroy (`+/-`): `ami` to the new pin, and `user_data` if it changed |
+| `aws_eip.nat_instance` (and `aws_eip.nat_instance2[0]`) | Updated in place: `instance` |
+| `aws_route_table.private1`, `aws_route_table.private2` | Updated in place: the route's `network_interface_id` |
+| Development only: `aws_lambda_function.dev_scheduler[0]`, `aws_iam_role_policy.dev_scheduler_permissions[0]` | Updated in place: the NAT instance id |
+
+Anything else in the plan is unrelated drift: resolve it, or accept it deliberately, before applying.
+
+**4. Apply the saved plan:**
+
+```bash
+terraform apply "$PLAN"
+```
+
+**5. Verify.** Re-run the step 1 instance query: the new instance runs the pinned image, and the old one
+is gone. Then confirm that both private routes reach it and the Elastic IP follows it:
+
+```bash
+aws ec2 describe-route-tables --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-cloud-rtb-private*" \
+  --query 'RouteTables[].[Tags[?Key==`Name`]|[0].Value,Routes[?DestinationCidrBlock==`0.0.0.0/0`]|[0].NetworkInterfaceId,Routes[?DestinationCidrBlock==`0.0.0.0/0`]|[0].State]' \
+  --output table
+
+aws ec2 describe-addresses --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-nat-instance*" \
+  --query 'Addresses[].[Tags[?Key==`Name`]|[0].Value,InstanceId,PublicIp]' \
+  --output table
+```
+
+Each route is `active` (not `blackhole`) on the new instance's interface, and each Elastic IP is
+associated with a new instance. That shows the interface exists, not that it forwards. Prove egress from
+a private-subnet instance: the background instance is SSM-managed, and its SSM traffic itself leaves
+through the NAT, so the command answering is evidence too. The output must be a NAT Elastic IP:
+
+```bash
+BG_ID=$(aws ec2 describe-instances --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-background" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)
+CMD_ID=$(aws ssm send-command --region ap-northeast-1 --instance-ids "$BG_ID" \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["curl -sS -m 10 https://checkip.amazonaws.com"]' \
+  --query Command.CommandId --output text)
+sleep 10
+aws ssm get-command-invocation --region ap-northeast-1 --command-id "$CMD_ID" --instance-id "$BG_ID" \
+  --query '[Status,StandardOutputContent]' --output text
+```
+
+A command that stays `Pending` for minutes means the instance cannot reach SSM, so egress is down. The
+NAT's boot log shows whether `user_data` set up forwarding (the NAT instance has no SSM agent role):
+`aws ec2 get-console-output --region ap-northeast-1 --instance-id <NAT id> --latest --output text`.
+Look for `Killed` on the `yum install` line and `Failed to start nat-iptables`. A second `terraform plan`
+shows no change for the NAT resources.
+
+**6. Roll back** if step 5 fails. The old instance is already destroyed, so egress comes back only with
+a new NAT that forwards, as fast as possible:
+
+- If the image is at fault, put the noted id back with the same `put-parameter`
+- If the image is fine and the boot failed (the boot log above), keep the pin and replace the instance
+  again: `-replace=aws_instance.nat` (and `nat2[0]`)
+
+Either way, to avoid a full apply's image rebuild while egress is down, plan with the NAT instances and
+**every** dependent as targets, check that all of them are in the plan, and apply it:
+
+```bash
+terraform plan -var-file="environments/${TF_ENV}.tfvars" -out="$PLAN" \
+  -target=aws_instance.nat -target=aws_eip.nat_instance \
+  -target=aws_route_table.private1 -target=aws_route_table.private2 \
+  -target='aws_lambda_function.dev_scheduler[0]' -target='aws_iam_role_policy.dev_scheduler_permissions[0]'
+# Production: also -target='aws_instance.nat2[0]' -target='aws_eip.nat_instance2[0]', and no
+# dev_scheduler targets (they exist on development only)
+```
+
+This is the one targeted apply that may replace a NAT instance: naming every dependent is what the
+"never in a targeted apply" rule exists to guarantee. Then repeat step 5.
+
+**Setting up the parameter** (once per environment, and before the first plan from a tree that reads
+it): create it with the image the NAT instances run today, so nothing is replaced. Both production NAT
+instances must run the same image; if they do not, bump to one of them deliberately.
+
+```bash
+aws ec2 describe-instances --region ap-northeast-1 \
+  --filters "Name=tag:Name,Values=${ENV_PREFIX}-nat-instance*" \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,ImageId]' --output text
+aws ssm put-parameter --region ap-northeast-1 --name "/${ENV}/optinist/nat-ami-id" \
+  --type String --value <that ImageId>
+```
+
+A new environment, with no NAT yet, takes the latest id from step 1.
 
 ---
 

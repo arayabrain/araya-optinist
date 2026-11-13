@@ -11,7 +11,7 @@ data_params:
 
 init_params:
   # Ain: null  # TBD: need to support 2D array type.
-  K: 4
+  K: 4  # components for each session's whole field of view when rf is null, else per patch
   gSig: [4, 4]
   ssub: 1
   tsub: 1
@@ -24,16 +24,19 @@ preprocess_params:
   p: 1
 
 patch_params:
-  rf: null
+  rf: null  # null: whole field of view at once; memory grows with pixels x frames
   stride: 6
 
 merge_params:
   merge_thr: 0.85
 
 multisession_params:
-  # Following 2 parameters are optinist specific.
+  # Following 3 parameters are optinist specific.
   n_reg_files: 2 # number of files to be split.
   reg_file_rate: 1.0  # threshold for the cell is detected in how many files
+  session_lengths: []  # frames per session, e.g. [4000, 4161].
+                       # If set, the movie is split at these boundaries
+                       # instead of into n_reg_files equal parts.
   # Following parameters are from CaImAn register_multisession.
   align_flag: True  # align the templates before matching
   max_thr: 0  # max threshold parameter before binarization
@@ -112,13 +115,12 @@ advanced:
     p_ssub: 2
     p_tsub: 2
     memory_fact: 1
-    n_processes: 1
+    n_processes: 1  # CaImAn worker processes; 1 = no worker pool
     in_memory: True
 
   merge_params:
     do_merge: True
     merge_parallel: False
-    max_merge_area: null
 
   quality_evaluation_params:
     SNR_lowest: 0.5
@@ -131,3 +133,6 @@ advanced:
     use_cnn: True
     use_ecc: False
     max_ecc: 3
+
+  dff_params:  # dff output, from CaImAn detrend_df_f
+    frames_window: 500  # running baseline window in frames, >= 2; null = whole recording

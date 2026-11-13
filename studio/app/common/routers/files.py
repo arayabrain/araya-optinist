@@ -1,17 +1,28 @@
+import asyncio
+import contextlib
+import errno
 import json
 import os
+import re
 import shutil
-import tempfile
-from glob import glob
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext, suppress
+from dataclasses import asdict, fields
 from pathlib import PurePath
-from typing import Dict, List
+from typing import Callable, List, Optional
 from urllib.parse import urlparse
 
-import requests
 import tifffile
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from requests.models import Response
 from sqlmodel import Session
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 from tqdm import tqdm
 
 from studio.app.common.core.auth.auth_dependencies import (
@@ -24,16 +35,25 @@ from studio.app.common.core.cloud.storage_tracking import (
     get_user_storage_usage,
 )
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.mode import MODE
+from studio.app.common.core.storage.local_disk_guard import (
+    USER_HINT,
+    LocalDiskFullError,
+    ensure_local_disk_headroom,
+)
 from studio.app.common.core.storage.remote_storage_controller import (
+    InputFileLock,
     RemoteStorageController,
     RemoteStorageSimpleReader,
     RemoteStorageSimpleWriter,
 )
 from studio.app.common.core.utils.file_reader import JsonReader
 from studio.app.common.core.utils.filepath_creater import (
+    InvalidPathError,
     create_directory,
     join_filepath,
 )
+from studio.app.common.core.utils.public_url import open_url
 from studio.app.common.core.workspace.workspace_data_capacity_services import (
     WorkspaceDataCapacityService,
 )
@@ -41,7 +61,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
-from studio.app.common.db.database import get_db
+from studio.app.common.db.database import get_db, release_request_session, session_scope
 from studio.app.common.schemas.files import (
     DownloadFileRequest,
     DownloadStatus,
@@ -58,11 +78,27 @@ router = APIRouter(prefix="/files", tags=["files"])
 
 logger = AppLogger.get_logger()
 
+# Dedicated pool so slow NAS walks queue behind each other, not other executor work.
+_tree_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="filetree")
+_cache_edit_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cache")
+
+
+def edit_cache_off_loop(editor, *args):
+    """Run a metadata-cache editor, with its lock wait, on its own pool: on the
+    default pool enough waiters would starve the lock holder's own release."""
+    return asyncio.get_running_loop().run_in_executor(
+        _cache_edit_executor, editor, *args
+    )
+
 
 class DirTreeGetter:
     @classmethod
     def get_tree(
-        cls, workspace_id, file_types: List[str], dirname: str = None
+        cls,
+        workspace_id,
+        file_types: List[str],
+        dirname: str = None,
+        _shape_cache: dict = None,
     ) -> List[TreeNode]:
         nodes: List[TreeNode] = []
 
@@ -74,90 +110,173 @@ class DirTreeGetter:
         if not os.path.exists(absolute_dirpath):
             return nodes
 
-        sorted_listdir = sorted(
-            os.listdir(absolute_dirpath),
-            key=lambda x: (not os.path.isdir(join_filepath([absolute_dirpath, x])), x),
-        )
+        is_image = file_types == ACCEPT_FILE_EXT.TIFF_EXT.value
+        is_root = _shape_cache is None
+        if is_root:
+            _shape_cache = {
+                "known": get_image_shape_dict(workspace_id) if is_image else {},
+                "new": {},
+            }
 
-        IMAGE_SHAPE_DICT = (
-            get_image_shape_dict(workspace_id)
-            if file_types == ACCEPT_FILE_EXT.TIFF_EXT.value
-            else {}
-        )
+        try:
+            sorted_listdir = sorted(
+                os.listdir(absolute_dirpath),
+                key=lambda x: (
+                    not os.path.isdir(join_filepath([absolute_dirpath, x])),
+                    x,
+                ),
+            )
 
-        for node_name in sorted_listdir:
-            if dirname is None:
-                relative_path = node_name
-            else:
-                relative_path = join_filepath([dirname, node_name])
+            for node_name in sorted_listdir:
+                if dirname is None:
+                    relative_path = node_name
+                else:
+                    relative_path = join_filepath([dirname, node_name])
 
-            search_dirpath = join_filepath([absolute_dirpath, node_name])
+                search_dirpath = join_filepath([absolute_dirpath, node_name])
 
-            if os.path.isfile(search_dirpath) and node_name.endswith(tuple(file_types)):
-                shape = IMAGE_SHAPE_DICT.get(relative_path, {}).get("shape")
-                if shape is None and file_types == ACCEPT_FILE_EXT.TIFF_EXT.value:
-                    shape = update_image_shape(workspace_id, relative_path)
-                nodes.append(
-                    TreeNode(
-                        path=relative_path,
-                        name=node_name,
-                        isdir=False,
-                        nodes=[],
-                        shape=shape,
+                if os.path.isfile(search_dirpath) and node_name.endswith(
+                    tuple(file_types)
+                ):
+                    shape = (
+                        cls._cached_shape(search_dirpath, relative_path, _shape_cache)
+                        if is_image
+                        else None
                     )
-                )
-            elif (
-                os.path.isdir(search_dirpath)
-                and len(cls.accept_files(search_dirpath, file_types)) > 0
-            ):
-                nodes.append(
-                    TreeNode(
-                        path=node_name,
-                        name=node_name,
-                        isdir=True,
-                        nodes=cls.get_tree(workspace_id, file_types, relative_path),
+                    nodes.append(
+                        TreeNode(
+                            path=relative_path,
+                            name=node_name,
+                            isdir=False,
+                            nodes=[],
+                            shape=shape,
+                        )
                     )
+                elif os.path.isdir(search_dirpath) and cls.has_accepted_file(
+                    search_dirpath, file_types
+                ):
+                    nodes.append(
+                        TreeNode(
+                            path=node_name,
+                            name=node_name,
+                            isdir=True,
+                            nodes=cls.get_tree(
+                                workspace_id, file_types, relative_path, _shape_cache
+                            ),
+                        )
+                    )
+        finally:
+            if is_root and _shape_cache["new"]:
+                _merge_image_shape_dict(
+                    workspace_id, _shape_cache["known"], _shape_cache["new"]
                 )
 
         return nodes
 
     @classmethod
-    def accept_files(cls, path: str, file_types: List[str]):
-        files_list = []
-        for file_type in file_types:
-            files_list.extend(
-                glob(join_filepath([path, "**", f"*{file_type}"]), recursive=True)
-            )
+    def _cached_shape(cls, filepath: str, relative_path: str, cache: dict):
+        try:
+            st = os.stat(filepath)
+        except OSError:
+            return []
+        entry = cache["known"].get(relative_path)
+        shape = _entry_shape(entry)
+        # Legacy entries carry no mtime/size and are trusted until rewritten.
+        if (
+            shape is not None
+            and entry.get("mtime", st.st_mtime) == st.st_mtime
+            and entry.get("size", st.st_size) == st.st_size
+        ):
+            return shape
+        entry = _shape_entry(filepath, st)
+        cache["new"][relative_path] = entry
+        return entry["shape"]
 
-        return files_list
+    @classmethod
+    def has_accepted_file(cls, path: str, file_types: List[str]) -> bool:
+        # Mirrors glob("**/*ext"): hidden names skipped, directory names match too.
+        exts = tuple(file_types)
+        seen = {os.path.realpath(path)}
+        for root, dirs, files in os.walk(path, followlinks=True):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            if any(
+                name.endswith(exts) for name in files + dirs if not name.startswith(".")
+            ):
+                return True
+            kept = []
+            for d in dirs:
+                real = os.path.realpath(os.path.join(root, d))
+                if real not in seen:
+                    seen.add(real)
+                    kept.append(d)
+            dirs[:] = kept
+        return False
 
 
-def get_image_shape_dict(workspace_id: str):
-    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
+def get_image_shape_dict(workspace_id: str) -> dict:
+    return _read_json_dict(
+        join_filepath([DIRPATH.INPUT_DIR, workspace_id, MetadataCacheFile.IMAGE_SHAPE])
+    )
+
+
+def _read_json_dict(filepath: str) -> dict:
+    """Missing, unparsable or non-object JSON reads as an empty cache."""
     try:
-        tiff_format_dict = JsonReader.read(
-            join_filepath([dirpath, MetadataCacheFile.IMAGE_SHAPE])
-        )
-        return tiff_format_dict
-    except FileNotFoundError:
+        data = JsonReader.read(filepath)
+    except (FileNotFoundError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
-def update_image_shape(workspace_id: str, relative_file_path: str):
+def _entry_shape(entry) -> list | None:
+    shape = entry.get("shape") if isinstance(entry, dict) else None
+    return shape if isinstance(shape, list) else None
+
+
+def _merge_image_shape_dict(workspace_id: str, known: dict, new: dict) -> None:
+    # An entry rewritten while the walk ran is newer than the walk's read of it.
+    def merge(existing: dict) -> None:
+        existing.update(
+            {k: v for k, v in new.items() if existing.get(k) == known.get(k)}
+        )
+
+    try:
+        _json_edit(workspace_id, MetadataCacheFile.IMAGE_SHAPE, merge)
+    except OSError as e:
+        logger.warning(f"image shape cache not written ({workspace_id}): {e}")
+
+
+def read_image_shape(filepath: str) -> list:
+    """Shape of the first series from the TIFF header, without decoding pixels."""
+    try:
+        with tifffile.TiffFile(filepath) as tif:
+            return list(tif.series[0].shape)
+    except Exception:
+        return []
+
+
+def _shape_entry(filepath: str, st: os.stat_result) -> dict:
+    return {
+        "shape": read_image_shape(filepath),
+        "mtime": st.st_mtime,
+        "size": st.st_size,
+    }
+
+
+def update_image_shape(workspace_id: str, relative_file_path: str, locked=True):
     dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
     filepath = join_filepath([dirpath, relative_file_path])
 
     try:
-        img = tifffile.imread(filepath)
-        shape = img.shape
-    except:  # noqa
-        shape = []
+        entry = _shape_entry(filepath, os.stat(filepath))
+    except OSError:
+        return []
 
-    # Save to .image_shape.json with atomic write
-    tiff_format_file = join_filepath([dirpath, MetadataCacheFile.IMAGE_SHAPE])
-    _atomic_json_update(tiff_format_file, relative_file_path, {"shape": shape})
+    _atomic_json_update(
+        workspace_id, MetadataCacheFile.IMAGE_SHAPE, {relative_file_path: entry}, locked
+    )
 
-    return shape
+    return entry["shape"]
 
 
 def _structure_node_to_dict(node) -> dict:
@@ -184,33 +303,89 @@ def _structure_node_to_dict(node) -> dict:
     return result
 
 
-def _atomic_json_update(filepath: str, key: str, value) -> None:
-    """Atomically update a JSON file with a new key-value pair.
+def _atomic_json_update(
+    workspace_id: str, filename: str, entries: dict, locked=True
+) -> None:
+    """Merge entries into a workspace JSON cache, replacing it atomically."""
+    _json_edit(workspace_id, filename, lambda data: data.update(entries), locked)
 
-    Uses a temporary file and os.replace() to ensure atomic writes,
-    preventing race conditions when multiple processes update the same file.
-    """
-    # Read existing data
+
+def _json_edit(
+    workspace_id: str, filename: str, edit: Callable[[dict], None], locked=True
+) -> None:
+    """Read-modify-write a workspace JSON cache under its InputFileLock, or
+    without taking it when the caller already holds it (locked=False)."""
+    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
+    lock = (
+        InputFileLock.acquire_sync(workspace_id, filename) if locked else nullcontext()
+    )
+    with lock:
+        data = _read_json_dict(filepath)
+        edit(data)
+        _write_json_atomic(filepath, data)
+
+
+_ATOMIC_TMP_NAME = re.compile(r"\.[0-9a-f]{32}\.tmp")
+
+
+def is_atomic_replace_tmp(filename: str) -> bool:
+    """A temporary file of _atomic_replace, e.g. one a killed process left."""
+    return _ATOMIC_TMP_NAME.fullmatch(filename) is not None
+
+
+def _atomic_tmp_path(filepath: str) -> str:
+    # Hidden, a fixed length whatever filepath's, default permissions (not 0600)
+    return os.path.join(os.path.dirname(filepath), f".{uuid.uuid4().hex}.tmp")
+
+
+@contextmanager
+def _atomic_write(tmp_path: str):
+    """Yield a new file at tmp_path, synced to disk once the block ends without
+    an error and removed otherwise."""
     try:
-        existing_data = JsonReader.read(filepath)
-    except FileNotFoundError:
-        existing_data = {}
-
-    existing_data[key] = value
-
-    # Write to a temporary file in the same directory, then atomically replace
-    dir_path = os.path.dirname(filepath)
-    with tempfile.NamedTemporaryFile(
-        mode="w", dir=dir_path, suffix=".tmp", delete=False
-    ) as tmp_file:
-        json.dump(existing_data, tmp_file, indent=2)
-        tmp_path = tmp_file.name
-
-    # Atomic replace (POSIX guarantees atomicity for same-filesystem rename)
-    os.replace(tmp_path, filepath)
+        with open(tmp_path, "xb") as f:
+            yield f
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
-def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[dict]:
+@contextmanager
+def _atomic_replace(filepath: str):
+    """Yield a file that replaces filepath once the block ends without an error.
+    A reader of the old file keeps reading it; a failed write leaves it in place."""
+    tmp_path = _atomic_tmp_path(filepath)
+    try:
+        with _atomic_write(tmp_path) as f:
+            yield f
+        os.replace(tmp_path, filepath)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
+def _write_file_atomic(filepath: str, source) -> None:
+    with _atomic_replace(filepath) as f:
+        shutil.copyfileobj(source, f)
+
+
+def _write_json_atomic(filepath: str, data: dict) -> None:
+    with _atomic_replace(filepath) as f:
+        f.write(json.dumps(data, indent=2).encode())
+
+
+# Maps each file to its entry's format version; cache iterators must skip this key
+STRUCTURE_VERSION_KEY = "__version__"
+HDF5_STRUCTURE_VERSION = 2  # 2: compound datasets listed as folders of columns
+
+
+def update_hdf5_structure(
+    workspace_id: str, relative_file_path: str, locked=True
+) -> List[dict]:
     """
     Extract and cache HDF5 structure for a file.
 
@@ -226,20 +401,32 @@ def update_hdf5_structure(workspace_id: str, relative_file_path: str) -> List[di
     try:
         structure = HDF5Getter.get(filepath)
         structure_dict = [_structure_node_to_dict(node) for node in structure]
+        extracted = True
     except Exception as e:
         logger.warning(
             f"Failed to extract HDF5 structure for {relative_file_path}: {e}"
         )
         structure_dict = []
+        extracted = False
 
-    # Save to .hdf5_structure.json with atomic write
-    structure_file = join_filepath([dirpath, MetadataCacheFile.HDF5_STRUCTURE])
-    _atomic_json_update(structure_file, relative_file_path, structure_dict)
+    def merge(data: dict) -> None:
+        data[relative_file_path] = structure_dict
+        versions = data.get(STRUCTURE_VERSION_KEY)
+        versions = dict(versions) if isinstance(versions, dict) else {}
+        # an unstamped entry is read from the file again on the next open
+        versions.pop(relative_file_path, None)
+        if extracted:
+            versions[relative_file_path] = HDF5_STRUCTURE_VERSION
+        data[STRUCTURE_VERSION_KEY] = versions
+
+    _json_edit(workspace_id, MetadataCacheFile.HDF5_STRUCTURE, merge, locked)
 
     return structure_dict
 
 
-def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dict]:
+def update_mat_structure(
+    workspace_id: str, relative_file_path: str, locked=True
+) -> List[dict]:
     """
     Extract and cache MATLAB structure for a file.
 
@@ -248,8 +435,6 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
     the full file.
     """
     from studio.app.optinist.routers.mat import MatGetter
-
-    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
 
     try:
         structure = MatGetter.get(relative_file_path, workspace_id)
@@ -260,11 +445,30 @@ def update_mat_structure(workspace_id: str, relative_file_path: str) -> List[dic
         )
         structure_dict = []
 
-    # Save to .mat_structure.json with atomic write
-    structure_file = join_filepath([dirpath, MetadataCacheFile.MAT_STRUCTURE])
-    _atomic_json_update(structure_file, relative_file_path, structure_dict)
+    _atomic_json_update(
+        workspace_id,
+        MetadataCacheFile.MAT_STRUCTURE,
+        {relative_file_path: structure_dict},
+        locked,
+    )
 
     return structure_dict
+
+
+async def download_structure_cache(
+    remote_bucket_name: str, workspace_id: str, cache_file: str
+) -> None:
+    """Best-effort refresh of a metadata cache from S3.
+
+    Callers fall back to reading the file itself, so a failure is logged, not raised.
+    """
+    if not RemoteStorageController.is_available():
+        return
+    try:
+        async with RemoteStorageSimpleReader(remote_bucket_name) as reader:
+            await reader.download_input_data(workspace_id, cache_file)
+    except Exception as e:
+        logger.debug(f"structure cache download failed ({cache_file}): {e}")
 
 
 def get_hdf5_structure_dict(workspace_id: str) -> dict:
@@ -289,49 +493,53 @@ def get_mat_structure_dict(workspace_id: str) -> dict:
         return {}
 
 
+def _metadata_cache_for(filename: str):
+    """The cache updater and cache file for the file's type, or (None, None)."""
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
+        return update_image_shape, MetadataCacheFile.IMAGE_SHAPE
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
+        return update_hdf5_structure, MetadataCacheFile.HDF5_STRUCTURE
+    if filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
+        return update_mat_structure, MetadataCacheFile.MAT_STRUCTURE
+    return None, None
+
+
+async def _upload_or_raise(remote, workspace_id: str, filename: str) -> None:
+    """upload_input_data swallows its errors and returns False."""
+    if not await remote.upload_input_data(workspace_id, filename):
+        raise RuntimeError(f"Copy of {filename} to remote storage failed")
+
+
+async def _publish_cache(
+    workspace_id: str, filename: str, remote_bucket_name: Optional[str], update=True
+) -> None:
+    """Update the file's metadata cache and copy the cache to remote storage,
+    under the cache's lock throughout so a sync of the cache cannot put an older
+    remote copy back in between."""
+    update_cache, cache_name = _metadata_cache_for(filename)
+    if cache_name is None:
+        return
+    async with InputFileLock.acquire(workspace_id, cache_name):
+        if update:
+            await asyncio.to_thread(update_cache, workspace_id, filename, False)
+        if not RemoteStorageController.is_available():
+            return
+        async with RemoteStorageSimpleWriter(remote_bucket_name) as remote:
+            await _upload_or_raise(remote, workspace_id, cache_name)
+
+
 async def _update_and_upload_metadata(
     workspace_id: str,
     filename: str,
     remote_bucket_name: str,
     update_metadata: bool = True,
 ):
-    """Update metadata cache and upload to S3 if needed.
-
-    Called as a background task after syncing input files. This helps
-    backfill metadata (image shape, HDF5/MATLAB structure) for files
-    that were uploaded before structure caching was implemented.
-    """
+    """_publish_cache for background use: a failure is logged, not raised."""
     try:
-        # Determine file type and update appropriate metadata
-        if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-            if update_metadata:
-                update_image_shape(workspace_id, filename)
-            metadata_file = MetadataCacheFile.IMAGE_SHAPE
-        elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-            if update_metadata:
-                update_hdf5_structure(workspace_id, filename)
-            metadata_file = MetadataCacheFile.HDF5_STRUCTURE
-        elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-            if update_metadata:
-                update_mat_structure(workspace_id, filename)
-            metadata_file = MetadataCacheFile.MAT_STRUCTURE
-        else:
-            # No metadata to update for this file type
-            return
-
-        # Upload updated metadata to S3
-        async with RemoteStorageSimpleWriter(
-            remote_bucket_name
-        ) as remote_storage_controller:
-            await remote_storage_controller.upload_input_data(
-                workspace_id, metadata_file
-            )
-        logger.debug(
-            f"Updated and uploaded metadata {metadata_file} "
-            f"for {workspace_id}/{filename}"
+        await _publish_cache(
+            workspace_id, filename, remote_bucket_name, update_metadata
         )
     except Exception as e:
-        # Don't fail the sync if metadata update fails - just log warning
         logger.warning(
             f"Failed to update/upload metadata for {workspace_id}/{filename}: {e}"
         )
@@ -449,7 +657,7 @@ def _build_tree_from_remote_files(
     # Build nodes for root level remote-only files
     result = []
     for filename, file_info in dir_files.get("", []):
-        shape = image_shape_dict.get(filename, {}).get("shape")
+        shape = _entry_shape(image_shape_dict.get(filename))
         result.append(
             TreeNodeWithSync(
                 path=filename,
@@ -471,20 +679,12 @@ def _build_tree_from_remote_files(
     dependencies=[Depends(is_workspace_available)],
 )
 async def get_files(workspace_id: str, file_type: str = None):
-    if file_type == FILETYPE.IMAGE:
-        return DirTreeGetter.get_tree(workspace_id, ACCEPT_FILE_EXT.TIFF_EXT.value)
-    elif file_type == FILETYPE.CSV:
-        return DirTreeGetter.get_tree(workspace_id, ACCEPT_FILE_EXT.CSV_EXT.value)
-    elif file_type == FILETYPE.HDF5:
-        return DirTreeGetter.get_tree(workspace_id, ACCEPT_FILE_EXT.HDF5_EXT.value)
-    elif file_type == FILETYPE.MICROSCOPE:
-        return DirTreeGetter.get_tree(
-            workspace_id, ACCEPT_FILE_EXT.MICROSCOPE_EXT.value
-        )
-    elif file_type == FILETYPE.MATLAB:
-        return DirTreeGetter.get_tree(workspace_id, ACCEPT_FILE_EXT.MATLAB_EXT.value)
-    else:
+    file_types = _get_file_extensions_for_type(file_type)
+    if not file_types:
         return []
+    return await asyncio.get_running_loop().run_in_executor(
+        _tree_executor, DirTreeGetter.get_tree, workspace_id, file_types
+    )
 
 
 @router.get(
@@ -604,102 +804,129 @@ async def sync_input_file(
 )
 async def set_shape(workspace_id: str, filepath: str):
     try:
-        update_image_shape(workspace_id, filepath)
+        await edit_cache_off_loop(update_image_shape, workspace_id, filepath)
     except Exception as e:
-        raise HTTPException(status=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
     return True
+
+
+async def _check_storage_quota(user_id: Optional[int]) -> None:
+    """403 once the user's storage is at or over quota (cached usage figure)."""
+    if user_id is None:
+        return
+    current_usage = await get_current_user_storage_usage(user_id, force_live=False)
+    storage_info = get_user_storage_usage(user_id)
+    quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
+    if quota_limit <= 0:
+        return
+    storage_usage_percent = (current_usage / quota_limit) * 100
+    if storage_usage_percent >= 100:
+        logger.warning(
+            f"File upload blocked for user {user_id}: storage quota exceeded "
+            f"({storage_usage_percent:.1f}% used)"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot upload file: Storage quota exceeded "
+            f"({storage_usage_percent:.1f}% used). "
+            f"Please free up space before uploading files.",
+        )
+
+
+async def _publish_input(
+    workspace_id: str, filename: str, remote_bucket_name: Optional[str]
+) -> None:
+    """After an input file lands: copy it to remote storage, then update its
+    metadata cache and copy that. Caller holds the file's InputFileLock."""
+    if RemoteStorageController.is_available():
+        async with RemoteStorageSimpleWriter(remote_bucket_name) as remote:
+            await _upload_or_raise(remote, workspace_id, filename)
+    await _publish_cache(workspace_id, filename, remote_bucket_name)
 
 
 @router.post(
     "/{workspace_id}/upload/{filename}",
     response_model=FilePath,
     dependencies=[Depends(is_workspace_owner)],
+    # The body is parsed by hand (see below), so the schema is declared here
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["file"],
+                        "properties": {"file": {"type": "string", "format": "binary"}},
+                    }
+                }
+            },
+        }
+    },
 )
 async def create_file(
     workspace_id: str,
     filename: str,
+    request: Request,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
+    db: Session = Depends(get_db),
 ):
+    user_id = current_user.id if current_user else None
+    # The body transfer can take minutes; do not hold a pooled connection for it
+    release_request_session(db)
     try:
-        # Check storage quota before allowing file upload
-        # (use cached data to avoid timeout)
-        current_usage = await get_current_user_storage_usage(
-            current_user.id, force_live=False
-        )
-        storage_info = get_user_storage_usage(current_user.id)
-        quota_limit = get_effective_quota_bytes(
-            current_user.id, storage_info=storage_info
-        )
+        try:
+            await _check_storage_quota(user_id)
+        except HTTPException as e:
+            await _refuse_upload(request, e.status_code, e.detail)
 
-        if quota_limit > 0:
-            storage_usage_percent = (current_usage / quota_limit) * 100
-
-            # Block file upload if over quota (100%)
-            if storage_usage_percent >= 100:
-                logger.warning(
-                    f"File upload blocked for user {current_user.id}: "
-                    f"storage quota exceeded ({storage_usage_percent:.1f}% used)"
-                )
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Cannot upload file: Storage quota exceeded "
-                    f"({storage_usage_percent:.1f}% used). "
-                    f"Please free up space before uploading files.",
-                )
+        # The multipart body is spooled to the host's disk as it is parsed and
+        # then copied, so the spool and the copy are budgeted before reading it,
+        # and the copy again once the real size is known
+        try:
+            declared = int(request.headers.get("content-length", 0))
+        except ValueError:
+            declared = 0
+        await _require_upload_headroom(2 * declared, request)
+        try:
+            form = await request.form()
+        except StarletteHTTPException as e:
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
+        except ClientDisconnect:
+            raise HTTPException(status_code=400, detail="Upload interrupted")
+        except OSError as e:
+            if e.errno != errno.ENOSPC:
+                raise
+            raise HTTPException(
+                status_code=507,
+                detail="Cannot upload file: the analysis server's local disk "
+                f"filled while receiving it. {USER_HINT}",
+            )
+        file = form.get("file")
+        if not isinstance(file, UploadFile):
+            raise HTTPException(status_code=422, detail="Missing file")
+        await _require_upload_headroom(file.size or 0)
 
         create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
 
         filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
 
-        with open(filepath, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-
-        # Update metadata caches based on file type
-        if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-            update_image_shape(workspace_id, filename)
-        elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-            update_hdf5_structure(workspace_id, filename)
-        elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-            update_mat_structure(workspace_id, filename)
+        # The lock keeps a sync of the same name from putting an older remote
+        # copy back between the write and the copy to remote storage
+        async with InputFileLock.acquire(workspace_id, filename):
+            await asyncio.to_thread(_write_file_atomic, filepath, file.file)
+            await _publish_input(workspace_id, filename, remote_bucket_name)
 
         if WorkspaceDataCapacityService.is_available():
-            background_tasks.add_task(
-                WorkspaceDataCapacityService.update_workspace_data_usage,
-                db,
-                workspace_id,
-            )
-
-        # Operate remote storage data.
-        if RemoteStorageController.is_available():
-            # upload input data to remote storage
-            async with RemoteStorageSimpleWriter(
-                remote_bucket_name
-            ) as remote_storage_controller:
-                await remote_storage_controller.upload_input_data(
-                    workspace_id, filename
-                )
-                # Upload metadata files so they're available for remote-only files
-                if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-                    await remote_storage_controller.upload_input_data(
-                        workspace_id, MetadataCacheFile.IMAGE_SHAPE
-                    )
-                elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-                    await remote_storage_controller.upload_input_data(
-                        workspace_id, MetadataCacheFile.HDF5_STRUCTURE
-                    )
-                elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-                    await remote_storage_controller.upload_input_data(
-                        workspace_id, MetadataCacheFile.MAT_STRUCTURE
-                    )
+            background_tasks.add_task(_update_workspace_data_usage, workspace_id)
 
         # Refresh storage cache in background to keep it up-to-date
-        background_tasks.add_task(
-            get_current_user_storage_usage, current_user.id, force_live=True
-        )
+        if user_id is not None:
+            background_tasks.add_task(
+                get_current_user_storage_usage, user_id, force_live=True
+            )
 
         return {"file_path": filename}
 
@@ -716,39 +943,60 @@ async def create_file(
             detail=f"Failed to upload file: {str(e)}",
         )
 
+    finally:
+        with contextlib.suppress(Exception):
+            await request.close()
 
-DOWNLOAD_STATUS: Dict[str, DownloadStatus] = {}
+
+async def _refuse_upload(request: Request, status_code: int, detail: str) -> None:
+    """Raise HTTPException after reading out the rest of the body (to nowhere):
+    a response sent while the client is still uploading reaches the browser
+    as a connection reset, not as this message."""
+    with contextlib.suppress(ClientDisconnect):
+        async for _ in request.stream():
+            pass
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+async def _require_upload_headroom(
+    nbytes: int, unread_request: Optional[Request] = None
+) -> None:
+    try:
+        await asyncio.to_thread(ensure_local_disk_headroom, nbytes)
+    except LocalDiskFullError as e:
+        detail = f"Cannot upload file: {e} {USER_HINT}"
+        if unread_request is None:
+            raise HTTPException(status_code=507, detail=detail)
+        await _refuse_upload(unread_request, 507, detail)
+
+
+def _update_workspace_data_usage(workspace_id: str) -> None:
+    """Background task: opens its own session, never the request's."""
+    with session_scope() as db:
+        WorkspaceDataCapacityService.update_workspace_data_usage(
+            db, workspace_id, auto_commit=False
+        )
 
 
 def _remove_from_metadata_cache(workspace_id: str, filename: str) -> None:
     """Remove a file entry from metadata cache files."""
-    dirpath = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
+    _, metadata_file = _metadata_cache_for(filename)
+    if metadata_file is None:
+        return
 
-    # Determine which metadata file to update based on file extension
-    if filename.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-        metadata_file = MetadataCacheFile.IMAGE_SHAPE
-    elif filename.endswith(tuple(ACCEPT_FILE_EXT.HDF5_EXT.value)):
-        metadata_file = MetadataCacheFile.HDF5_STRUCTURE
-    elif filename.endswith(tuple(ACCEPT_FILE_EXT.MATLAB_EXT.value)):
-        metadata_file = MetadataCacheFile.MAT_STRUCTURE
-    else:
-        return  # No metadata to clean up for this file type
-
-    metadata_path = join_filepath([dirpath, metadata_file])
+    metadata_path = join_filepath([DIRPATH.INPUT_DIR, workspace_id, metadata_file])
     if not os.path.exists(metadata_path):
         return
 
     try:
-        existing_data = JsonReader.read(metadata_path)
-        if filename in existing_data:
-            del existing_data[filename]
-            # Write back atomically
-            with tempfile.NamedTemporaryFile(
-                mode="w", dir=dirpath, suffix=".tmp", delete=False
-            ) as tmp_file:
-                json.dump(existing_data, tmp_file, indent=2)
-                tmp_path = tmp_file.name
-            os.replace(tmp_path, metadata_path)
+
+        def remove(data: dict) -> None:
+            data.pop(filename, None)
+            versions = data.get(STRUCTURE_VERSION_KEY)
+            if isinstance(versions, dict):
+                versions.pop(filename, None)
+
+        _json_edit(workspace_id, metadata_file, remove)
     except Exception as e:
         logger.warning(f"Failed to remove {filename} from metadata cache: {e}")
 
@@ -762,7 +1010,6 @@ async def delete_file(
     workspace_id: str,
     filename: str,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
 ):
     filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, filename])
@@ -800,7 +1047,7 @@ async def delete_file(
             os.remove(filepath)
 
         # Clean up metadata cache entries
-        _remove_from_metadata_cache(workspace_id, filename)
+        await edit_cache_off_loop(_remove_from_metadata_cache, workspace_id, filename)
 
         # Upload updated metadata to S3 so it stays in sync
         await _update_and_upload_metadata(
@@ -808,11 +1055,7 @@ async def delete_file(
         )
 
         if WorkspaceDataCapacityService.is_available():
-            background_tasks.add_task(
-                WorkspaceDataCapacityService.update_workspace_data_usage,
-                db,
-                workspace_id,
-            )
+            background_tasks.add_task(_update_workspace_data_usage, workspace_id)
 
         return True
     except Exception as e:
@@ -825,12 +1068,23 @@ async def delete_file(
     response_model=DownloadStatus,
     dependencies=[Depends(is_workspace_available)],
 )
-async def get_download_status(workspace_id: str, file_name: str):
-    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
+async def get_download_status(
+    workspace_id: str,
+    upload_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     try:
-        return DOWNLOAD_STATUS[filepath]
-    except:  # noqa
+        status_path = _download_status_path(workspace_id, upload_id)
+        status, landed = await asyncio.to_thread(_read_download_status, status_path)
+    except (InvalidPathError, FileNotFoundError):
         raise HTTPException(status_code=404)
+    if landed is not None:
+        release_request_session(db)
+        background_tasks.add_task(
+            _finish_landed_upload, workspace_id, status_path, landed
+        )
+    return status
 
 
 @router.post(
@@ -841,51 +1095,226 @@ async def download_file(
     workspace_id: str,
     file: DownloadFileRequest,
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     db: Session = Depends(get_db),
 ):
-    path = PurePath(urlparse(file.url).path)
-    if path.suffix not in ACCEPT_FILE_EXT.ALL_EXT.value:
-        raise HTTPException(status_code=400, detail="Invalid url")
-
-    create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
-
     try:
-        res = requests.get(file.url, stream=True)
-        res.raise_for_status()
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    background_tasks.add_task(download, db, res, path.name, workspace_id)
-    # Only update image shape for TIFF files
-    if path.name.endswith(tuple(ACCEPT_FILE_EXT.TIFF_EXT.value)):
-        background_tasks.add_task(update_image_shape, workspace_id, path.name)
-    return {"file_name": path.name}
+        path = PurePath(urlparse(file.url).path)
+        if path.suffix not in ACCEPT_FILE_EXT.ALL_EXT.value:
+            raise HTTPException(status_code=400, detail="Invalid url")
+
+        user_id = current_user.id if current_user else None
+        await _check_storage_quota(user_id)
+
+        create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
+
+        try:
+            # Standalone: the user owns the server, and may fetch from their LAN
+            res = await asyncio.to_thread(
+                open_url, file.url, public_only=MODE.IS_MULTIUSER
+            )
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        # The response is open: release it before refusing. No Content-Length
+        # means only the reserve is checked.
+        try:
+            await asyncio.to_thread(ensure_local_disk_headroom, _content_length(res))
+        except LocalDiskFullError as e:
+            res.close()
+            raise HTTPException(
+                status_code=507, detail=f"Cannot download file: {e} {USER_HINT}"
+            )
+
+        upload_id = uuid.uuid4().hex
+        await asyncio.to_thread(
+            _write_download_status,
+            _download_status_path(workspace_id, upload_id),
+            DownloadStatus(total=_content_length(res), upload_id=upload_id),
+        )
+        background_tasks.add_task(
+            download,
+            res,
+            path.name,
+            workspace_id,
+            upload_id,
+            remote_bucket_name,
+            user_id,
+        )
+        return {"file_name": path.name, "upload_id": upload_id}
+    finally:
+        release_request_session(db)
 
 
-def download(
-    db: Session, res: Response, file_name: str, workspace_id: str, chunk_size=1024
-):
-    total = int(res.headers.get("content-length", 0))
-    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
-    current = 0
+URL_UPLOAD_CHUNK_SIZE = 1024 * 1024
+# The status file is touched every heartbeat; a status not touched for the
+# stale age with the download still running means the worker died
+DOWNLOAD_HEARTBEAT_SECONDS = 10
+DOWNLOAD_STALE_SECONDS = 30
+DOWNLOAD_PROGRESS_WRITE_SECONDS = 1
+_UPLOAD_ID = re.compile(r"[0-9a-f]{32}")
+_STATUS_FIELDS = {f.name for f in fields(DownloadStatus)}
 
+
+def _download_status_path(workspace_id: str, upload_id: str) -> str:
+    """Under .locks: every walker (file tree, cleanup, S3 check) skips it."""
+    if not _UPLOAD_ID.fullmatch(upload_id or ""):
+        raise InvalidPathError(f"invalid upload id {upload_id!r}")
+    return join_filepath(
+        [
+            DIRPATH.INPUT_DIR,
+            workspace_id,
+            InputFileLock.LOCKS_DIRNAME,
+            f"{upload_id}.download.json",
+        ]
+    )
+
+
+def _write_download_status(
+    status_path: str, status: DownloadStatus, landed: Optional[dict] = None
+) -> None:
+    """landed: set once the file is in place, what finishing its copy needs."""
     try:
-        with (
-            open(filepath, "wb") as file,
-            tqdm(
-                desc=filepath,
-                total=total,
-                unit="iB",
-                unit_scale=True,
-                unit_divisor=1024,
-            ) as bar,
-        ):
-            for data in res.iter_content(chunk_size=chunk_size):
-                size = file.write(data)
-                current += size
-                DOWNLOAD_STATUS[filepath] = DownloadStatus(total=total, current=current)
-                bar.update(size)
-    except Exception as e:
-        DOWNLOAD_STATUS[filepath] = DownloadStatus(error=str(e))
+        os.makedirs(os.path.dirname(status_path), exist_ok=True)
+        _write_json_atomic(status_path, {**asdict(status), "landed": landed})
+    except OSError as e:
+        logger.warning(f"download status not written ({status_path}): {e}")
 
+
+def _read_download_status(status_path: str) -> tuple[DownloadStatus, Optional[dict]]:
+    """The status, and its landed record when the worker died after the file
+    was in place but before its copy to remote storage ended."""
+    age = time.time() - os.stat(status_path).st_mtime
+    data = _read_json_dict(status_path)
+    status = DownloadStatus(**{k: v for k, v in data.items() if k in _STATUS_FIELDS})
+    if status.done or status.error or age <= DOWNLOAD_STALE_SECONDS:
+        return status, None
+    landed = data.get("landed")
+    if isinstance(landed, dict):
+        return status, landed
+    status.error = "The upload stopped"
+    return status, None
+
+
+def _touch_every_heartbeat(status_path: str, stop: threading.Event) -> None:
+    """In its own thread, so a stalled event loop does not read as a dead worker."""
+    while not stop.wait(DOWNLOAD_HEARTBEAT_SECONDS):
+        with suppress(OSError):
+            os.utime(status_path)
+
+
+def _start_heartbeat(status_path: str) -> threading.Event:
+    stop = threading.Event()
+    threading.Thread(
+        target=_touch_every_heartbeat, args=(status_path, stop), daemon=True
+    ).start()
+    return stop
+
+
+async def _refresh_usage(workspace_id: str, user_id: Optional[int]) -> None:
     if WorkspaceDataCapacityService.is_available():
-        WorkspaceDataCapacityService.update_workspace_data_usage(db, workspace_id)
+        await asyncio.to_thread(_update_workspace_data_usage, workspace_id)
+    if user_id is not None:
+        await get_current_user_storage_usage(user_id, force_live=True)
+
+
+async def _finish_landed_upload(
+    workspace_id: str, status_path: str, landed: dict
+) -> None:
+    """Copy a file whose URL upload's worker died after the file landed. The
+    status is read again under the file's lock, so of several pollers one copies
+    and the rest see its heartbeat or its result."""
+    file_name = landed["file_name"]
+    async with InputFileLock.acquire(workspace_id, file_name):
+        status, landed = await asyncio.to_thread(_read_download_status, status_path)
+        if landed is None:
+            return
+        await asyncio.to_thread(os.utime, status_path)
+        stop_heartbeat = _start_heartbeat(status_path)
+        try:
+            await _publish_input(workspace_id, file_name, landed["remote_bucket_name"])
+            status.done = True
+        except Exception as e:
+            status.error = str(e)
+        finally:
+            stop_heartbeat.set()
+            await asyncio.to_thread(_write_download_status, status_path, status, landed)
+    await _refresh_usage(workspace_id, landed["user_id"])
+
+
+def _content_length(res: Response) -> int:
+    """The response's Content-Length, or 0 when it is missing or invalid."""
+    try:
+        return int(res.headers.get("content-length", 0))
+    except ValueError:
+        return 0
+
+
+def _stream_to_file(
+    res: Response, tmp_path: str, chunk_size: int, status_path: str, status
+) -> None:
+    last_write = 0.0
+    with (
+        _atomic_write(tmp_path) as file,
+        tqdm(
+            desc=tmp_path,
+            total=status.total,
+            unit="iB",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar,
+    ):
+        for data in res.iter_content(chunk_size=chunk_size):
+            size = file.write(data)
+            status.current += size
+            bar.update(size)
+            if time.monotonic() - last_write >= DOWNLOAD_PROGRESS_WRITE_SECONDS:
+                _write_download_status(status_path, status)
+                last_write = time.monotonic()
+    _write_download_status(status_path, status)
+
+
+async def download(
+    res: Response,
+    file_name: str,
+    workspace_id: str,
+    upload_id: str,
+    remote_bucket_name: Optional[str] = None,
+    user_id: Optional[int] = None,
+    chunk_size=URL_UPLOAD_CHUNK_SIZE,
+):
+    filepath = join_filepath([DIRPATH.INPUT_DIR, workspace_id, file_name])
+    status_path = _download_status_path(workspace_id, upload_id)
+    status = DownloadStatus(total=_content_length(res), upload_id=upload_id)
+    tmp_path = _atomic_tmp_path(filepath)
+    landed = None
+    stop_heartbeat = _start_heartbeat(status_path)
+    try:
+        await run_in_threadpool(
+            _stream_to_file, res, tmp_path, chunk_size, status_path, status
+        )
+        # Locked from the replace through the copy, so a sync of the same name
+        # cannot put an older remote copy back; after 300 s the lock falls through
+        async with InputFileLock.acquire(workspace_id, file_name):
+            await asyncio.to_thread(os.replace, tmp_path, filepath)
+            landed = {
+                "file_name": file_name,
+                "remote_bucket_name": remote_bucket_name,
+                "user_id": user_id,
+            }
+            await asyncio.to_thread(_write_download_status, status_path, status, landed)
+            await _publish_input(workspace_id, file_name, remote_bucket_name)
+        # done means in place locally and on remote storage
+        status.done = True
+    except Exception as e:
+        status.error = str(e)
+    finally:
+        # Also on cancellation, which skips `except Exception`; gone once replaced.
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        stop_heartbeat.set()
+        res.close()
+        await asyncio.to_thread(_write_download_status, status_path, status, landed)
+
+    await _refresh_usage(workspace_id, user_id)

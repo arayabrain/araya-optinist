@@ -13,6 +13,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.logger_context_helpers import (
     init_client_id_from_snakemake_config,
 )
+from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 
 logger = AppLogger.get_logger()
 
@@ -23,6 +24,8 @@ def main():
         from studio.app.common.core.snakemake.snakemake_reader import RuleConfigReader
         from studio.app.common.core.utils.filepath_creater import join_filepath
         from studio.app.dir_path import DIRPATH
+
+        BenchmarkRecorder.mark("imports_done")
 
         # Initialize client_id from snakemake config
         init_client_id_from_snakemake_config(snakemake.config)
@@ -45,4 +48,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with BenchmarkRecorder.record(snakemake):
+        main()

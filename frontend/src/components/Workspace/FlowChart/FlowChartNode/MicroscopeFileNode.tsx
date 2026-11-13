@@ -3,10 +3,7 @@ import { useSelector, useDispatch } from "react-redux"
 import { Handle, Position, NodeProps } from "reactflow"
 
 import { FileSelect } from "components/Workspace/FlowChart/FlowChartNode/FileSelect"
-import {
-  toHandleId,
-  isValidConnection,
-} from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
+import { toHandleId } from "components/Workspace/FlowChart/FlowChartNode/FlowChartUtils"
 import { useHandleColor } from "components/Workspace/FlowChart/FlowChartNode/HandleColorHook"
 import { NodeContainer } from "components/Workspace/FlowChart/FlowChartNode/NodeContainer"
 import { HANDLE_STYLE } from "const/flowchart"
@@ -75,7 +72,6 @@ const MicroscopeFileNodeImple = memo(function MicroscopeFileNodeImple({
           ...HANDLE_STYLE,
           background: microscopeColor,
         }}
-        isValidConnection={isValidConnection}
       />
     </NodeContainer>
   )

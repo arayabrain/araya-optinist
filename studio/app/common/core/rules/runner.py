@@ -1,16 +1,20 @@
 import copy
 import gc
+import inspect
 import json
 import os
 import time
 import traceback
 from dataclasses import asdict
 from pathlib import Path
+from typing import Optional
 
+import numpy as np
 from filelock import FileLock
 
 from studio.app.common.core.experiment.experiment import ExptOutputPathIds
 from studio.app.common.core.logger import AppLogger
+from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 from studio.app.common.core.snakemake.smk import Rule
 from studio.app.common.core.snakemake.snakemake_rule import SmkRule
 from studio.app.common.core.utils.config_handler import ConfigReader
@@ -19,6 +23,8 @@ from studio.app.common.core.utils.filelock_handler import FileLockUtils
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.core.utils.filepath_finder import find_condaenv_filepath
 from studio.app.common.core.utils.pickle_handler import PickleReader, PickleWriter
+from studio.app.common.dataclass.base import BaseData
+from studio.app.common.dataclass.utils import is_plain_number
 from studio.app.common.schemas.workflow import WorkflowPIDFileData
 from studio.app.dir_path import DIRPATH
 from studio.app.optinist.core.nwb.nwb import NWBDATASET
@@ -27,9 +33,49 @@ from studio.app.optinist.core.nwb.nwb_creater import (
     overwrite_nwbfile,
     save_nwb,
 )
+from studio.app.optinist.dataclass.behavior import BehaviorData
+from studio.app.optinist.wrappers.optinist.utils import recursive_flatten_params
 from studio.app.wrappers import wrapper_dict
 
 logger = AppLogger.get_logger()
+
+
+def _cast_behavior_inputs(
+    func, input_info: dict, params: Optional[dict] = None
+) -> None:
+    """Cast a numeric 1D input at a BehaviorData port to a (time, 1) column.
+
+    Only a bare `BehaviorData` annotation matches; `Optional[BehaviorData]` is skipped.
+    With `transpose_y` set it is cast as (1, time), so the wrapper's own transpose
+    still puts the vector on the time axis.
+    """
+    flat_params = {}
+    recursive_flatten_params(params or {}, flat_params)
+    transpose_y = bool(flat_params.get("transpose_y"))
+    for name, param in inspect.signature(func).parameters.items():
+        annotation = param.annotation
+        if not (inspect.isclass(annotation) and issubclass(annotation, BehaviorData)):
+            continue
+        value = input_info.get(name)
+        if not isinstance(value, BaseData):
+            continue
+        arr = value.__dict__.get("data")
+        if (
+            isinstance(arr, np.ndarray)
+            and arr.ndim == 1
+            and arr.size > 0
+            and is_plain_number(arr.dtype)
+        ):
+            column = arr[None, :] if transpose_y else arr[:, None]
+            input_info[name] = annotation(column.copy())
+            logger.info(
+                "cast %s at port '%s' to %s with shape %s; "
+                "column-index params refer to its single column 0",
+                type(value).__name__,
+                name,
+                annotation.__name__,
+                input_info[name].data.shape,
+            )
 
 
 class Runner:
@@ -37,6 +83,8 @@ class Runner:
 
     @classmethod
     def run(cls, __rule: Rule, last_output, run_script_path: str):
+        # Pickled before save_all_nwb mutates it, published after whole.nwb exists
+        staged_pickle_path = f"{__rule.output}.staged"
         try:
             logger.info("start rule runner")
 
@@ -45,9 +93,12 @@ class Runner:
             cls.write_pid_file(workflow_dirpath, __rule.type, run_script_path)
 
             # Read & construct input_info
-            orig_input_info = cls.__read_input_info(__rule.input)
-            input_info = cls.__align_input_info_content_keys(orig_input_info, __rule)
-            del orig_input_info
+            with BenchmarkRecorder.phase("read_inputs"):
+                orig_input_info = cls.__read_input_info(__rule.input)
+                input_info = cls.__align_input_info_content_keys(
+                    orig_input_info, __rule
+                )
+                del orig_input_info
 
             nwbfile = input_info["nwbfile"]
 
@@ -58,30 +109,35 @@ class Runner:
                     input_info.pop(key)
 
             # Construct output_info
-            output_info = cls.__execute_function(
-                __rule.path,
-                __rule.params,
-                nwbfile.get("input"),
-                os.path.dirname(__rule.output),
-                input_info,
-            )
+            with BenchmarkRecorder.phase("execute_function"):
+                output_info = cls.__execute_function(
+                    __rule.path,
+                    __rule.params,
+                    nwbfile.get("input"),
+                    os.path.dirname(__rule.output),
+                    input_info,
+                )
 
             # Save NWB data of Function(Node)
-            output_info["nwbfile"] = cls.__save_func_nwb(
-                f"{__rule.output.split('.')[0]}.nwb",
-                __rule.type,
-                nwbfile,
-                output_info,
-            )
+            with BenchmarkRecorder.phase("save_func_nwb"):
+                output_info["nwbfile"] = cls.__save_func_nwb(
+                    f"{os.path.splitext(__rule.output)[0]}.nwb",
+                    __rule.type,
+                    nwbfile,
+                    output_info,
+                )
 
-            # Save the processing result of the Function(Node) (.pkl)
-            PickleWriter.write(__rule.output, output_info)
+            with BenchmarkRecorder.phase("pickle_write"):
+                PickleWriter.write(staged_pickle_path, output_info)
 
             # Save NWB data through Workflow
             if __rule.output in last_output:
                 path = join_filepath(os.path.dirname(os.path.dirname(__rule.output)))
                 path = join_filepath([path, "whole.nwb"])
-                cls.save_all_nwb(path, output_info["nwbfile"])
+                with BenchmarkRecorder.phase("save_all_nwb"):
+                    cls.save_all_nwb(path, output_info["nwbfile"])
+
+            os.replace(staged_pickle_path, __rule.output)
 
             logger.info("rule output: %s", __rule.output)
 
@@ -93,6 +149,9 @@ class Runner:
             # logging error
             err_msg = list(traceback.TracebackException.from_exception(e).format())
             logger.error("\n".join(err_msg))
+
+            if os.path.exists(staged_pickle_path):
+                os.remove(staged_pickle_path)
 
             # save error info to node pickle data.
             PickleWriter.write_error(__rule.output, e)
@@ -160,7 +219,9 @@ class Runner:
     @classmethod
     def __save_func_nwb(cls, save_path, name, nwbfile, output_info):
         if "nwbfile" in output_info:
-            nwbfile[name] = output_info["nwbfile"]
+            nwbfile[name] = cls.__deep_merge(
+                nwbfile.get(name, {}), output_info["nwbfile"]
+            )
             save_nwb(
                 save_path,
                 nwbfile["input"],
@@ -188,15 +249,17 @@ class Runner:
     def __execute_function(cls, path, params, nwb_params, output_dir, input_info):
         wrapper = cls.__dict2leaf(wrapper_dict, path.split("/"))
         func = copy.deepcopy(wrapper["function"])
+        _cast_behavior_inputs(func, input_info, params)
         output_info = func(
             params=params, nwbfile=nwb_params, output_dir=output_dir, **input_info
         )
         del func
         gc.collect()
 
+        function_id = ExptOutputPathIds(output_dir).function_id
+
         try:
             # Initialize CONFIG dictionary structure
-            function_id = ExptOutputPathIds(output_dir).function_id
             if "nwbfile" not in output_info:
                 output_info["nwbfile"] = {}
 
@@ -208,18 +271,21 @@ class Runner:
             logger.warning(f"Failed to initialize CONFIG dataset for{function_id}:{e}")
 
         # Store conda env config in CONFIG dataset
-        try:
-            conda_name = wrapper.get("conda_name")
-            conda_env_path = find_condaenv_filepath(conda_name)
-            conda_config = ConfigReader.read(conda_env_path)
-            config_str = json.dumps(conda_config, separators=(",", ":"))
+        conda_name = wrapper.get("conda_name")
+        if conda_name:
+            try:
+                conda_env_path = find_condaenv_filepath(conda_name)
+                conda_config = ConfigReader.read(conda_env_path)
+                config_str = json.dumps(conda_config, separators=(",", ":"))
 
-            # Store conda env config in CONFIG dataset
-            output_info["nwbfile"][NWBDATASET.CONFIG][function_id][
-                "conda_config"
-            ] = config_str
-        except Exception as e:
-            logger.warning(f"Failed to add conda environment config to NWB file: {e}")
+                # Store conda env config in CONFIG dataset
+                output_info["nwbfile"][NWBDATASET.CONFIG][function_id][
+                    "conda_config"
+                ] = config_str
+            except Exception as e:
+                logger.warning(
+                    f"Failed to add conda environment config to NWB file: {e}"
+                )
 
         try:
             # Store node parameters in CONFIG dataset
@@ -292,20 +358,22 @@ class Runner:
                     single_input_info.update(tmp_value)
                 del tmp_value
 
-            if return_name in single_input_info:
-                # Rename the key of the matching element and store it again
-                #  (for further processing)
-                single_input_info[arg_name] = single_input_info.pop(return_name)
-
-                # Store in return value
-                # (At this stage, expand input_info split by function_id into flat)
-                result_input_info = cls.__deep_merge(
-                    result_input_info, single_input_info
+            if return_name not in single_input_info:
+                source = f"node '{function_id}'" if function_id else "the source node"
+                raise ValueError(
+                    f"Wired output '{return_name}' was not produced by {source}. "
+                    "Either it is conditional on the source's inputs or parameters "
+                    "(e.g. an ROI output that needs an iscell input), or the source "
+                    "result predates this output: re-run the source node."
                 )
 
-                merged_nwb = cls.__deep_merge(
-                    merged_nwb, single_input_info.pop("nwbfile", {})
-                )
+            # Store ONLY the wired output under the target arg name; merging the
+            # whole source pickle lets its unrelated keys shadow other wired args
+            result_input_info[arg_name] = single_input_info.pop(return_name)
+
+            merged_nwb = cls.__deep_merge(
+                merged_nwb, single_input_info.pop("nwbfile", {})
+            )
 
         result_input_info["nwbfile"] = merged_nwb
 

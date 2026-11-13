@@ -87,6 +87,7 @@ export interface ImageItem extends DisplayDataItemBaseType {
   duration: number
   clickedDataId?: string | null
   showRoiLabels: boolean
+  roiOutline: boolean
 }
 
 export interface TimeSeriesItem extends DisplayDataItemBaseType {
@@ -104,13 +105,24 @@ export interface TimeSeriesItem extends DisplayDataItemBaseType {
   rangeUnit: "frames" | "time"
   maxIndex: number
   refImageItemId: number | null
+  shadeSourceItemId: number | null
   drawOrderList: string[]
 }
+
+export type HeatMapZRangeMode = "auto" | "percentile" | "manual"
+// a null bound is the data's min or max
+export type HeatMapZRange = [number | null, number | null]
 
 export interface HeatMapItem extends DisplayDataItemBaseType {
   dataType: typeof DATA_TYPE_SET.HEAT_MAP
   showscale: boolean
   colors: ColorType[]
+  refItemId: number | null
+  zRangeMode: HeatMapZRangeMode
+  // percentile: clip the colour scale to [p, 100 - p] percent of the finite values
+  zRangePercentile: number
+  // manual: the typed colour range
+  zRange: HeatMapZRange | null
 }
 export interface CsvItem extends DisplayDataItemBaseType {
   dataType: typeof DATA_TYPE_SET.CSV

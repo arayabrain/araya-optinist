@@ -38,6 +38,9 @@ mysql_password      = "<PLACEHOLDER-generate-new>"
 stripe_secret_key     = "sk_test_<PLACEHOLDER>"
 stripe_webhook_secret = "whsec_test_<PLACEHOLDER>"
 
+# Verified SES sender for expiration lifecycle emails (empty = disabled)
+notification_from_email = ""
+
 # OptiNiSt configuration (generate new secrets for dev)
 optinist_secret_key  = "<PLACEHOLDER-generate-new>"
 routing_secret_key   = "<PLACEHOLDER-generate-new>"
@@ -81,11 +84,20 @@ asg_min_size         = 1
 asg_max_size         = 2
 asg_desired_capacity = 1
 
+# Workflow task and host sizes per tier: fields and defaults in main.tf
+# (local.free_tier_sizing_defaults, local.premium_tier_sizing_defaults). Set
+# only the fields to change; an unknown field name fails the plan, e.g.
+# premium_tier_sizing = { task_memory_mib = <MiB>, container_memory_mib = <MiB> }
+
 # EC2 Image Builder — Custom AMI (reduces instance boot from ~8 min to ~2 min)
 # Set to true after initial terraform apply to create the Image Builder pipeline.
 # See image_builder.tf for deployment workflow. The AMI version is tracked in
 # image_builder.tf (local.custom_ami_version), not here.
 use_custom_ami = false
+
+# The NAT instance AMI is not set here: it is pinned in the SSM parameter
+# /development/optinist/nat-ami-id. See MAINTENANCE_PROCEDURES.md, NAT Instance
+# AMI Refresh.
 
 # No test users initially
 test_users = []

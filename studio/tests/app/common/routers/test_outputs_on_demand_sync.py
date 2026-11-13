@@ -194,7 +194,7 @@ class TestTiffCallSiteSyncsOnDemand:
         with patch(
             f"{MODULE}._ensure_visualization_synced", new_callable=AsyncMock
         ), patch(f"{MODULE}.os.path.exists", return_value=True), patch(
-            f"{MODULE}.JsonReader.read_as_output", return_value="output"
+            f"{MODULE}.JsonReader.read_as_output_bytes", return_value=b"output"
         ):
             result = await get_image(
                 filepath=f"{WORKSPACE_ID}/exp1/node1/plot.tif",
@@ -204,7 +204,7 @@ class TestTiffCallSiteSyncsOnDemand:
                 remote_bucket_name=REMOTE_BUCKET,
             )
 
-        assert result == "output"
+        assert result.body == b"output"
         sync_call.assert_not_awaited()
 
 

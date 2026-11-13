@@ -26,10 +26,10 @@ describe("RunSelectors", () => {
           tau: { type: "child", value: 1, path: "tau" },
           fs: { type: "child", value: 10, path: "fs" },
           soma_crop: { type: "child", value: true, path: "soma_crop" },
-          high_pass: { type: "child", value: 100, path: "high_pass" },
-          sparse_mode: { type: "child", value: true, path: "sparse_mode" },
+          highpass_time: { type: "child", value: 100, path: "highpass_time" },
+          algorithm: { type: "child", value: "sparsery", path: "algorithm" },
           max_overlap: { type: "child", value: 0.75, path: "max_overlap" },
-          nbinned: { type: "child", value: 5000, path: "nbinned" },
+          nbins: { type: "child", value: 5000, path: "nbins" },
           spatial_scale: { type: "child", value: 0, path: "spatial_scale" },
           threshold_scaling: {
             type: "child",
@@ -41,10 +41,10 @@ describe("RunSelectors", () => {
             value: 20,
             path: "max_iterations",
           },
-          spatial_hp_detect: {
+          highpass_neuropil: {
             type: "child",
             value: 25,
-            path: "spatial_hp_detect",
+            path: "highpass_neuropil",
           },
           preclassify: { type: "child", value: 0, path: "preclassify" },
           allow_overlap: {
@@ -62,7 +62,11 @@ describe("RunSelectors", () => {
             value: 350,
             path: "min_neuropil_pixels",
           },
-          neucoeff: { type: "child", value: 0.7, path: "neucoeff" },
+          neuropil_coefficient: {
+            type: "child",
+            value: 0.7,
+            path: "neuropil_coefficient",
+          },
         },
         originalValue: false,
         isUpdate: false,
@@ -489,18 +493,18 @@ describe("RunSelectors", () => {
             tau: { type: "child", value: 1, path: "tau" },
             fs: { type: "child", value: 10, path: "fs" },
             soma_crop: { type: "child", value: true, path: "soma_crop" },
-            high_pass: { type: "child", value: 100, path: "high_pass" },
-            sparse_mode: {
+            highpass_time: { type: "child", value: 100, path: "highpass_time" },
+            algorithm: {
               type: "child",
-              value: true,
-              path: "sparse_mode",
+              value: "sparsery",
+              path: "algorithm",
             },
             max_overlap: {
               type: "child",
               value: 0.75,
               path: "max_overlap",
             },
-            nbinned: { type: "child", value: 5000, path: "nbinned" },
+            nbins: { type: "child", value: 5000, path: "nbins" },
             spatial_scale: {
               type: "child",
               value: 0,
@@ -516,10 +520,10 @@ describe("RunSelectors", () => {
               value: 20,
               path: "max_iterations",
             },
-            spatial_hp_detect: {
+            highpass_neuropil: {
               type: "child",
               value: 25,
-              path: "spatial_hp_detect",
+              path: "highpass_neuropil",
             },
             preclassify: { type: "child", value: 0, path: "preclassify" },
             allow_overlap: {
@@ -537,7 +541,11 @@ describe("RunSelectors", () => {
               value: 350,
               path: "min_neuropil_pixels",
             },
-            neucoeff: { type: "child", value: 0.7, path: "neucoeff" },
+            neuropil_coefficient: {
+              type: "child",
+              value: 0.7,
+              path: "neuropil_coefficient",
+            },
           },
         },
         style: { width: 180, height: 100, padding: 0, borderRadius: 0 },
