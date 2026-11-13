@@ -5,12 +5,21 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, fields, is_dataclass
-from typing import Optional
+from typing import Annotated, Optional
 
 import h5py
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlmodel import Session
 
@@ -1153,15 +1162,14 @@ async def get_csv(
 
 STRUCTURED_MAX_VALUES = 1_000_000
 STRUCTURED_MAX_COLUMNS = 1000
-STRUCTURED_MAX_FRAMES = 10
 
 
 def _structured_selection(shape, start_index: int, end_index: int) -> tuple:
     match len(shape):
         case 3:
-            start = max(0, start_index)
-            stop = min(shape[0], end_index, start + STRUCTURED_MAX_FRAMES)
-            return (slice(start, stop),)
+            frames = max(1, STRUCTURED_MAX_VALUES // max(1, shape[1] * shape[2]))
+            stop = min(shape[0], end_index, start_index + frames)
+            return (slice(start_index, stop),)
         case 2:
             cols = min(shape[1], STRUCTURED_MAX_COLUMNS)
             rows = min(shape[0], max(1, STRUCTURED_MAX_VALUES // max(1, cols)))
@@ -1174,6 +1182,56 @@ def _structured_selection(shape, start_index: int, end_index: int) -> tuple:
     )
 
 
+def _structured_body(
+    full_path: str,
+    hdf5_path: Optional[str],
+    mat_path: Optional[str],
+    start_index: int,
+    end_index: int,
+) -> bytes:
+    try:
+        if hdf5_path is not None:
+            with h5py.File(full_path, "r") as f:
+                dataset, field = hdf5_dataset(f, hdf5_path)
+                shape = dataset.shape
+                selection = _structured_selection(shape, start_index, end_index)
+                source = dataset if field is None else dataset.fields(field)
+                data = source[selection]
+        else:
+            data = np.asarray(MatGetter.data(full_path, mat_path))
+            shape = data.shape
+            selection = _structured_selection(shape, start_index, end_index)
+            data = data[selection]
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {e}")
+
+    body = {"data": np.asarray(data).tolist(), "dataset_path": hdf5_path or mat_path}
+    match len(shape):
+        case 3:
+            body.update(data_type="images", total_frames=int(shape[0]))
+        case 2:
+            rows, cols = selection
+            body.update(
+                data_type="timeseries",
+                columns=[str(c) for c in range(shape[1])[cols]],
+                index=[str(i) for i in range(shape[0])[rows]],
+                shape=[int(n) for n in shape],
+            )
+        case 1:
+            body.update(
+                data_type="bar",
+                index=list(range(len(body["data"]))),
+                shape=[int(n) for n in shape],
+            )
+    return json.dumps(
+        body,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        default=jsonable_encoder,
+    ).encode()
+
+
 @router.get(
     "/structured/{workspace_id}/{unique_id}/{node_id}",
     dependencies=[Depends(workspace_access)],
@@ -1182,8 +1240,8 @@ async def get_structured_data(
     workspace_id: str,
     unique_id: str,
     node_id: str,
-    start_index: Optional[int] = 0,
-    end_index: Optional[int] = 10,
+    start_index: Annotated[int, Query(ge=0)] = 0,
+    end_index: Annotated[int, Query(ge=0)] = 10,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     try:
@@ -1220,54 +1278,13 @@ async def get_structured_data(
 
     hdf5_path = node.data.hdf5Path
     mat_path = node.data.matPath
+    if hdf5_path is None and mat_path is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Node has no hdf5Path or matPath",
+        )
 
-    try:
-        if hdf5_path is not None:
-            with h5py.File(full_path, "r") as f:
-                dataset, field = hdf5_dataset(f, hdf5_path)
-                shape = dataset.shape
-                selection = _structured_selection(shape, start_index, end_index)
-                source = dataset if field is None else dataset.fields(field)
-                data = source[selection]
-        elif mat_path is not None:
-            data = np.asarray(MatGetter.data(full_path, mat_path))
-            shape = data.shape
-            selection = _structured_selection(shape, start_index, end_index)
-            data = data[selection]
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Node has no hdf5Path or matPath",
-            )
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=f"Dataset not found: {e}")
-
-    data = np.asarray(data)
-    dataset_path = hdf5_path or mat_path
-
-    match len(shape):
-        case 3:
-            return {
-                "data": data.tolist(),
-                "data_type": "images",
-                "total_frames": int(shape[0]),
-                "dataset_path": dataset_path,
-            }
-        case 2:
-            rows, cols = selection
-            return {
-                "data": data.tolist(),
-                "columns": [str(c) for c in range(shape[1])[cols]],
-                "index": [str(i) for i in range(shape[0])[rows]],
-                "shape": [int(n) for n in shape],
-                "data_type": "timeseries",
-                "dataset_path": dataset_path,
-            }
-        case 1:
-            return {
-                "data": data.tolist(),
-                "index": list(range(len(data))),
-                "shape": [int(n) for n in shape],
-                "data_type": "bar",
-                "dataset_path": dataset_path,
-            }
+    body = await asyncio.to_thread(
+        _structured_body, full_path, hdf5_path, mat_path, start_index, end_index
+    )
+    return Response(content=body, media_type="application/json")

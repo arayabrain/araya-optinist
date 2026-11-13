@@ -527,8 +527,10 @@ def test_structured_mat_2d_over_budget_is_reduced(client, monkeypatch):
         ({"start_index": 2, "end_index": 4}, 2),
     ],
 )
-def test_structured_3d_frames_are_capped(client, monkeypatch, params, frames):
-    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_FRAMES", 3)
+def test_structured_3d_over_budget_is_reduced(client, monkeypatch, params, frames):
+    monkeypatch.setattr(
+        "studio.app.common.routers.outputs.STRUCTURED_MAX_VALUES", 64 * 64 * 3
+    )
     response = client.get(
         f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
         params=params,
@@ -552,3 +554,15 @@ def test_structured_1d_over_budget_is_reduced(client, monkeypatch, node_id):
     assert len(data["data"]) == 20
     assert data["index"] == list(range(20))
     assert data["shape"] == [50]
+
+
+@pytest.mark.parametrize(
+    "params", [{"end_index": -1}, {"start_index": -1}, {"start_index": "x"}]
+)
+def test_structured_rejects_negative_indices(client, params):
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        params=params,
+    )
+
+    assert response.status_code == 422
