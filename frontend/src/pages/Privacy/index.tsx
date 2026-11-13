@@ -375,9 +375,9 @@ const Privacy = () => {
         Consent: We use a cookie-consent banner that requests your prior opt-in
         consent for analytics cookies if you are in the EEA or the UK, and that
         lets you decline or withdraw consent at any time; elsewhere, analytics
-        may run on an opt-out basis. Google Analytics will be configured with
-        IP-address anonymization enabled, a data-retention period of 14 months,
-        and Google Signals / advertising features disabled.
+        may run on an opt-out basis. Google Analytics will be configured with a
+        data-retention period of 14 months and Google Signals / advertising
+        features disabled.
       </P>
 
       <H2>6. Data Sharing and Publishing Features</H2>
