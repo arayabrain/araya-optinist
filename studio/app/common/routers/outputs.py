@@ -1162,13 +1162,13 @@ async def get_csv(
 
 STRUCTURED_MAX_VALUES = 1_000_000
 STRUCTURED_MAX_COLUMNS = 1000
+STRUCTURED_MAX_FRAMES = 10
 
 
 def _structured_selection(shape, start_index: int, end_index: int) -> tuple:
     match len(shape):
         case 3:
-            frames = max(1, STRUCTURED_MAX_VALUES // max(1, shape[1] * shape[2]))
-            stop = min(shape[0], end_index, start_index + frames)
+            stop = min(shape[0], end_index, start_index + STRUCTURED_MAX_FRAMES)
             return (slice(start_index, stop),)
         case 2:
             cols = min(shape[1], STRUCTURED_MAX_COLUMNS)

@@ -527,10 +527,8 @@ def test_structured_mat_2d_over_budget_is_reduced(client, monkeypatch):
         ({"start_index": 2, "end_index": 4}, 2),
     ],
 )
-def test_structured_3d_over_budget_is_reduced(client, monkeypatch, params, frames):
-    monkeypatch.setattr(
-        "studio.app.common.routers.outputs.STRUCTURED_MAX_VALUES", 64 * 64 * 3
-    )
+def test_structured_3d_frames_are_capped(client, monkeypatch, params, frames):
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_FRAMES", 3)
     response = client.get(
         f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
         params=params,
