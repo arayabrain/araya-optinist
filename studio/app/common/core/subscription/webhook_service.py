@@ -23,6 +23,7 @@ from studio.app.common.core.subscription.constants import (
     PaymentStatus,
     StorageQuota,
     StorageSize,
+    StripeSubscriptionStatus,
     StripeWebhookEvent,
     SubscriptionCurrencyType,
     SubscriptionPlanIds,
@@ -1520,8 +1521,9 @@ class WebhookService:
         Upserts ``subscription_users`` (plan + expiration), syncs the storage
         quota, and invalidates the tier cache so the next ``/users/me`` call
         reflects the change. Acknowledges without a DB write when the
-        customer cannot be mapped or the event has no period end, so Stripe
-        does not retry.
+        customer cannot be mapped, the subscription is not active, trialing
+        or past_due (past_due keeps premium while Stripe retries), or the
+        event has no period end, so Stripe does not retry.
         """
         customer_id = subscription_data.get("customer")
         stripe_subscription_id = subscription_data.get("id")
@@ -1540,6 +1542,22 @@ class WebhookService:
             f"Webhook: Handling customer.subscription.{event_label} for "
             f"customer {customer_id} (subscription {stripe_subscription_id})"
         )
+        status = subscription_data.get("status")
+        if status not in (
+            StripeSubscriptionStatus.ACTIVE,
+            StripeSubscriptionStatus.TRIAL,
+            StripeSubscriptionStatus.PAST_DUE,
+        ):
+            logger.info(
+                f"Webhook: Subscription {stripe_subscription_id} is {status}; "
+                f"acknowledging subscription.{event_label} without DB change"
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "unpaid_status",
+                "message": f"Subscription is not being paid: {status}",
+            }
 
         # 1. Map Stripe customer -> local user account
         user_account = (
@@ -1562,7 +1580,7 @@ class WebhookService:
 
         # 2. Derive expiration from the event payload (trial overrides period)
         trial_end = subscription_data.get("trial_end")
-        current_period_end = subscription_data.get("current_period_end")
+        current_period_end = CheckoutService.subscription_period_end(subscription_data)
         if trial_end:
             expiration_date = datetime_from_timestamp(trial_end)
         elif current_period_end:

@@ -1202,6 +1202,63 @@ class TestSubscriptionLifecycleWebhooks:
         mock_db.commit.assert_called_once()
         mock_invalidate.assert_called_once_with("user_uid_42")
 
+    def test_subscription_created_reads_item_period_end(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """API basil carries the period end on items only, not on the subscription."""
+        subscription_event.pop("current_period_end")
+        subscription_event["items"] = {
+            "data": [
+                {"current_period_end": 1900000000},
+                {"current_period_end": 2000000000},
+            ]
+        }
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert "skipped" not in result
+        assert mock_upsert.call_args[0][3].timestamp() == 2000000000
+
+    def test_subscription_period_end_shapes(self):
+        period_end = CheckoutService.subscription_period_end
+        assert period_end({"items": {"data": [{"current_period_end": 5}]}}) == 5
+        assert period_end({"current_period_end": 7}) == 7
+        assert period_end({"items": {"data": []}}) is None
+
+    @pytest.mark.parametrize(
+        "handler, status",
+        [
+            (WebhookService.handle_subscription_created, "incomplete"),
+            (WebhookService.handle_subscription_updated, "incomplete_expired"),
+            (WebhookService.handle_subscription_updated, "unpaid"),
+            (WebhookService.handle_subscription_updated, "paused"),
+        ],
+    )
+    def test_unpaid_subscription_grants_nothing(
+        self, mock_db, subscription_event, handler, status
+    ):
+        """A subscription nobody is paying for must not grant premium."""
+        subscription_event.pop("current_period_end")
+        subscription_event["items"] = {"data": [{"current_period_end": 2000000000}]}
+        subscription_event["status"] = status
+
+        with patch.object(CheckoutService, "create_or_update_subscription") as upsert:
+            result = handler(mock_db, subscription_event)
+
+        assert result["skipped"] is True
+        upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_dispatch_created_routes_to_handler(
         self, mock_db, subscription_event
