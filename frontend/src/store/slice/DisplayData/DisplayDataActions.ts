@@ -560,7 +560,7 @@ export const getStructuredData = createAsyncThunk<
       )
       return response
     } catch (e) {
-      return thunkAPI.rejectWithValue(e)
+      return thunkAPI.rejectWithValue(extractErrorPayload(e))
     }
   },
 )

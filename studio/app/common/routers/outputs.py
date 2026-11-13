@@ -5,12 +5,22 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, fields, is_dataclass
-from typing import Optional
+from itertools import islice
+from typing import Annotated, List, Optional
 
 import h5py
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlmodel import Session
 
@@ -118,6 +128,14 @@ _timeseries_reads_in_flight = 0
 _image_read_executor = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="image-read"
 )
+# One structured preview at a time bounds its encode peak to one per process
+_structured_read_executor = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="structured-read"
+)
+STRUCTURED_READ_WAIT_SECONDS = 30
+# Matches DEFAULT_DRAWN_ROWS in TimeSeriesPlot.tsx
+INIT_FULL_RECORDS = 5
+INIT_FULL_POINTS = 500_000
 
 
 async def get_or_generate_thumbnail(
@@ -684,29 +702,31 @@ def _require_output_file(filepath: str) -> None:
 
 
 def _load_timeseries_record(dirpath: str, record_id: str) -> JsonTimeSeriesData:
+    """Load a single timeseries record from either chunked or legacy format."""
+    return next(_load_timeseries_records(dirpath, [record_id]))[1]
+
+
+def _load_timeseries_records(dirpath: str, record_ids: List[str]):
     """
-    Load a single timeseries record from either chunked or legacy format.
-
-    Args:
-        dirpath: Directory containing the timeseries data
-        record_id: Record identifier (as string)
-
-    Returns:
-        JsonTimeSeriesData for the specified record
+    (record_id, JsonTimeSeriesData) one at a time; chunked storage yields only
+    the ids in the first id's chunk.
     """
     if TimeSeriesChunkHandler.is_chunked_format(dirpath):
-        # Chunked format
-        cell_data = TimeSeriesChunkHandler.get_record_data(dirpath, record_id)
-        # Convert from split format to DataFrame
-        df = pd.DataFrame(
-            cell_data["data"], index=cell_data["index"], columns=cell_data["columns"]
-        )
-        return JsonReader.read_as_timeseries_from_df(df)
+        for record_id, cell_data in TimeSeriesChunkHandler.iter_records_data(
+            dirpath, record_ids
+        ):
+            df = pd.DataFrame(
+                cell_data["data"],
+                index=cell_data["index"],
+                columns=cell_data["columns"],
+            )
+            yield record_id, JsonReader.read_as_timeseries_from_df(df)
     else:
         # Legacy format
-        return JsonReader.read_as_timeseries(
-            join_filepath([dirpath, f"{record_id}.json"])
-        )
+        for record_id in record_ids:
+            yield record_id, JsonReader.read_as_timeseries(
+                join_filepath([dirpath, f"{record_id}.json"])
+            )
 
 
 @router.get(
@@ -736,33 +756,44 @@ async def _read_timeseries(read, *args) -> Response:
     429 if the read does not start within TIMESERIES_READ_WAIT_SECONDS.
     """
     global _timeseries_reads_in_flight
-    context = contextvars.copy_context()
-    future = _timeseries_read_executor.submit(
-        context.run, _timeseries_body, read, *args
-    )
     _timeseries_reads_in_flight += 1
     try:
-        try:
-            async with asyncio.timeout(TIMESERIES_READ_WAIT_SECONDS):
-                body = await asyncio.wrap_future(future)
-        except TimeoutError:
-            # A started read cannot be stopped, so it is answered
-            if not future.cancel():
-                body = await asyncio.wrap_future(future)
-            else:
-                logger.warning(
-                    "Timeseries read not started in %s s; %d in flight",
-                    TIMESERIES_READ_WAIT_SECONDS,
-                    _timeseries_reads_in_flight,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Other timeseries are being read. Please retry.",
-                    headers={"Retry-After": "5"},
-                )
+        body = await _run_or_429(
+            _timeseries_read_executor,
+            TIMESERIES_READ_WAIT_SECONDS,
+            "Other timeseries are being read. Please retry.",
+            _timeseries_body,
+            read,
+            *args,
+        )
+    except HTTPException as e:
+        if e.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+            logger.warning(
+                "Timeseries read not started in %s s; %d in flight",
+                TIMESERIES_READ_WAIT_SECONDS,
+                _timeseries_reads_in_flight,
+            )
+        raise
     finally:
         _timeseries_reads_in_flight -= 1
     return Response(content=body, media_type="application/json")
+
+
+async def _run_or_429(executor, wait_seconds, detail, func, *args) -> bytes:
+    """func(*args) on executor; 429 if it does not start within wait_seconds."""
+    future = executor.submit(contextvars.copy_context().run, func, *args)
+    try:
+        async with asyncio.timeout(wait_seconds):
+            return await asyncio.wrap_future(future)
+    except TimeoutError:
+        # A started read cannot be stopped, so it is answered
+        if not future.cancel():
+            return await asyncio.wrap_future(future)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
+            headers={"Retry-After": "5"},
+        )
 
 
 def _timeseries_body(read, *args) -> bytes:
@@ -779,7 +810,7 @@ def _timeseries_body(read, *args) -> bytes:
 def _init_timeseries_data(
     abs_dirpath: str, isFull: Optional[bool]
 ) -> JsonTimeSeriesData:
-    """The first record in full and the first point of every other."""
+    """The records the plot draws by default in full, the first point of others."""
     full_json_dirpath = abs_dirpath + ORIGINAL_DATA_EXT
     if isFull and os.path.exists(full_json_dirpath):
         abs_dirpath = full_json_dirpath
@@ -793,12 +824,9 @@ def _init_timeseries_data(
         return_data.meta = PlotMetaData(title="0 ROIs found")
         return return_data
 
-    # Get first cell data
-    index = file_numbers[0]
-    str_index = str(index)
-
-    # Load first record using common helper
-    json_data = _load_timeseries_record(abs_dirpath, str_index)
+    full_ids = [str(i) for i in file_numbers[: 1 if isFull else INIT_FULL_RECORDS]]
+    records = _load_timeseries_records(abs_dirpath, full_ids)
+    str_index, json_data = next(records)
 
     first = json_data.xrange[:1]  # empty for a zero-length time range
     data = {str(i): {x: json_data.data[x] for x in first} for i in file_numbers}
@@ -815,6 +843,16 @@ def _init_timeseries_data(
     return_data.data[str_index] = json_data.data
     if json_data.std is not None:
         return_data.std[str_index] = json_data.std
+
+    fits = INIT_FULL_POINTS // max(1, len(json_data.xrange))
+    try:
+        for record_id, record in islice(records, max(0, fits - 1)):
+            return_data.data[record_id] = record.data
+            if json_data.std is not None and record.std is not None:
+                return_data.std[record_id] = record.std
+    except Exception:
+        # The rest stay one point and are read by id, as before
+        logger.warning("Timeseries init read stopped in %s", abs_dirpath, exc_info=True)
 
     return return_data
 
@@ -1151,6 +1189,91 @@ async def get_csv(
     return JsonReader.read_as_output(json_filepath)
 
 
+STRUCTURED_MAX_VALUES = 1_000_000
+STRUCTURED_MAX_COLUMNS = 1000
+STRUCTURED_MAX_FRAMES = 10
+STRUCTURED_MAX_3D_VALUES = 2048 * 2048
+
+
+def _structured_selection(shape, start_index: int, end_index: int) -> tuple:
+    match len(shape):
+        case 3:
+            frame = int(shape[1]) * int(shape[2])
+            if frame > STRUCTURED_MAX_3D_VALUES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"3D slices of {shape[1]} x {shape[2]} values are too "
+                        "large to preview"
+                    ),
+                )
+            frames = min(
+                STRUCTURED_MAX_FRAMES, STRUCTURED_MAX_3D_VALUES // max(1, frame)
+            )
+            stop = min(shape[0], end_index, start_index + frames)
+            return (slice(start_index, stop),)
+        case 2:
+            cols = min(shape[1], STRUCTURED_MAX_COLUMNS)
+            rows = min(shape[0], max(1, STRUCTURED_MAX_VALUES // max(1, cols)))
+            return slice(rows), slice(cols)
+        case 1:
+            return (slice(STRUCTURED_MAX_VALUES),)
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported data dimensionality: {len(shape)}",
+    )
+
+
+def _structured_body(
+    full_path: str,
+    hdf5_path: Optional[str],
+    mat_path: Optional[str],
+    start_index: int,
+    end_index: int,
+) -> bytes:
+    try:
+        if hdf5_path is not None:
+            with h5py.File(full_path, "r") as f:
+                dataset, field = hdf5_dataset(f, hdf5_path)
+                shape = dataset.shape
+                selection = _structured_selection(shape, start_index, end_index)
+                source = dataset if field is None else dataset.fields(field)
+                data = source[selection]
+        else:
+            data = np.asarray(MatGetter.data(full_path, mat_path))
+            shape = data.shape
+            selection = _structured_selection(shape, start_index, end_index)
+            data = data[selection]
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {e}")
+
+    body = {"data": np.asarray(data).tolist(), "dataset_path": hdf5_path or mat_path}
+    match len(shape):
+        case 3:
+            body.update(data_type="images", total_frames=int(shape[0]))
+        case 2:
+            rows, cols = selection
+            body.update(
+                data_type="timeseries",
+                columns=[str(c) for c in range(shape[1])[cols]],
+                index=[str(i) for i in range(shape[0])[rows]],
+                shape=[int(n) for n in shape],
+            )
+        case 1:
+            body.update(
+                data_type="bar",
+                index=list(range(len(body["data"]))),
+                shape=[int(n) for n in shape],
+            )
+    return json.dumps(
+        body,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        default=jsonable_encoder,
+    ).encode()
+
+
 @router.get(
     "/structured/{workspace_id}/{unique_id}/{node_id}",
     dependencies=[Depends(workspace_access)],
@@ -1159,8 +1282,8 @@ async def get_structured_data(
     workspace_id: str,
     unique_id: str,
     node_id: str,
-    start_index: Optional[int] = 0,
-    end_index: Optional[int] = 10,
+    start_index: Annotated[int, Query(ge=0)] = 0,
+    end_index: Annotated[int, Query(ge=0)] = 10,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
     try:
@@ -1197,67 +1320,21 @@ async def get_structured_data(
 
     hdf5_path = node.data.hdf5Path
     mat_path = node.data.matPath
+    if hdf5_path is None and mat_path is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Node has no hdf5Path or matPath",
+        )
 
-    try:
-        if hdf5_path is not None:
-            with h5py.File(full_path, "r") as f:
-                dataset, field = hdf5_dataset(f, hdf5_path)
-                shape = dataset.shape
-                ndim = dataset.ndim
-                if field is not None:
-                    data = dataset[field]
-                elif ndim == 3:
-                    si = max(0, start_index)
-                    ei = min(shape[0], end_index)
-                    data = dataset[si:ei]
-                else:
-                    data = dataset[:]
-        elif mat_path is not None:
-            raw = MatGetter.data(full_path, mat_path)
-            data = np.asarray(raw)
-            shape = data.shape
-            ndim = data.ndim
-            if ndim == 3:
-                si = max(0, start_index)
-                ei = min(shape[0], end_index)
-                data = data[si:ei]
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Node has no hdf5Path or matPath",
-            )
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=f"Dataset not found: {e}")
-
-    data = np.asarray(data)
-    dataset_path = hdf5_path or mat_path
-
-    match ndim:
-        case 3:
-            return {
-                "data": data.tolist(),
-                "data_type": "images",
-                "total_frames": int(shape[0]),
-                "dataset_path": dataset_path,
-            }
-        case 2:
-            df = pd.DataFrame(data)
-            return {
-                "data": df.to_dict(orient="split")["data"],
-                "columns": [str(c) for c in df.columns.tolist()],
-                "index": [str(i) for i in df.index.tolist()],
-                "data_type": "timeseries",
-                "dataset_path": dataset_path,
-            }
-        case 1:
-            return {
-                "data": data.tolist(),
-                "index": list(range(len(data))),
-                "data_type": "bar",
-                "dataset_path": dataset_path,
-            }
-        case _:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported data dimensionality: {ndim}",
-            )
+    body = await _run_or_429(
+        _structured_read_executor,
+        STRUCTURED_READ_WAIT_SECONDS,
+        "Other previews are being read. Please retry.",
+        _structured_body,
+        full_path,
+        hdf5_path,
+        mat_path,
+        start_index,
+        end_index,
+    )
+    return Response(content=body, media_type="application/json")

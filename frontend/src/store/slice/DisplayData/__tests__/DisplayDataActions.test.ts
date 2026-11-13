@@ -8,6 +8,7 @@ import {
   commitRoiApi,
   deleteRoiApi,
   getStatusRoi,
+  getStructuredDataApi,
   getTimeSeriesAllDataApi,
   getTimeSeriesDataByIdApi,
   getTimeSeriesInitDataApi,
@@ -20,6 +21,7 @@ import {
   EDIT_ROI_LOCKED_MESSAGE,
   getEditRoiErrorMessage,
   getStatus,
+  getStructuredData,
   getTimeSeriesAllData,
   getTimeSeriesDataById,
   getTimeSeriesDataByIdOnce,
@@ -799,5 +801,57 @@ describe("getEditRoiErrorMessage", () => {
       ),
     ).toBe("ROIs are not cells: [1]")
     expect(getEditRoiErrorMessage(undefined, fallback)).toBe(fallback)
+  })
+})
+
+describe("getStructuredData", () => {
+  it("keeps the server's status and detail for the card", async () => {
+    const error = new AxiosError("Request failed with status code 404")
+    error.response = {
+      status: 404,
+      statusText: "Not Found",
+      headers: {},
+      config: { headers: new AxiosHeaders() },
+      data: { detail: "Dataset not found: 'x'" },
+    }
+    jest.mocked(getStructuredDataApi).mockRejectedValue(error)
+    const store = configureStore({ reducer: { displayData: reducer } })
+
+    const result = await store.dispatch(
+      getStructuredData({
+        workspaceId: "1",
+        uniqueId: "uid",
+        nodeId: "n",
+        itemId: 7,
+      }),
+    )
+
+    expect(result.payload).toEqual({
+      status: 404,
+      message: "Dataset not found: 'x'",
+    })
+    expect(store.getState().displayData.structured[7].error).toBe(
+      "Dataset not found: 'x'",
+    )
+  })
+
+  it("shows the status of a failure without a detail", async () => {
+    jest
+      .mocked(getStructuredDataApi)
+      .mockRejectedValue(new AxiosError("Request failed with status code 502"))
+    const store = configureStore({ reducer: { displayData: reducer } })
+
+    await store.dispatch(
+      getStructuredData({
+        workspaceId: "1",
+        uniqueId: "uid",
+        nodeId: "n",
+        itemId: 8,
+      }),
+    )
+
+    expect(store.getState().displayData.structured[8].error).toBe(
+      "Request failed with status code 502",
+    )
   })
 })
