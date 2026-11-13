@@ -5,6 +5,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, fields, is_dataclass
+from itertools import islice
 from typing import Annotated, List, Optional
 
 import h5py
@@ -843,12 +844,9 @@ def _init_timeseries_data(
     if json_data.std is not None:
         return_data.std[str_index] = json_data.std
 
-    points = len(json_data.xrange)
+    fits = INIT_FULL_POINTS // max(1, len(json_data.xrange))
     try:
-        for record_id, record in records:
-            points += len(json_data.xrange)
-            if points > INIT_FULL_POINTS:
-                break
+        for record_id, record in islice(records, max(0, fits - 1)):
             return_data.data[record_id] = record.data
             if json_data.std is not None and record.std is not None:
                 return_data.std[record_id] = record.std

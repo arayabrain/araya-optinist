@@ -153,6 +153,23 @@ def test_init_returns_the_first_chunks_records_in_full(
     assert init["data"]["1"].get("3") == (7.0 if "1" in full else None)
 
 
+def test_init_reads_no_record_past_the_points_budget(client, monkeypatch, caplog):
+    monkeypatch.setattr(outputs, "INIT_FULL_POINTS", 3)
+    dirpath = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/budget_node/rois"
+    shutil.rmtree(dirpath, ignore_errors=True)
+    os.makedirs(dirpath)
+    record = json.dumps({"data": {"0": 0.0, "1": 1.0, "2": 2.0}})
+    for i in range(3):
+        with open(os.path.join(dirpath, f"{i}.json"), "w") as f:
+            f.write("{not json" if i == 1 else record)
+
+    response = client.get(f"/api/visualizations/inittimedata/{dirpath}")
+
+    assert response.status_code == 200, response.text
+    assert full_records(response.json()) == ["0"]
+    assert "Timeseries init read stopped" not in caplog.text
+
+
 @pytest.mark.parametrize("corrupt, full", [(None, list("01234")), ("2", ["0", "1"])])
 def test_init_returns_legacy_records_in_full_until_one_fails(client, corrupt, full):
     dirpath = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}/legacy_node/rois"
