@@ -12,6 +12,7 @@ import { useDispatch, useSelector } from "react-redux"
 
 import { Box, LinearProgress, Typography } from "@mui/material"
 
+import { StructuredData } from "api/visualizations/Outputs"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { MoviePlayerControls } from "components/Workspace/Visualize/Plot/MoviePlayerControls"
 import { getStructuredData } from "store/slice/DisplayData/DisplayDataActions"
@@ -85,15 +86,18 @@ export const StructuredFilePlot = memo(function StructuredFilePlot() {
 const DataView = memo(function DataView({
   result,
 }: {
-  result: {
-    data_type: string
-    data: number[] | number[][] | number[][][]
-    total_frames?: number
-  }
+  result: StructuredData
 }) {
   switch (result.data_type) {
     case "timeseries":
-      return <TimeSeriesView data={result.data as number[][]} />
+      return (
+        <TimeSeriesView
+          data={result.data as number[][]}
+          index={result.index}
+          columns={result.columns}
+          shape={result.shape}
+        />
+      )
     case "images":
       return (
         <ImageView
@@ -104,29 +108,58 @@ const DataView = memo(function DataView({
         />
       )
     case "bar":
-      return <BarView data={result.data as number[]} />
+      return <BarView data={result.data as number[]} shape={result.shape} />
     default:
       return <Typography>Unsupported data type: {result.data_type}</Typography>
   }
 })
 
+export function reducedNote(
+  rows: number,
+  cols: number,
+  shape: StructuredData["shape"],
+): string | null {
+  if (!shape || shape.length !== 2) return null
+  const [totalRows, totalCols] = shape
+  const parts = []
+  if (rows < totalRows) parts.push(`${rows} of ${totalRows} frames`)
+  if (cols < totalCols) parts.push(`${cols} of ${totalCols} columns`)
+  return parts.length > 0 ? `Showing the first ${parts.join(" and ")}` : null
+}
+
+const VISIBLE_COLUMNS = 5
+
 const TimeSeriesView = memo(function TimeSeriesView({
   data,
+  index,
+  columns,
+  shape,
 }: {
   data: number[][]
+  index?: StructuredData["index"]
+  columns?: string[]
+  shape?: number[]
 }) {
   const traces = []
-  if (data.length > 0) {
-    const numCols = data[0].length
-    for (let col = 0; col < numCols; col++) {
-      traces.push({
-        y: data.map((row) => row[col]),
-        type: "scatter",
-        mode: "lines",
-        name: `col ${col}`,
-      })
-    }
+  const numCols = data.length > 0 ? data[0].length : 0
+  const x = index?.map(Number)
+  for (let col = 0; col < numCols; col++) {
+    traces.push({
+      x,
+      y: data.map((row) => row[col]),
+      type: "scatter",
+      mode: "lines",
+      name: `col ${columns?.[col] ?? col}`,
+      visible: col < VISIBLE_COLUMNS ? true : "legendonly",
+    })
   }
+  const note = [
+    reducedNote(data.length, numCols, shape),
+    numCols > VISIBLE_COLUMNS &&
+      `Drawing ${VISIBLE_COLUMNS} of ${numCols} columns: click the legend to show more`,
+  ]
+    .filter(Boolean)
+    .join(". ")
 
   const layout = {
     title: "Time Series",
@@ -135,7 +168,16 @@ const TimeSeriesView = memo(function TimeSeriesView({
     autosize: true,
   }
 
-  return <PlotlyChart data={traces} layout={layout} />
+  return (
+    <Box>
+      {note && (
+        <Typography variant="caption" color="text.secondary">
+          {note}
+        </Typography>
+      )}
+      <PlotlyChart data={traces} layout={layout} />
+    </Box>
+  )
 })
 
 const ImageView = memo(function ImageView({
@@ -230,7 +272,13 @@ const ImageView = memo(function ImageView({
   )
 })
 
-const BarView = memo(function BarView({ data }: { data: number[] }) {
+const BarView = memo(function BarView({
+  data,
+  shape,
+}: {
+  data: number[]
+  shape?: number[]
+}) {
   const plotData = [
     {
       x: data.map((_, i) => i),
@@ -246,5 +294,14 @@ const BarView = memo(function BarView({ data }: { data: number[] }) {
     autosize: true,
   }
 
-  return <PlotlyChart data={plotData} layout={layout} />
+  return (
+    <Box>
+      {shape && data.length < shape[0] && (
+        <Typography variant="caption" color="text.secondary">
+          Showing the first {data.length} of {shape[0]} values
+        </Typography>
+      )}
+      <PlotlyChart data={plotData} layout={layout} />
+    </Box>
+  )
 })
