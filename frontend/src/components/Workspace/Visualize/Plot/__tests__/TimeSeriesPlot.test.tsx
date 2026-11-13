@@ -182,7 +182,27 @@ describe("TimeSeriesPlot default selection", () => {
     expect((target as { drawOrderList: string[] }).drawOrderList).toEqual(
       keys.slice(0, 5),
     )
+    expect((target as { defaultDrawnPath?: string }).defaultDrawnPath).toBe(
+      TARGET,
+    )
     expect(requested()).toEqual(["1", "2", "3", "4"])
+  })
+
+  it("leaves an emptied selection alone when the plot mounts again", () => {
+    const store = renderPlot(
+      4,
+      {},
+      {},
+      [],
+      {
+        [TARGET_ID]: { ...item(TARGET, [], null), defaultDrawnPath: TARGET },
+      },
+      Object.fromEntries(xrangeOf(7).map((key) => [key, stub])),
+    )
+
+    const target = store.getState().visualaizeItem.items[TARGET_ID]
+    expect((target as { drawOrderList: string[] }).drawOrderList).toEqual([])
+    expect(requested()).toEqual([])
   })
 })
 

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { memo, useContext, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useContext, useEffect, useMemo, useState } from "react"
 import PlotlyChart from "react-plotlyjs-ts"
 import { useSelector, useDispatch, useStore, shallowEqual } from "react-redux"
 
@@ -56,6 +56,7 @@ import {
 import { selectFrameRate } from "store/slice/Experiments/ExperimentsSelectors"
 import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
 import {
+  selectTimeSeriesItemDefaultDrawnPath,
   selectTimeSeriesItemDrawOrderList,
   selectTimeSeriesItemOffset,
   selectTimeSeriesItemShowGrid,
@@ -74,8 +75,8 @@ import {
   selectTimeSeriesItemShadeSourceItemId,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
 import {
+  setTimeSeriesItemDefaultDrawOrder,
   setTimeSeriesItemDrawOrder,
-  setTimeSeriesItemDrawOrderList,
 } from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { AppDispatch, RootState } from "store/store"
 import { arrayEqualityFn } from "utils/EqualityUtils"
@@ -195,18 +196,22 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
   ])
 
   // once per file, and never over a selection a link or the filter dialog owns
-  const defaultedPath = useRef<string>()
+  const defaultDrawnPath = useSelector(
+    selectTimeSeriesItemDefaultDrawnPath(itemId),
+  )
   useEffect(() => {
-    if (defaultedPath.current === path || dataKeys.length === 0) return
-    defaultedPath.current = path
-    if (drawOrderList.length > 0 || dialogFilterNodeId || itemIdRoi) return
-    const keys = dataKeys.slice(0, DEFAULT_DRAWN_ROWS)
-    dispatch(setTimeSeriesItemDrawOrderList({ itemId, drawOrderList: keys }))
-    keys.forEach((index) =>
+    if (defaultDrawnPath === path || dataKeys.length === 0) return
+    const owned = drawOrderList.length > 0 || dialogFilterNodeId || itemIdRoi
+    const keys = owned ? undefined : dataKeys.slice(0, DEFAULT_DRAWN_ROWS)
+    dispatch(
+      setTimeSeriesItemDefaultDrawOrder({ itemId, path, drawOrderList: keys }),
+    )
+    keys?.forEach((index) =>
       dispatch(getTimeSeriesDataByIdOnce({ path, index })),
     )
   }, [
     dataKeys,
+    defaultDrawnPath,
     dialogFilterNodeId,
     dispatch,
     drawOrderList,
