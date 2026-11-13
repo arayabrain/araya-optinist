@@ -724,7 +724,10 @@ export const displayDataSlice = createSlice({
           data: null,
           pending: false,
           fulfilled: false,
-          error: action.error.message ?? "rejected",
+          error: getDisplayErrorMessage(
+            action.payload as RejectPayload | undefined,
+            action.error.message ?? "rejected",
+          ),
         }
       })
       .addCase(getStatus.fulfilled, (state, action) => {

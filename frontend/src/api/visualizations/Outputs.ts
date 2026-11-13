@@ -324,6 +324,7 @@ export type StructuredData = {
   data_type: "timeseries" | "images" | "bar"
   columns?: string[]
   index?: (string | number)[]
+  shape?: number[]
   total_frames?: number
   dataset_path?: string
 }

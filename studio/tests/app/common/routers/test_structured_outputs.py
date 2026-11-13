@@ -465,3 +465,54 @@ async def test_structured_missing_input_resyncs_via_download_layer():
         "6", "wiped_input.h5"
     )
     assert exc.value.status_code == 404
+
+
+def _hdf5_2d_values():
+    path = os.path.join(DIRPATH.INPUT_DIR, WORKSPACE_ID, "data_2d.h5")
+    with h5py.File(path, "r") as f:
+        return f["recording/traces"][:]
+
+
+def test_structured_2d_within_budget_is_unchanged(client):
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_2d_node"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert np.array_equal(np.array(data["data"]), _hdf5_2d_values())
+    assert data["index"] == [str(i) for i in range(100)]
+    assert data["columns"] == [str(c) for c in range(5)]
+    assert data["shape"] == [100, 5]
+
+
+def test_structured_2d_over_budget_is_reduced(client, monkeypatch):
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_VALUES", 60)
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_COLUMNS", 3)
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_2d_node"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert len(data["columns"]) == 3
+    assert len(data["data"]) * len(data["data"][0]) <= 60
+    assert data["index"] == [str(i) for i in range(20)]
+    assert data["columns"] == ["0", "1", "2"]
+    assert data["shape"] == [100, 5]
+    assert np.array_equal(np.array(data["data"]), _hdf5_2d_values()[:20, :3])
+
+
+def test_structured_mat_2d_over_budget_is_reduced(client, monkeypatch):
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_VALUES", 50)
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_COLUMNS", 3)
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/mat_node"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["shape"] == [80, 4]
+    assert data["columns"] == ["0", "1", "2"]
+    assert len(data["data"]) * len(data["data"][0]) <= 50
+    assert data["index"] == [str(i) for i in range(16)]

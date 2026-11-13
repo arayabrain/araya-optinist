@@ -1151,6 +1151,17 @@ async def get_csv(
     return JsonReader.read_as_output(json_filepath)
 
 
+STRUCTURED_MAX_VALUES = 1_000_000
+STRUCTURED_MAX_COLUMNS = 1000
+
+
+def _structured_2d_selection(shape) -> tuple[slice, slice]:
+    rows, cols = shape
+    cols = min(cols, STRUCTURED_MAX_COLUMNS)
+    rows = min(rows, max(1, STRUCTURED_MAX_VALUES // max(1, cols)))
+    return slice(rows), slice(cols)
+
+
 @router.get(
     "/structured/{workspace_id}/{unique_id}/{node_id}",
     dependencies=[Depends(workspace_access)],
@@ -1206,10 +1217,14 @@ async def get_structured_data(
                 ndim = dataset.ndim
                 if field is not None:
                     data = dataset[field]
+                    if ndim == 2:
+                        data = data[_structured_2d_selection(shape)]
                 elif ndim == 3:
                     si = max(0, start_index)
                     ei = min(shape[0], end_index)
                     data = dataset[si:ei]
+                elif ndim == 2:
+                    data = dataset[_structured_2d_selection(shape)]
                 else:
                     data = dataset[:]
         elif mat_path is not None:
@@ -1221,6 +1236,8 @@ async def get_structured_data(
                 si = max(0, start_index)
                 ei = min(shape[0], end_index)
                 data = data[si:ei]
+            elif ndim == 2:
+                data = data[_structured_2d_selection(shape)]
         else:
             raise HTTPException(
                 status_code=400,
@@ -1241,11 +1258,12 @@ async def get_structured_data(
                 "dataset_path": dataset_path,
             }
         case 2:
-            df = pd.DataFrame(data)
+            rows, cols = _structured_2d_selection(shape)
             return {
-                "data": df.to_dict(orient="split")["data"],
-                "columns": [str(c) for c in df.columns.tolist()],
-                "index": [str(i) for i in df.index.tolist()],
+                "data": data.tolist(),
+                "columns": [str(c) for c in range(shape[1])[cols]],
+                "index": [str(i) for i in range(shape[0])[rows]],
+                "shape": [int(n) for n in shape],
                 "data_type": "timeseries",
                 "dataset_path": dataset_path,
             }
