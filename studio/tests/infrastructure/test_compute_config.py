@@ -12,8 +12,10 @@
 - Workflow services: the free and premium services leave desired_count to
   their manager Lambdas.
 - Workflow tier sizing: each tier's task definition and launch template take
-  their sizes from that tier's sizing in main.tf; its defaults, partial
-  overrides and validation rules, unknown fields included.
+  their sizes from that tier's sizing in main.tf; its defaults, optional
+  fields, partial overrides and validation rules, unknown fields included.
+  The plan also checks the task against the tier's instance type and the
+  launch template against the AMI and gp3's limits.
 - Uvicorn workers: every task definition that starts cloud-startup.sh sets
   its own count (the public and background ones live in their own files).
 - Health check grace: every service that starts cloud-startup.sh outlasts
@@ -27,6 +29,7 @@ from terraform_source import (
     PROJECT_ROOT,
     TERRAFORM_DIR,
     attribute,
+    data_block,
     identifier_list,
     read,
     resource_block,
@@ -36,6 +39,7 @@ from terraform_source import (
 
 COMPUTE_TF = TERRAFORM_DIR / "compute.tf"
 MAIN_TF = TERRAFORM_DIR / "main.tf"
+PREMIUM_MANAGER_TF = TERRAFORM_DIR / "premium_manager.tf"
 WAIT_FOR_DATABASE_SH = (
     PROJECT_ROOT / "infrastructure" / "scripts" / "wait_for_database.sh"
 )
@@ -258,6 +262,14 @@ TIER_SIZING_DEFAULTS = {
     },
 }
 
+# Fields with no default: absent, the launch template leaves the attribute unset
+TIER_SIZING_OPTIONAL_FIELDS = [
+    "root_volume_iops",
+    "root_volume_throughput_mibps",
+    "swap_volume_iops",
+    "swap_volume_throughput_mibps",
+]
+
 TIER_SIZING_MINIMUMS = {
     "task_cpu": 1,
     "task_memory_mib": 1,
@@ -268,33 +280,58 @@ TIER_SIZING_MINIMUMS = {
     "container_swappiness": 0,
     "root_volume_gib": 30,
     "swap_volume_gib": 1,
+    "root_volume_iops": 3000,
+    "root_volume_throughput_mibps": 125,
+    "swap_volume_iops": 3000,
+    "swap_volume_throughput_mibps": 125,
+}
+
+TIER_SIZING_MAXIMUMS = {
+    "container_swappiness": 100,
+    "root_volume_iops": 80000,
+    "root_volume_throughput_mibps": 2000,
+    "swap_volume_iops": 80000,
+    "swap_volume_throughput_mibps": 2000,
 }
 
 # Single-field rules, as validations of each tier variable ({v})
 TIER_SIZING_RULES = [
-    "length(setsubtract(keys(var.{v}), keys(local.{v}_defaults))) == 0",
+    "length(setsubtract(keys(var.{v}), concat(keys(local.{v}_defaults),"
+    " local.tier_sizing_optional_fields))) == 0",
     "alltrue([for value in values(var.{v}) : value != null])",
     "alltrue([for value in values(var.{v}) : value == null || value == floor(value)])",
     "alltrue([for field, value in var.{v} : value == null"
     " || !contains(keys(local.tier_sizing_minimums), field)"
     " || value >= local.tier_sizing_minimums[field]])",
-    'lookup(var.{v}, "container_swappiness", null) == null'
-    ' || lookup(var.{v}, "container_swappiness", 0) <= 100',
+    "alltrue([for field, value in var.{v} : value == null"
+    " || !contains(keys(local.tier_sizing_maximums), field)"
+    " || value <= local.tier_sizing_maximums[field]])",
 ]
 
-# Rules across fields, as preconditions of each tier's task definition, on the
-# merged sizes ({s})
+# Rules across fields and against the tier's instance type ({t}), as
+# preconditions of each tier's task definition, on the merged sizes ({s})
 TIER_SIZING_PRECONDITIONS = [
     "{s}.container_memory_mib <= {s}.task_memory_mib",
     "{s}.container_memory_reservation_mib < {s}.container_memory_mib",
     "{s}.container_cpu <= {s}.task_cpu",
     "{s}.container_max_swap_mib <= {s}.swap_volume_gib * 1024",
+    "{s}.task_memory_mib <= data.aws_ec2_instance_type.{t}.memory_size * 15 / 16",
+    "{s}.task_cpu <= data.aws_ec2_instance_type.{t}.default_vcpus * 1024",
+]
+
+# Rules against the AMI and gp3, as preconditions of each tier's launch template
+TIER_LAUNCH_TEMPLATE_PRECONDITIONS = [
+    "{s}.root_volume_gib >= local.effective_ami_root_gib",
+    "alltrue([for volume in values(local.tier_volumes.{t}) :"
+    " volume.throughput_mibps * 4 <= volume.iops])",
+    "alltrue([for volume in values(local.tier_volumes.{t}) :"
+    " volume.iops <= max(3000, volume.gib * 500)])",
 ]
 
 # A sizing attribute of a task definition or launch template set to a number
 _SIZING_LITERAL_RE = re.compile(
-    r"^\s*(cpu|memory|memoryReservation|maxSwap|swappiness|volume_size"
-    r"|swap_size_mb)\s*=\s*\d",
+    r"^\s*(cpu|memory|memoryReservation|maxSwap|swappiness|volume_size|iops"
+    r"|throughput|swap_size_mb)\s*=\s*\d",
     re.MULTILINE,
 )
 
@@ -336,6 +373,17 @@ def _local_numbers(tf: str, name: str) -> dict:
     }
 
 
+def _local_strings(tf: str, name: str) -> list:
+    """The items of the string list assigned to local ``name``."""
+    match = re.search(
+        r"^\s*%s\s*=\s*\[(.*?)^\s*\]" % re.escape(name),
+        tf,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, f"local {name} not found"
+    return re.findall(r'"([^"]*)"', match.group(1))
+
+
 @pytest.mark.parametrize("tier", WORKFLOW_TIERS)
 class TestWorkflowTierSizing:
     """Each workflow tier's task definition and launch template take their
@@ -345,10 +393,11 @@ class TestWorkflowTierSizing:
     def _load(self, tier):
         name, task_definition, launch_template = WORKFLOW_TIERS[tier]
         tf = read(COMPUTE_TF)
+        self.tf = tf
+        self.tier = tier
         self.sizing = f"local.{name}"
-        self.other_name = next(
-            other for other, _, _ in WORKFLOW_TIERS.values() if other != name
-        )
+        self.other_tier = next(other for other in WORKFLOW_TIERS if other != tier)
+        self.other_name = WORKFLOW_TIERS[self.other_tier][0]
         self.task_definition = resource_block(
             tf, "aws_ecs_task_definition", task_definition
         )
@@ -375,13 +424,25 @@ class TestWorkflowTierSizing:
         )
 
     def test_launch_template_reads_its_tier(self):
+        """IOPS and throughput are null unless the tier sets them: an unset
+        attribute keeps gp3's baseline and leaves today's templates as they
+        are, where an explicit default would change every environment's
+        template at the next apply."""
         devices = dict(_BLOCK_DEVICE_RE.findall(self.launch_template))
-        assert attribute(devices['"/dev/xvda"'], "volume_size") == (
-            f"{self.sizing}.root_volume_gib"
-        )
-        assert attribute(devices["local.swap_device_name"], "volume_size") == (
-            f"{self.sizing}.swap_volume_gib"
-        )
+        for device, volume in (
+            ('"/dev/xvda"', "root"),
+            ("local.swap_device_name", "swap"),
+        ):
+            ebs = devices[device]
+            assert attribute(ebs, "volume_size") == (
+                f"{self.sizing}.{volume}_volume_gib"
+            )
+            assert attribute(ebs, "iops") == (
+                f'lookup({self.sizing}, "{volume}_volume_iops", null)'
+            )
+            assert attribute(ebs, "throughput") == (
+                f'lookup({self.sizing}, "{volume}_volume_throughput_mibps", null)'
+            )
 
     def test_host_swap_is_the_whole_swap_volume(self):
         """ecs-user-data.sh runs mkswap on the device, so swap_size_mb only
@@ -399,16 +460,104 @@ class TestWorkflowTierSizing:
         for source in (self.task_definition, self.launch_template):
             assert not _SIZING_LITERAL_RE.findall(source)
             assert self.other_name not in source
+            assert f"aws_ec2_instance_type.{self.other_tier}" not in source
+            assert f"tier_volumes.{self.other_tier}" not in source
 
     def test_rules_across_fields_are_task_definition_preconditions(self):
         """Plan fails on what ECS would reject at apply (container above the
-        task, reservation not below the hard limit) and on a container swap
-        ceiling above the host's swap. A variable validation cannot read the
-        merged sizes (Terraform reports a cycle); a precondition can, and also
-        fails the plan. Both tiers carry the same rules."""
+        task, reservation not below the hard limit), on a container swap
+        ceiling above the host's swap, and on a task the tier's instance type
+        cannot hold: ECS registers less memory than the nominal and never
+        places it. A variable validation cannot read the merged sizes
+        (Terraform reports a cycle); a precondition can, and also fails the
+        plan. Both tiers carry the same rules."""
         assert _values(self.task_definition, "condition") == [
-            rule.format(s=self.sizing) for rule in TIER_SIZING_PRECONDITIONS
+            rule.format(s=self.sizing, t=self.tier)
+            for rule in TIER_SIZING_PRECONDITIONS
         ]
+
+    def test_fit_checks_read_the_type_the_tier_launches(self):
+        """The task is checked against the type its instances launch as. For
+        premium the base and per-user instances' types are pinned in
+        TestWorkflowTierGuardInputs."""
+        data = data_block(self.tf, "aws_ec2_instance_type", self.tier)
+        assert attribute(data, "instance_type") == f"var.{self.tier}_instance_type"
+        assert attribute(self.launch_template, "instance_type") == (
+            f"var.{self.tier}_instance_type"
+        )
+
+    def test_launch_template_preconditions(self):
+        """Plan fails on values a template accepts and a launch then rejects:
+        a root volume below the AMI's root snapshot, and gp3 throughput or
+        IOPS above what the volume's IOPS or size allows."""
+        assert _values(self.launch_template, "condition") == [
+            rule.format(s=self.sizing, t=self.tier)
+            for rule in TIER_LAUNCH_TEMPLATE_PRECONDITIONS
+        ]
+
+
+class TestWorkflowTierGuardInputs:
+    """What the launch templates' preconditions compare against."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        self.tf = read(COMPUTE_TF)
+
+    def test_the_ami_read_is_the_one_the_templates_boot(self):
+        """Stock or custom (from SSM), the lookup is by the ID the templates
+        use; the stock image moves with most_recent, the custom one with each
+        pipeline build, so a fixed floor alone can go stale."""
+        data = data_block(self.tf, "aws_ami", "effective")
+        assert string_list(attribute(data, "owners")) == ["self", "amazon"]
+        assert attribute(data, "name") == '"image-id"'
+        assert attribute(data, "values") == "[local.effective_ami_id]"
+        for template in WORKFLOW_TIERS.values():
+            block = resource_block(self.tf, "aws_launch_template", template[2])
+            assert attribute(block, "image_id") == "local.effective_ami_id"
+
+    def test_every_premium_instance_launches_as_the_checked_type(self):
+        """The premium task is checked against var.premium_instance_type, so
+        the check holds only while the base instance and the premium manager's
+        per-user launches (PREMIUM_INSTANCE_TYPE) take their type from it."""
+        base = resource_block(self.tf, "aws_instance", "premium")
+        assert attribute(base, "instance_type") == "var.premium_instance_type"
+        manager = resource_block(
+            read(PREMIUM_MANAGER_TF), "aws_lambda_function", "premium_manager"
+        )
+        assert attribute(manager, "PREMIUM_INSTANCE_TYPE") == (
+            "var.premium_instance_type"
+        )
+
+    def test_each_tiers_volume_rules_read_its_own_sizing(self):
+        """local.tier_volumes keys each tier to its own merged sizing, which
+        the tier's launch-template rules then read."""
+        block = _values(self.tf, "tier_volumes")[0]
+        tiers = ", ".join(
+            f"{tier} = local.{name}" for tier, (name, _, _) in WORKFLOW_TIERS.items()
+        )
+        assert block.startswith(f"{{for tier, sizing in {{{tiers}}} : tier => ")
+
+    def test_the_root_snapshot_is_the_root_devices_mapping(self):
+        assert _values(self.tf, "effective_ami_root_gib") == [
+            "one([for mapping in data.aws_ami.effective.block_device_mappings :"
+            " tonumber(mapping.ebs.volume_size)"
+            " if mapping.device_name == data.aws_ami.effective.root_device_name])"
+        ]
+
+    def test_unset_volume_performance_is_the_gp3_baseline(self):
+        """A rule on throughput against IOPS must use the IOPS the volume
+        gets: 3,000 when the field is unset, as the minimums are."""
+        block = _values(self.tf, "tier_volumes")[0]
+        for volume_field, baseline in (
+            ("iops", 3000),
+            ("throughput_mibps", 125),
+        ):
+            assert (
+                f'{volume_field} = lookup(sizing, "${{volume}}_volume_{volume_field}",'
+                f" {baseline})"
+            ) in block
+            assert TIER_SIZING_MINIMUMS[f"root_volume_{volume_field}"] == baseline
+            assert TIER_SIZING_MINIMUMS[f"swap_volume_{volume_field}"] == baseline
 
 
 @pytest.mark.parametrize("variable", TIER_SIZING_DEFAULTS)
@@ -447,19 +596,37 @@ class TestWorkflowTierSizingVariables:
         unknown-field rule."""
         assert attribute(self.block, "type") == "map(number)"
 
+    def test_optional_fields_have_no_default(self, variable):
+        """Absent from the defaults, so the merged sizing lacks them and the
+        launch template's lookup gives null."""
+        optional = _local_strings(self.main, "tier_sizing_optional_fields")
+        assert optional == TIER_SIZING_OPTIONAL_FIELDS
+        assert not set(optional) & TIER_SIZING_DEFAULTS[variable].keys()
+
     def test_every_field_has_a_minimum_its_default_meets(self, variable):
         """Zero where ECS accepts none; the AMI snapshot size for the root
         volume, below which every launch fails after the template is
-        accepted."""
+        accepted; gp3's included baseline for IOPS and throughput."""
         minimums = _local_numbers(self.main, "tier_sizing_minimums")
         assert minimums == TIER_SIZING_MINIMUMS
         defaults = TIER_SIZING_DEFAULTS[variable]
-        assert minimums.keys() == defaults.keys()
+        assert minimums.keys() == defaults.keys() | set(TIER_SIZING_OPTIONAL_FIELDS)
         assert all(defaults[field] >= minimums[field] for field in defaults)
 
+    def test_maximums_and_the_defaults_within_them(self, variable):
+        """Docker's swappiness ceiling, gp3's IOPS and throughput ceilings."""
+        maximums = _local_numbers(self.main, "tier_sizing_maximums")
+        assert maximums == TIER_SIZING_MAXIMUMS
+        defaults = TIER_SIZING_DEFAULTS[variable]
+        assert all(
+            defaults[field] <= maximum
+            for field, maximum in maximums.items()
+            if field in defaults
+        )
+
     def test_validation_rules(self, variable):
-        """Plan fails on an unknown, null, fractional or too-small field and
-        on a swappiness above 100. Both tiers carry the same rules."""
+        """Plan fails on an unknown, null, fractional, too-small or too-large
+        field. Both tiers carry the same rules."""
         assert _values(self.block, "condition") == [
             rule.format(v=variable) for rule in TIER_SIZING_RULES
         ]
