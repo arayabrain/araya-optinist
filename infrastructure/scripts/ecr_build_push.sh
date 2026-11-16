@@ -242,14 +242,32 @@ docker build -f studio/config/docker/Dockerfile \
 # Tag and push to ECR — both :latest (for ECS) and versioned (for history/rollback)
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:$VERSION_TAG
-# Without a terminal (terraform apply, CI) the progress bars become one line per
-# layer and state, so print one line per tag instead
+# Without a terminal (terraform apply, CI) docker drops its progress bars, sizes
+# included, and prints a line per layer and state. Keep a count instead: a line
+# each time a layer upload ends; a layer already in the registry is only counted
+count_pushed_layers() {
+    local tag="$1" line total=0 finished=0
+    while IFS= read -r line; do
+        case "$line" in
+            *": Preparing") total=$((total + 1)) ;;
+            *": Pushed")
+                finished=$((finished + 1))
+                echo "  ${tag}: ${finished}/${total} layers"
+                ;;
+            *": Layer already exists"|*": Mounted from "*) finished=$((finished + 1)) ;;
+            *": Waiting"|"The push refers to repository"*) ;;
+            *) echo "$line" ;;
+        esac
+    done
+}
+
 for PUSH_TAG in latest "$VERSION_TAG"; do
     echo "Pushing ${ECR_URI}:${PUSH_TAG}..."
     if [ -t 1 ]; then
         docker push "$ECR_URI:$PUSH_TAG"
     else
-        docker push --quiet "$ECR_URI:$PUSH_TAG"
+        # pipefail: a failed push still stops the build
+        (set -o pipefail; docker push "$ECR_URI:$PUSH_TAG" | count_pushed_layers "$PUSH_TAG")
     fi
 done
 

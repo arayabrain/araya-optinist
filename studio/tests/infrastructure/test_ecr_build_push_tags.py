@@ -2,7 +2,8 @@
 
 Runs a copy of the real script inside a throwaway git repository, with stub
 terraform / aws / docker / yarn on PATH. git is real, so the version tag comes
-from the tags the test puts on HEAD; the stub docker records every call.
+from the tags the test puts on HEAD; the stub docker records every call and
+answers a push with the lines docker prints without a terminal.
 """
 
 import os
@@ -35,6 +36,25 @@ case "$1 $2" in
         echo "An error occurred (ParameterNotFound)" >&2
         exit 254 ;;
 esac
+"""
+
+# A push of three layers: one already in the registry, two uploaded
+DOCKER_STUB = """
+echo "docker $*" >> "$DOCKER_CALLS"
+[ "$1" = push ] || exit 0
+if [ -n "$DOCKER_PUSH_FAILS" ]; then
+    echo "push failed: connection refused" >&2
+    exit 1
+fi
+echo "The push refers to repository [${2%:*}]"
+for layer in aaaaaaaaaaaa bbbbbbbbbbbb cccccccccccc; do
+    echo "$layer: Preparing"
+done
+echo "cccccccccccc: Waiting"
+echo "bbbbbbbbbbbb: Layer already exists"
+echo "aaaaaaaaaaaa: Pushed"
+echo "cccccccccccc: Pushed"
+echo "${2##*:}: digest: sha256:0123abcd size: 1234"
 """
 
 pytestmark = pytest.mark.skipif(
@@ -77,19 +97,25 @@ def build(tmp_path):
     _stub(bin_dir / "terraform", TERRAFORM_STUB)
     _stub(bin_dir / "aws", AWS_STUB)
     _stub(bin_dir / "yarn", "exit 0")
-    _stub(bin_dir / "docker", f'echo "docker $*" >> "{calls}"')
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    _stub(bin_dir / "docker", DOCKER_STUB)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls),
+    }
 
-    def run(*args: str, tty: bool = False):
+    def run(*args: str, tty: bool = False, push_fails: bool = False):
+        """Run the script; with push_fails, docker push fails and so must the script."""
         cmd = ["bash", str(scripts / "ecr_build_push.sh"), "--yes", *args]
+        run_env = {**env, "DOCKER_PUSH_FAILS": "1"} if push_fails else env
         if tty:
-            output, returncode = _run_on_a_terminal(cmd, repo, env)
+            output, returncode = _run_on_a_terminal(cmd, repo, run_env)
         else:
             result = subprocess.run(
-                cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=60
+                cmd, cwd=repo, env=run_env, capture_output=True, text=True, timeout=60
             )
             output, returncode = result.stdout + result.stderr, result.returncode
-        assert returncode == 0, output
+        assert (returncode != 0) == push_fails, output
         pushes = [
             c for c in calls.read_text().splitlines() if c.startswith("docker push")
         ]
@@ -150,21 +176,39 @@ class TestVersionTag:
 
 
 class TestPushOutput:
-    def test_without_a_terminal_the_pushes_are_quiet(self, build):
+    def test_without_a_terminal_the_push_prints_a_layer_count(self, build):
         # terraform apply's local-exec gives the script no terminal
         _git(build.repo, "tag", "v9.9.9")
         output, pushes = build()
         assert pushes == [
-            f"docker push --quiet {ECR_URI}:latest",
-            f"docker push --quiet {ECR_URI}:v9.9.9",
+            f"docker push {ECR_URI}:latest",
+            f"docker push {ECR_URI}:v9.9.9",
         ]
-        assert f"Pushing {ECR_URI}:latest..." in output
-        assert f"Pushing {ECR_URI}:v9.9.9..." in output
+        lines = output.splitlines()
+        start = lines.index(f"Pushing {ECR_URI}:latest...")
+        # A line per uploaded layer; the one already in the registry is only counted
+        assert lines[start + 1 : start + 4] == [
+            "  latest: 2/3 layers",
+            "  latest: 3/3 layers",
+            "latest: digest: sha256:0123abcd size: 1234",
+        ]
+        for noise in ("Preparing", "Waiting", "Layer already exists", "push refers"):
+            assert noise not in output
 
     def test_on_a_terminal_the_progress_bars_stay(self, build):
         _git(build.repo, "tag", "v9.9.9")
-        _, pushes = build(tty=True)
+        output, pushes = build(tty=True)
         assert pushes == [
             f"docker push {ECR_URI}:latest",
             f"docker push {ECR_URI}:v9.9.9",
         ]
+        # docker's own output reaches the terminal untouched
+        assert "aaaaaaaaaaaa: Preparing" in output
+        assert "latest: 2/3 layers" not in output
+
+    def test_a_failed_push_stops_the_build(self, build):
+        # The pipe into the count must not hide the push's exit status
+        output, pushes = build(push_fails=True)
+        assert _pushed_refs(pushes) == [f"{ECR_URI}:latest"]
+        assert "push failed: connection refused" in output
+        assert "PUSH COMPLETE" not in output
