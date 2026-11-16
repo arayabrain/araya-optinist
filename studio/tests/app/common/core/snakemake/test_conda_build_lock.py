@@ -62,6 +62,35 @@ def test_a_missing_env_is_built_under_the_lock(conda_dir, monkeypatch):
     create.assert_called_once_with(env, False)
 
 
+def test_the_env_dir_is_reread_after_the_lock_before_the_build(conda_dir, monkeypatch):
+    env = SimpleNamespace(address=str(conda_dir / "abc_"))
+    calls = []
+    real_listdir = os.listdir
+
+    def lock_is_held():
+        with open(conda_dir / ".build.lock", "a") as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return False
+            except BlockingIOError:
+                return True
+
+    def listdir(path):
+        calls.append(("listdir", path, lock_is_held()))
+        return real_listdir(path)
+
+    monkeypatch.setattr(snakemake_executor.os, "listdir", listdir)
+    monkeypatch.setattr(
+        snakemake_executor,
+        "_env_create",
+        Mock(side_effect=lambda e, d: calls.append(("create",)) or _create()(e, d)),
+    )
+
+    snakemake_executor._env_create_locked(env)
+
+    assert calls == [("listdir", str(conda_dir), True), ("create",)]
+
+
 def test_a_lock_held_past_the_deadline_fails_the_run(conda_dir, monkeypatch):
     env = SimpleNamespace(address=str(conda_dir / "abc_"))
     create = _create()

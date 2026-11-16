@@ -83,6 +83,8 @@ def _env_create_locked(self, dryrun=False):
         join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, CONDA_BUILD_LOCK]), "a"
     ) as f:
         _flock_or_fail(f, self.address)
+        # Opening the dir drops NFS-cached misses for the previous holder's flag
+        os.listdir(DIRPATH.SNAKEMAKE_CONDA_ENV_DIR)
         logger.info(f"Holding the conda build lock for {self.address}")
         env_path = _env_create(self, dryrun)
     if not get_env_setup_done_flag_file(Path(env_path)).exists():
