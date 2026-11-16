@@ -208,6 +208,7 @@ test.describe("Stripe throwaway subscriber", () => {
   // cancel path finds that customer instead of creating one; then Stripe, so
   // nothing a crashed case left behind keeps billing daily.
   test.afterAll(async () => {
+    test.setTimeout(5 * 60_000)
     for (const s of subscribers) {
       try {
         if (activeUserRows(s.email) === 0) continue
