@@ -390,9 +390,12 @@ re-applying the same commit with none of them changed does not rebuild.
   its timestamp tag; add the version with `aws ecr put-image`, as in [Rollback to a Previous
   Image](#rollback-to-a-previous-image) (it still counts as timestamp-tagged in [Image
   Cleanup](#image-cleanup)).
-- **The push shows no progress bars.** The script runs without a terminal, so each push prints a
-  `Pushing <ref>...` line and then the pushed ref. The `yarn` and `docker build` output stays in
-  full: a failed build is diagnosed from it.
+- **The push shows a layer count, not progress bars.** Without a terminal docker prints no
+  progress bars or transfer sizes, so each push prints `Pushing <ref>...`, a `<tag>: N/M layers`
+  line each time a layer upload ends, and docker's digest line. A layer already in the registry is
+  only counted, so the version-tag push prints its digest alone. The count moves by layers, not
+  bytes: it can stand still for minutes on a large layer. The `yarn` and `docker build` output
+  stays in full: a failed build is diagnosed from it.
 
 ### Cycling All Services
 
