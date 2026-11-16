@@ -406,7 +406,9 @@ async def test_structured_cards_on_a_server_without_the_config_both_load():
     meta_patch, asked = _remote_config(delay=0.3)
     try:
         with meta_patch:
-            async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as http:
                 responses = await asyncio.gather(
                     http.get(_structured_url("run_unsynced_pair", "hdf5_1d_node")),
                     http.get(_structured_url("run_unsynced_pair", "mat_node")),
