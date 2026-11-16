@@ -164,14 +164,16 @@ assignees: ''
     - 予定: {時刻}
     - [ ] 実績: {時刻}
   - [ ] terraform apply（インフラ / Lambda に変更がある場合。build script が terraform output を読むため必ず先に実施）
+    - 前回 apply した commit と異なる commit からの apply は、image の build・push と全 ECS サービスの cycle まで行う。その場合、下の build・push と cycle は行わない（cycle が二重になる）
+    - リリース tag の commit から apply すると、image にそのバージョンの tag が付く。tag は apply の前に作成しておく
     - [ ] 実績: {時刻}
-  - [ ] `infrastructure/scripts/ecr_build_push.sh` で image を build・push（frontend / studio に変更がある場合）
+  - [ ] `infrastructure/scripts/ecr_build_push.sh` で image を build・push（frontend / studio に変更があり、apply を行わない場合）
     - [ ] 実績: {時刻}
-  - [ ] 全 ECS サービス（main / premium / public / background）を force-new-deployment で cycle
+  - [ ] 全 ECS サービス（main / premium / public / background）を force-new-deployment で cycle（apply を行わない場合）
     - [ ] 実績: {時刻}
-    - [ ] 全サービスが 1 deployment に収束したことを確認
-      - check_ecs_image_drift.py を使用して、デプロイしたインスタンスが最新かの確認
-        - [ ] 確認結果:
+  - [ ] 全サービスが 1 deployment に収束したことを確認
+    - `check_ecs_image_drift.py --tag <バージョン>` を使用して、デプロイしたインスタンスが最新かの確認
+      - [ ] 確認結果:
   <!-- - [ ] （DBマイグレーションがある場合）マイグレーション実行 -->
   - [ ] （メンテナンスページ有効時）解除: `infrastructure/scripts/maintenance_mode.sh subscr off`
     - [ ] `curl -si https://<host>/ | head -1` が 200 であることを確認
@@ -242,6 +244,7 @@ assignees: ''
   - [ ] 切り戻し先の image tag を ECR で特定（`aws ecr list-images`）
   - [ ] 旧 image を `:latest` へ retag（`aws ecr put-image`）
   - [ ] terraform を旧構成へ apply（IAM / alarms / scheduler 含む）
+    - 旧 commit からの apply は、その commit の image を build・push し、全サービスを cycle する（上の retag は置き換わる）
   - [ ] （DBマイグレーションがある場合）ロールバック手順を実施
   - [ ] 全 ECS サービス（main / premium / public / background）を force-new-deployment で cycle
   - [ ] 全サービスが 1 deployment に収束したことを確認・ヘルスチェック
