@@ -614,7 +614,8 @@ class TestServingBelowDesiredAlarm:
 
     def test_alarm_measures_the_gap_outside_deployments(self):
         """A public rollout replaces its two tasks one at a time, each held
-        below desired by the 600 s drain, for about 28 of 30 min. Missing
+        below desired by production's 600 s drain, for about 28 of 30 min there
+        (less on development, which drains for 60 s). Missing
         healthy counts as 0 healthy, so a target that has gone cannot hide in
         a data gap. Desired is the ASG's, not ECS's DesiredTaskCount, which
         Container Insights stops publishing once no task runs: the tier's last

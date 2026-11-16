@@ -247,7 +247,7 @@ The ASG acts only on the target state `unhealthy`; `initial`, `draining` and `un
 |---|---|---|
 | desired | `AWS/AutoScaling` `GroupDesiredCapacity` (`Minimum`) | One task per host. Container Insights publishes no `DesiredTaskCount` while no task runs, so the tier losing its last task would read 0; the ASG publishes an explicit 0 when the dev schedule stops it |
 | healthy | `AWS/ApplicationELB` `HealthyHostCount` (`Minimum`, `FILL` 0) | A wedged host keeps `RunningTaskCount` at desired; a deregistered target leaves a data gap, read as 0 |
-| deploys | `ECS/ContainerInsights` `DeploymentCount` (`Maximum`) | A public rollout replaces its two tasks one at a time and is short a target for about 28 of 30 min, so the alarm is off while it exceeds 1 |
+| deploys | `ECS/ContainerInsights` `DeploymentCount` (`Maximum`) | A public rollout replaces its two tasks one at a time and is short a target for about 28 of 30 min with production's drains, so the alarm is off while it exceeds 1 |
 
 It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 35 of 40 on public, which outlasts each tier's longest normal gap outside a deployment. On free that is a single-instance refresh or a slow morning start, about 17 min. On public it is a host replacement, about 25 min with production's drains (measured on dev before its drain was shortened): the task waits out its 600 s drain, then the terminating instance's own 600 s drain, before it runs on the new host. Development drains for 60 s, which only widens the margin. A deployment that never finishes silences it; `tg-unhealthy-hosts` still fires if that deployment's target is unhealthy. Runbook: `MAINTENANCE_PROCEDURES.md`, *ALB Alarms*.
 
