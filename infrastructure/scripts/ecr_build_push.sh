@@ -11,7 +11,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Parse arguments
 # ===========================================
 # Usage: ./ecr_build_push.sh [--tag <version-tag>] [--yes] [--deploy]
-#   --tag <tag>  : Custom version tag (default: auto-generated YYYYMMDD-HHMMSS-<git-sha>)
+#   --tag <tag>  : Custom version tag (default: the release tag on HEAD, such as
+#                  v1.2.3, else auto-generated YYYYMMDD-HHMMSS-<git-sha>)
 #   --yes        : Skip confirmation prompt
 #   --deploy     : After push, force-new-deployment on EVERY service in the
 #                  cluster so all tiers re-pull the just-pushed :latest
@@ -103,8 +104,12 @@ GIT_COMMIT_FULL="$GIT_INFO_COMMIT"
 GIT_BRANCH="$GIT_INFO_BRANCH"
 GIT_TAG="$GIT_INFO_TAG"
 BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# A release commit gets its version even without --tag, which terraform apply
+# never passes; a prerelease or untagged commit gets a timestamp
 if [ -n "$CUSTOM_TAG" ]; then
     VERSION_TAG="$CUSTOM_TAG"
+elif [ -n "$GIT_INFO_RELEASE_TAG" ]; then
+    VERSION_TAG="$GIT_INFO_RELEASE_TAG"
 else
     VERSION_TAG="$(date +%Y%m%d-%H%M%S)-${GIT_SHA}"
 fi
