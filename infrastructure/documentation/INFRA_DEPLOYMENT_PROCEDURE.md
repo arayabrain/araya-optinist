@@ -404,14 +404,18 @@ group's deregistration delay, then starts the new one (the public service alone 
 - **A rollout already in progress finishes first** (up to 30 minutes, then the force goes ahead
   with a warning). `terraform apply` rolls a service whose task definition changed before it
   builds the image; forcing on top of that rollout restarts it.
-- **The groups' `HealthCheck` process is suspended for the rollout** and resumed whichever way the
-  script exits. A restarted task is past its host's grace period, so a target failing a few checks
-  would otherwise get the whole host replaced mid-rollout. A group already suspended beforehand
-  is left as found.
+- **The groups' `HealthCheck` process is suspended until the restarted targets are healthy**, and
+  resumed whichever way the script exits. A restarted task is past its host's grace period, so a
+  target failing a few checks would otherwise get the whole host replaced mid-rollout. The services
+  count as settled before their last tasks have started serving (every free task restarts at once,
+  and public's last host after the rest), so after they settle the script waits up to 15 minutes
+  (the services' health check grace) for every target to pass; past that it resumes the checks
+  with a warning naming the target group, leaving a host still failing to the group. A group
+  already suspended beforehand is left as found.
 - **It waits up to about an hour** for every service to settle and exits 1, naming each unsettled
   service, if one does not. For `terraform apply` that fails the apply and taints the resource, so
   the next apply forces a new deployment on every service again. Docker hygiene runs only after a
-  settled rollout.
+  settled rollout, once the health checks are back on.
 
 A run killed outright (closed terminal, `kill -9`, the laptop sleeping) cannot resume the health
 checks. Check both groups and resume any it left suspended:

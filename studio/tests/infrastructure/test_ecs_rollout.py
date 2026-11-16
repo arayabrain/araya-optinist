@@ -21,10 +21,16 @@ ECR_BUILD_PUSH = SCRIPTS / "ecr_build_push.sh"
 
 GROUPS = ["--asg", "free-asg", "--asg", "public-asg"]
 HYGIENE = ["--hygiene-association", "assoc-1"]
+TARGET_GROUP_ARN = "arn:aws:elasticloadbalancing:r:1:targetgroup/{}/0123"
+FREE_TG = TARGET_GROUP_ARN.format("free-tg")
+PUBLIC_TG = TARGET_GROUP_ARN.format("public-tg")
 
 # Every call is logged. The clock moves only on sleep and on `ecs wait`, which
 # takes its full 10 minutes. describe-services answers the pre-force check
-# with a rolling service for the first ROLLING_POLLS calls.
+# with a rolling service for the first ROLLING_POLLS calls, and the target
+# group lookup with two groups. describe-target-health fails its first
+# FAIL_TARGET_CALLS calls and names a target not yet healthy up to call
+# UNHEALTHY_TARGET_CALLS.
 AWS_STUB = """#!/bin/bash
 echo "$*" >> "$STUB_DIR/aws.log"
 count() {
@@ -38,8 +44,15 @@ case "$1 $2" in
   "ecs describe-services")
     case "$*" in
       *runningCount*) printf 'svc-b\\tunable to place a task\\n' ;;
+      *targetGroupArn*)
+        [ -z "${FAIL_TG_LOOKUP:-}" ] || exit 255
+        printf '%s\\t%s\\n' "$FREE_TG" "$PUBLIC_TG" ;;
       *) [ "$(count describes)" -gt "${ROLLING_POLLS:-0}" ] || echo "svc-a" ;;
     esac ;;
+  "elbv2 describe-target-health")
+    n=$(count targets)
+    [ "$n" -gt "${FAIL_TARGET_CALLS:-0}" ] || exit 255
+    [ "$n" -gt "${UNHEALTHY_TARGET_CALLS:-0}" ] || echo "i-1" ;;
   "ecs update-service") [ -z "${FAIL_UPDATE:-}" ] || exit 255 ;;
   "ecs wait")
     n=$(count waits)
@@ -81,7 +94,14 @@ def _rollout(tmp_path: Path, *args: str, stable_on_wait: int = 1, **extra_env):
     env = _install_stubs(
         tmp_path, {"aws": AWS_STUB, "date": DATE_STUB, "sleep": SLEEP_STUB}
     )
-    env.update({"STABLE_ON_WAIT": str(stable_on_wait), **extra_env})
+    env.update(
+        {
+            "STABLE_ON_WAIT": str(stable_on_wait),
+            "FREE_TG": FREE_TG,
+            "PUBLIC_TG": PUBLIC_TG,
+            **extra_env,
+        }
+    )
     result = subprocess.run(
         ["bash", str(ROLLOUT), "--cluster", "c", "--region", "r", *args],
         env=env,
@@ -161,25 +181,34 @@ class TestRolloutInProgress:
         assert "in progress" not in result.stdout
 
 
+def _assert_off_then_on(calls: list, asg: str) -> int:
+    """HealthCheck on ``asg`` is suspended once before the force and resumed
+    once after every wait and target health read; returns the resume's index."""
+    suspend = _indexes(
+        calls,
+        f"suspend-processes --auto-scaling-group-name {asg} "
+        "--scaling-processes HealthCheck",
+    )
+    resume = _indexes(
+        calls,
+        f"resume-processes --auto-scaling-group-name {asg} "
+        "--scaling-processes HealthCheck",
+    )
+    assert len(suspend) == 1 and len(resume) == 1, calls
+    assert suspend[0] < _indexes(calls, "ecs update-service")[0]
+    for fragment in ("ecs wait", "elbv2 describe-target-health"):
+        before = _indexes(calls, fragment)
+        assert not before or resume[0] > before[-1], fragment
+    return resume[0]
+
+
 class TestHostHealthChecks:
     """The groups' HealthCheck process is off from before the force until the
-    script exits, whichever way it exits."""
+    restarted targets pass their checks, or until the script exits, whichever
+    way it exits."""
 
     def _assert_off_then_on(self, calls: list, asg: str) -> None:
-        suspend = _indexes(
-            calls,
-            f"suspend-processes --auto-scaling-group-name {asg} "
-            "--scaling-processes HealthCheck",
-        )
-        resume = _indexes(
-            calls,
-            f"resume-processes --auto-scaling-group-name {asg} "
-            "--scaling-processes HealthCheck",
-        )
-        assert len(suspend) == 1 and len(resume) == 1, calls
-        assert suspend[0] < _indexes(calls, "ecs update-service")[0]
-        waits = _indexes(calls, "ecs wait")
-        assert not waits or resume[0] > waits[-1]
+        _assert_off_then_on(calls, asg)
 
     def test_off_for_exactly_the_rollout(self, tmp_path):
         result, calls, _ = _rollout(tmp_path, *GROUPS)
@@ -236,6 +265,66 @@ class TestHostHealthChecks:
         result, calls, _ = _rollout(tmp_path)
         assert result.returncode == 0, result.stdout + result.stderr
         assert not _indexes(calls, "autoscaling")
+        assert not _indexes(calls, "elbv2")
+
+
+class TestTargetHealthWait:
+    """services-stable ignores target health, so HealthCheck stays off after it
+    until the load-balanced services' targets are healthy, for at most the
+    services' 900 s grace."""
+
+    def test_health_checks_stay_off_until_the_targets_pass(self, tmp_path):
+        result, calls, now = _rollout(
+            tmp_path, *GROUPS, *HYGIENE, UNHEALTHY_TARGET_CALLS="5"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "All targets are healthy." in result.stdout
+        reads = _indexes(calls, "elbv2 describe-target-health")
+        # Two groups a round: rounds 1-3 still see an unready target
+        assert len(reads) == 8
+        for tg in (FREE_TG, PUBLIC_TG):
+            assert _indexes(calls, f"--target-group-arn {tg}")
+        resumes = [
+            _assert_off_then_on(calls, asg) for asg in ("free-asg", "public-asg")
+        ]
+        hygiene = _indexes(calls, "ssm start-associations-once")
+        assert hygiene and hygiene[0] > max(resumes)
+        # The one 10-minute wait, then three 15 s polls
+        assert now == 600 + 3 * 15
+
+    def test_targets_that_never_pass_are_left_to_the_group_after_the_bound(
+        self, tmp_path
+    ):
+        result, calls, now = _rollout(tmp_path, *GROUPS, UNHEALTHY_TARGET_CALLS="999")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (
+            "targets in free-tg public-tg still not healthy after 15 minutes"
+            in result.stdout
+        )
+        for asg in ("free-asg", "public-asg"):
+            _assert_off_then_on(calls, asg)
+        assert now == 600 + 900
+
+    def test_a_failed_read_counts_as_not_yet_healthy(self, tmp_path):
+        result, calls, now = _rollout(tmp_path, *GROUPS, FAIL_TARGET_CALLS="2")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert len(_indexes(calls, "elbv2 describe-target-health")) == 4
+        assert now == 600 + 15
+
+    def test_an_unreadable_target_group_list_resumes_at_once(self, tmp_path):
+        result, calls, _ = _rollout(tmp_path, *GROUPS, FAIL_TG_LOOKUP="1")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "could not read the services' target groups" in result.stdout
+        assert not _indexes(calls, "elbv2")
+        for asg in ("free-asg", "public-asg"):
+            _assert_off_then_on(calls, asg)
+
+    def test_no_wait_when_no_group_was_suspended_here(self, tmp_path):
+        result, calls, _ = _rollout(
+            tmp_path, "--asg", "public-asg", ALREADY_SUSPENDED_ASG="public-asg"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not _indexes(calls, "elbv2")
 
 
 # The callers run with ecs_rollout.sh replaced by a stub that logs its

@@ -16,7 +16,8 @@
 # - a rollout already in progress (terraform apply rolls a service whose task
 #   definition changed before the image is built) is left to finish first;
 #   forcing on top of it restarts it
-# - the groups' HealthCheck process is suspended until the end: a restarted
+# - the groups' HealthCheck process is suspended until the restarted targets
+#   pass their checks (or the script fails or is interrupted): a restarted
 #   task is past its host's grace period, and a target failing a few checks
 #   would get the whole host replaced mid-rollout
 # - one `aws ecs wait` stops at 10 minutes, shorter than a public rollout, so
@@ -30,6 +31,9 @@ PRE_WAIT_POLL_SECONDS=30
 STABLE_DEADLINE_SECONDS=3700
 # One `aws ecs wait services-stable` (40 polls x 15 s) plus the pause after it
 STABLE_WAIT_SECONDS=615
+# The services' health check grace period
+TARGET_HEALTH_WAIT_SECONDS=900
+TARGET_HEALTH_POLL_SECONDS=15
 
 CLUSTER=""
 REGION=""
@@ -175,6 +179,50 @@ until aws ecs wait services-stable --cluster "$CLUSTER" --services $SERVICES \
     sleep 15
 done
 echo "All services are stable."
+
+# ===========================================
+# Host health checks back on once the new targets pass
+# ===========================================
+# services-stable counts running tasks, not target health. Free restarts every
+# task at once and public restarts its last host after the rest, so those
+# tasks are still starting when the services count as stable. Bounded by the
+# services' 900 s grace: a target still failing then (or a host the group
+# registered that has no task) is one the ELB check is there to replace
+if [ -n "$SUSPENDED_ASGS" ]; then
+    if TARGET_GROUPS=$(aws ecs describe-services --cluster "$CLUSTER" --services $SERVICES \
+        --region "$REGION" --query 'services[].loadBalancers[].targetGroupArn' \
+        --output text); then
+        echo "Waiting for the restarted targets to pass their health checks..."
+        TARGET_DEADLINE=$(( $(date +%s) + TARGET_HEALTH_WAIT_SECONDS ))
+        while :; do
+            PENDING_GROUPS=""
+            for tg in $TARGET_GROUPS; do
+                # initial: still being checked; unhealthy: failing. Draining
+                # and unused targets are leaving or not serving
+                if ! NOT_READY=$(aws elbv2 describe-target-health --target-group-arn "$tg" \
+                    --region "$REGION" \
+                    --query 'TargetHealthDescriptions[?TargetHealth.State==`initial` || TargetHealth.State==`unhealthy`].Target.Id' \
+                    --output text) || [ -n "$NOT_READY" ]; then
+                    tg_name="${tg#*targetgroup/}"
+                    PENDING_GROUPS="${PENDING_GROUPS} ${tg_name%%/*}"
+                fi
+            done
+            if [ -z "$PENDING_GROUPS" ]; then
+                echo "All targets are healthy."
+                break
+            fi
+            if [ $(( $(date +%s) + TARGET_HEALTH_POLL_SECONDS )) -gt "$TARGET_DEADLINE" ]; then
+                echo "WARNING: targets in${PENDING_GROUPS} still not healthy after $(( TARGET_HEALTH_WAIT_SECONDS / 60 )) minutes; resuming host health checks anyway"
+                break
+            fi
+            sleep "$TARGET_HEALTH_POLL_SECONDS"
+        done
+    else
+        echo "WARNING: could not read the services' target groups; resuming host health checks now"
+    fi
+    echo "Resuming host health checks..."
+    resume_health_checks
+fi
 
 # Each host now holds the image this rollout replaced; prune it now rather
 # than at the next scheduled run
