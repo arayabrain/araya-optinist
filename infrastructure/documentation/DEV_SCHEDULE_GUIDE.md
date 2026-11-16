@@ -235,9 +235,9 @@ is restored with the same identifier and configuration).
 ### Do not apply while the environment is stopped
 
 Plan only during off-hours. An apply would create the RDS instance the stop destroyed, and
-it sets the background ECS service back to `1` and the public one to its tfvars count while
-their instances are stopped, so their tasks fail placement until the next start. The free
-and premium services ignore `desired_count`, so the stop's zeros stand for them.
+it sets the background ECS service back to `1` while its instance is stopped, so its task
+fails placement until the next start. The free, premium and public services ignore
+`desired_count`, so the stop's zeros stand for them.
 
 ### Lambda schedules are disabled after a stop
 

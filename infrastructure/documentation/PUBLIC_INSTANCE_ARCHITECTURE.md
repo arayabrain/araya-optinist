@@ -6,6 +6,7 @@
 - **Router gating** drops the heavy workflow/optinist routers in public mode, keeping only the routers needed to load the app and authenticate.
 - **Outage survival** means the SPA can boot and a user can log in even when the free tier is scaled to zero or unhealthy, instead of seeing a raw ALB 503.
 - **Published-dataview reads** and the startup cache warm are served from public, decoupling unauthenticated visualization traffic from the authenticated tiers.
+- **Host count** follows one value, the public service's desired count: ECS owns the public hosts through the tier's own capacity provider (see Host Count).
 - **Shared task-definition values** are duplicated across `compute.tf`, `public_service.tf`, and `background_service.tf`; a shared value must be changed in all three.
 
 ---
@@ -150,6 +151,86 @@ The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_im
 
 ---
 
+## Host Count
+
+The public tier runs one task per host: the static host port 8000 and the `tier == public` constraint leave room for one. ECS owns the hosts through the tier's own capacity provider, so the host count follows one value, the service's desired count.
+
+| Part | Owner | What it does |
+|---|---|---|
+| Service desired count | Operator (`update-service`); the dev schedule at stop and start | The one value. Terraform sets it at creation only (`ignore_changes`) |
+| Group desired capacity | ECS managed scaling, `aws_ecs_capacity_provider.public` at target capacity 100 % | One host per task: a task waiting in `PROVISIONING` adds a host, a host left empty is removed |
+| Group min / max | Terraform, `public_asg_min_size` / `public_asg_max_size` | The floor and the ceiling; managed scaling stays between them |
+| Which host goes on scale-in | ECS managed termination protection | The group launches every host protected; ECS lifts protection only from a host with no task |
+| Health replacement | The group's `ELB` health check (see Health Checks) | Unchanged: scale-in protection does not stop a health replacement |
+
+### Changing the count
+
+```bash
+aws ecs update-service --cluster <env>-optinist-cloud-cluster \
+  --service <env>-public-optinist-cloud-service --desired-count <N> \
+  --query 'service.desiredCount'
+# Expected: <N>. The same command raises and lowers.
+```
+
+- **Up:** the extra tasks wait in `PROVISIONING`, ECS raises the group's desired capacity about a minute later, and each task starts once its host has booted and registered. The serving tasks are not touched.
+- **Down:** ECS picks the tasks to stop, drains their targets for the target group's deregistration delay, then stops them. A host left with no task loses its protection. ECS lowers the group's desired capacity once those hosts have stayed empty for about 15 min, and the group removes them.
+- **Stay between the floor and the ceiling.** Above `public_asg_max_size`, the extra tasks stay in `PROVISIONING`. Below `public_asg_min_size`, a host with no task stays registered in the target group, and the ELB check replaces it again and again.
+- **Change the service, not the variables.** Raising `public_asg_min_size` alone adds hosts with no task, the case above.
+- **An apply keeps the count.** Terraform ignores the service's desired count and the group's desired capacity, so a raise lasts until someone lowers it.
+- **A known busy window:** raise before it and lower after it. Nothing schedules it yet.
+- **Rollouts:** a rollout's extra task (maximum 200 %) can wait in `PROVISIONING` and make ECS add a host for the rollout. A host left empty afterwards goes as on scale-in.
+
+Alarms during a change:
+- `<env>-optinist-public-tg-unhealthy-hosts`: the group registers a new host as a target at launch, and the host fails its checks until its task serves, so the alarm fires on scale-out. On production it notifies the critical-alerts topic: tell the recipients before a raise.
+- `<env>-optinist-public-serving-below-desired`: on scale-in the group's desired capacity stays up until ECS removes the emptied hosts, about the drain plus 15 min. That is inside its 35-of-40-minute window.
+
+### Moving an existing environment to the provider
+
+Once per environment whose public service still runs on launch type `EC2`. Terraform would replace that service, which stops every public task at once; `prevent_destroy` on the service turns that into a plan error. The service is switched with `update-service` between two applies:
+
+1. **Create and attach the provider.** The service is not touched.
+
+   ```bash
+   terraform plan -target=aws_ecs_cluster_capacity_providers.main
+   # Expected: aws_ecs_capacity_provider.public created; aws_autoscaling_group.public and
+   # aws_ecs_cluster_capacity_providers.main updated in place (the list gains the public
+   # provider and loses nothing); any other change is an in-place update the target's
+   # dependencies carry; nothing destroyed. Then apply with the same -target.
+   ```
+
+2. **Switch the service.** A rolling deployment replaces its tasks one at a time.
+
+   ```bash
+   aws ecs update-service --cluster <env>-optinist-cloud-cluster \
+     --service <env>-public-optinist-cloud-service \
+     --capacity-provider-strategy capacityProvider=<env>-optinist-public-capacity-provider,weight=1,base=0 \
+     --force-new-deployment --query 'service.capacityProviderStrategy'
+
+   aws ecs describe-services --cluster <env>-optinist-cloud-cluster \
+     --services <env>-public-optinist-cloud-service \
+     --query 'services[0].deployments[].[status,rolloutState,runningCount,desiredCount]'
+   # Expected once done: a single PRIMARY deployment, COMPLETED, running == desired
+   ```
+
+3. **Check the hosts that predate the provider.** The group protects only the hosts it launches from now on, and a host registered before the provider existed may not be associated with it.
+
+   ```bash
+   aws ecs describe-container-instances --cluster <env>-optinist-cloud-cluster \
+     --container-instances $(aws ecs list-container-instances --cluster <env>-optinist-cloud-cluster \
+       --filter 'attribute:tier == public' --query 'containerInstanceArns' --output text) \
+     --query 'containerInstances[].[ec2InstanceId,capacityProviderName,runningTasksCount]' --output table
+
+   aws autoscaling describe-auto-scaling-instances --instance-ids <the instance ids above> \
+     --query 'AutoScalingInstances[].[InstanceId,ProtectedFromScaleIn,LifecycleState]' --output table
+   ```
+
+   - A host running a task, not protected: `aws autoscaling set-instance-protection --auto-scaling-group-name <env>-optinist-public-asg --instance-ids <id> --protected-from-scale-in`.
+   - A host with no task: ECS removes it. If it is still there 30 min after the rollout, remove it by id: `aws autoscaling terminate-instance-in-auto-scaling-group --instance-id <id> --should-decrement-desired-capacity`.
+
+4. **Apply the rest.** `terraform plan` shows no replacement of `aws_ecs_service.public`; a plan error that names `prevent_destroy` means step 2 did not take. Then apply.
+
+---
+
 ## Edge Case Handling
 
 ### 1. Free Tier Scaled to Zero During Login
@@ -288,9 +369,10 @@ Stripe variables are intentionally omitted because the subscriptions router is g
 |---|---|---|
 | Target group | `aws_lb_target_group.public` | `/health` check, 600s deregistration delay |
 | Launch template | `aws_launch_template.public` | `var.public_instance_type`, 30 GB gp3 root |
-| Auto Scaling Group | `aws_autoscaling_group.public` | ELB health check, 900s grace, `OldestInstance` policy, `GroupDesiredCapacity` metric for the serving alarm |
+| Auto Scaling Group | `aws_autoscaling_group.public` | ELB health check, 900s grace, new hosts protected from scale-in, `AmazonECSManaged` tag, `OldestInstance` policy among unprotected hosts, `GroupDesiredCapacity` metric for the serving alarm |
+| Capacity provider | `aws_ecs_capacity_provider.public` | Managed scaling at 100 %, managed termination protection, managed draining; attached by `aws_ecs_cluster_capacity_providers.main` (the default strategy stays free's) |
 | Task definition | `aws_ecs_task_definition.public` | EC2/bridge, EFS published-data mounts (output + input cache) |
-| ECS service | `aws_ecs_service.public` | EC2 launch type, `tier == public` placement constraint |
+| ECS service | `aws_ecs_service.public` | Public capacity provider strategy, `tier == public` placement constraint, desired count set at runtime, `prevent_destroy` |
 | Log group | `aws_cloudwatch_log_group.public_optinist` | `/ecs/<env>-public-optinist-cloud-taskdef`, 30-day retention |
 | Input-cache access point | `aws_efs_access_point.published_data_input` | `/input-cache` subtree, uid/gid 1000; mounted at `/app/studio_data/input` |
 | Cleanup Lambda | `aws_lambda_function.public_cleanup` | Daily input-cache wipe; VPC + EFS-mounted, 900s timeout |
