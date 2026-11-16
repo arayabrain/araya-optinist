@@ -318,6 +318,34 @@ def test_structured_missing_workflow(client):
     assert response.status_code == 404
 
 
+def test_structured_syncs_the_record_before_reading_its_config(client):
+    """A server that has not synced the record has no workflow.yaml for it yet;
+    the sync brings it, so the read waits for the sync."""
+    from unittest.mock import patch
+
+    unsynced_id = "run_unsynced"
+    record_dir = os.path.join(DIRPATH.OUTPUT_DIR, WORKSPACE_ID, unsynced_id)
+    remote_config = os.path.join(
+        DIRPATH.OUTPUT_DIR, WORKSPACE_ID, UNIQUE_ID, "workflow.yaml"
+    )
+
+    def sync(dirpath, remote_bucket_name):
+        os.makedirs(dirpath, exist_ok=True)
+        shutil.copy(remote_config, os.path.join(dirpath, "workflow.yaml"))
+
+    with patch.object(
+        outputs, "_ensure_visualization_synced", side_effect=sync
+    ) as mock_sync:
+        response = client.get(
+            f"/api/visualizations/structured/{WORKSPACE_ID}/{unsynced_id}/"
+            "hdf5_1d_node"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data_type"] == "bar"
+    assert os.path.normpath(mock_sync.await_args.args[0]) == record_dir
+
+
 def test_structured_missing_node(client):
     response = client.get(
         f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/nonexistent_node"
@@ -397,6 +425,9 @@ async def test_structured_missing_input_triggers_on_demand_sync():
     config.nodeDict.get.return_value = node
 
     with patch(
+        "studio.app.common.routers.outputs._ensure_visualization_synced",
+        new_callable=AsyncMock,
+    ), patch(
         "studio.app.common.routers.outputs.WorkflowConfigReader.read",
         return_value=config,
     ), patch(

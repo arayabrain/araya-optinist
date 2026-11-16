@@ -1286,6 +1286,11 @@ async def get_structured_data(
     end_index: Annotated[int, Query(ge=0)] = 10,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
+    # The config is the record's workflow.yaml, which an unsynced server lacks
+    await _ensure_visualization_synced(
+        join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id]),
+        remote_bucket_name,
+    )
     try:
         config = WorkflowConfigReader.read(workspace_id, unique_id)
     except Exception:
