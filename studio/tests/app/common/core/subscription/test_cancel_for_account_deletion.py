@@ -54,7 +54,7 @@ def stripe_calls():
         f"{MODULE}.stripe.SubscriptionSchedule.release"
     ) as release_schedule, patch(
         f"{MODULE}.SubscriptionService.get_user_subscription", return_value=None
-    ), patch(
+    ) as local_row, patch(
         f"{MODULE}.SubscriptionService.update_scheduled_downgrade"
     ):
         yield {
@@ -65,6 +65,7 @@ def stripe_calls():
             "list_schedules": list_schedules,
             "cancel_schedule": cancel_schedule,
             "release_schedule": release_schedule,
+            "local_row": local_row,
         }
 
 
@@ -101,6 +102,7 @@ async def test_every_billable_subscription_is_cancelled_without_a_local_row(
 async def test_a_user_without_a_stripe_customer_creates_none(user, stripe_calls):
     """An admin-granted plan has a local row but no Stripe history; deletion
     must not create a Stripe customer for an account it is removing."""
+    stripe_calls["local_row"].return_value = (MagicMock(), MagicMock())
     stripe_calls["customer"].return_value = None
 
     with pytest.raises(HTTPException) as raised:
