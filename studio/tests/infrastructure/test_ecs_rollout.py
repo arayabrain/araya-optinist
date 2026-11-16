@@ -30,7 +30,9 @@ PUBLIC_TG = TARGET_GROUP_ARN.format("public-tg")
 # with a rolling service for the first ROLLING_POLLS calls, and the target
 # group lookup with two groups. describe-target-health fails its first
 # FAIL_TARGET_CALLS calls and names a target not yet healthy up to call
-# UNHEALTHY_TARGET_CALLS.
+# UNHEALTHY_TARGET_CALLS. Its healthy / not-ready count query answers one of
+# each, no healthy target for the group named in NO_HEALTHY_TG, and no
+# target at all for the one in NO_TARGET_TG.
 AWS_STUB = """#!/bin/bash
 echo "$*" >> "$STUB_DIR/aws.log"
 count() {
@@ -50,9 +52,19 @@ case "$1 $2" in
       *) [ "$(count describes)" -gt "${ROLLING_POLLS:-0}" ] || echo "svc-a" ;;
     esac ;;
   "elbv2 describe-target-health")
-    n=$(count targets)
-    [ "$n" -gt "${FAIL_TARGET_CALLS:-0}" ] || exit 255
-    [ "$n" -gt "${UNHEALTHY_TARGET_CALLS:-0}" ] || echo "i-1" ;;
+    case "$*" in
+      *"length("*)
+        [ -z "${FAIL_COUNT_READ:-}" ] || exit 255
+        case "$*" in
+          *"${NO_HEALTHY_TG:-unset}"*) printf '0\\t1\\n' ;;
+          *"${NO_TARGET_TG:-unset}"*) printf '0\\t0\\n' ;;
+          *) printf '1\\t1\\n' ;;
+        esac ;;
+      *)
+        n=$(count targets)
+        [ "$n" -gt "${FAIL_TARGET_CALLS:-0}" ] || exit 255
+        [ "$n" -gt "${UNHEALTHY_TARGET_CALLS:-0}" ] || echo "i-1" ;;
+    esac ;;
   "ecs update-service") [ -z "${FAIL_UPDATE:-}" ] || exit 255 ;;
   "ecs wait")
     n=$(count waits)
@@ -295,15 +307,58 @@ class TestTargetHealthWait:
     def test_targets_that_never_pass_are_left_to_the_group_after_the_bound(
         self, tmp_path
     ):
-        result, calls, now = _rollout(tmp_path, *GROUPS, UNHEALTHY_TARGET_CALLS="999")
+        # Each group still has a healthy target: a host to replace, not a tier down
+        result, calls, now = _rollout(
+            tmp_path, *GROUPS, *HYGIENE, UNHEALTHY_TARGET_CALLS="999"
+        )
         assert result.returncode == 0, result.stdout + result.stderr
         assert (
             "targets in free-tg public-tg still not healthy after 15 minutes"
             in result.stdout
         )
+        assert len(_indexes(calls, "length(TargetHealthDescriptions")) == 2
+        assert "ERROR" not in result.stdout
         for asg in ("free-asg", "public-asg"):
             _assert_off_then_on(calls, asg)
+        assert _indexes(calls, "ssm start-associations-once")
         assert now == 600 + 900
+
+    def test_a_group_with_no_healthy_target_fails_the_rollout(self, tmp_path):
+        result, calls, _ = _rollout(
+            tmp_path,
+            *GROUPS,
+            *HYGIENE,
+            UNHEALTHY_TARGET_CALLS="999",
+            NO_HEALTHY_TG="free-tg",
+        )
+        assert result.returncode == 1
+        assert (
+            "ERROR: no healthy target in free-tg; that tier is not serving"
+            in result.stdout
+        )
+        # Resumed before the exit, and no hygiene after a failed rollout
+        for asg in ("free-asg", "public-asg"):
+            _assert_off_then_on(calls, asg)
+        assert not _indexes(calls, "ssm start-associations-once")
+
+    def test_a_group_with_no_target_left_is_not_a_tier_down(self, tmp_path):
+        # Reads failed until the bound, and the group has nothing to fail now
+        result, _, _ = _rollout(
+            tmp_path, *GROUPS, FAIL_TARGET_CALLS="999", NO_TARGET_TG="free-tg"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "ERROR" not in result.stdout
+
+    def test_an_unreadable_count_decides_nothing(self, tmp_path):
+        result, _, _ = _rollout(
+            tmp_path,
+            *GROUPS,
+            UNHEALTHY_TARGET_CALLS="999",
+            NO_HEALTHY_TG="free-tg",
+            FAIL_COUNT_READ="1",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "ERROR" not in result.stdout
 
     def test_a_failed_read_counts_as_not_yet_healthy(self, tmp_path):
         result, calls, now = _rollout(tmp_path, *GROUPS, FAIL_TARGET_CALLS="2")

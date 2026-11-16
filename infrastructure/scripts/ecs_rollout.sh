@@ -22,6 +22,8 @@
 #   would get the whole host replaced mid-rollout
 # - one `aws ecs wait` stops at 10 minutes, shorter than a public rollout, so
 #   the wait is repeated up to about an hour
+# It exits 1 when a service does not settle within that hour, or when a
+# target group still has no healthy target at the end of the target wait.
 #
 # Runs under macOS bash 3.2: no arrays, no associative arrays.
 set -uo pipefail
@@ -187,7 +189,10 @@ echo "All services are stable."
 # task at once and public restarts its last host after the rest, so those
 # tasks are still starting when the services count as stable. Bounded by the
 # services' 900 s grace: a target still failing then (or a host the group
-# registered that has no task) is one the ELB check is there to replace
+# registered that has no task) is one the ELB check is there to replace. A
+# group with no healthy target at all is a tier not serving the new image,
+# which fails the rollout as a service that never settles does
+NOT_SERVING_GROUPS=""
 if [ -n "$SUSPENDED_ASGS" ]; then
     if TARGET_GROUPS=$(aws ecs describe-services --cluster "$CLUSTER" --services $SERVICES \
         --region "$REGION" --query 'services[].loadBalancers[].targetGroupArn' \
@@ -196,6 +201,7 @@ if [ -n "$SUSPENDED_ASGS" ]; then
         TARGET_DEADLINE=$(( $(date +%s) + TARGET_HEALTH_WAIT_SECONDS ))
         while :; do
             PENDING_GROUPS=""
+            PENDING_ARNS=""
             for tg in $TARGET_GROUPS; do
                 # initial: still being checked; unhealthy: failing. Draining
                 # and unused targets are leaving or not serving
@@ -205,6 +211,7 @@ if [ -n "$SUSPENDED_ASGS" ]; then
                     --output text) || [ -n "$NOT_READY" ]; then
                     tg_name="${tg#*targetgroup/}"
                     PENDING_GROUPS="${PENDING_GROUPS} ${tg_name%%/*}"
+                    PENDING_ARNS="${PENDING_ARNS} ${tg}"
                 fi
             done
             if [ -z "$PENDING_GROUPS" ]; then
@@ -213,6 +220,20 @@ if [ -n "$SUSPENDED_ASGS" ]; then
             fi
             if [ $(( $(date +%s) + TARGET_HEALTH_POLL_SECONDS )) -gt "$TARGET_DEADLINE" ]; then
                 echo "WARNING: targets in${PENDING_GROUPS} still not healthy after $(( TARGET_HEALTH_WAIT_SECONDS / 60 )) minutes; resuming host health checks anyway"
+                # Some targets failing is the group's to replace; none healthy
+                # is a tier down. A read that fails decides nothing
+                for tg in $PENDING_ARNS; do
+                    if COUNTS=$(aws elbv2 describe-target-health --target-group-arn "$tg" \
+                        --region "$REGION" \
+                        --query '[length(TargetHealthDescriptions[?TargetHealth.State==`healthy`]), length(TargetHealthDescriptions[?TargetHealth.State==`initial` || TargetHealth.State==`unhealthy`])]' \
+                        --output text); then
+                        read -r healthy not_ready <<< "$COUNTS"
+                        if [ "$healthy" = "0" ] && [ "${not_ready:-0}" != "0" ]; then
+                            tg_name="${tg#*targetgroup/}"
+                            NOT_SERVING_GROUPS="${NOT_SERVING_GROUPS} ${tg_name%%/*}"
+                        fi
+                    fi
+                done
                 break
             fi
             sleep "$TARGET_HEALTH_POLL_SECONDS"
@@ -222,6 +243,12 @@ if [ -n "$SUSPENDED_ASGS" ]; then
     fi
     echo "Resuming host health checks..."
     resume_health_checks
+fi
+
+if [ -n "$NOT_SERVING_GROUPS" ]; then
+    echo "ERROR: no healthy target in${NOT_SERVING_GROUPS}; that tier is not serving the new image."
+    echo "Check those target groups and their services' tasks in the console."
+    exit 1
 fi
 
 # Each host now holds the image this rollout replaced; prune it now rather

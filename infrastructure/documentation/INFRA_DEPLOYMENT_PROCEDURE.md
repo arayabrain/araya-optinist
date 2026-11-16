@@ -410,8 +410,10 @@ group's deregistration delay, then starts the new one (the public service alone 
   count as settled before their last tasks have started serving (every free task restarts at once,
   and public's last host after the rest), so after they settle the script waits up to 15 minutes
   (the services' health check grace) for every target to pass; past that it resumes the checks
-  with a warning naming the target group, leaving a host still failing to the group. A group
-  already suspended beforehand is left as found.
+  with a warning naming the target group, leaving a host still failing to the group. If a target
+  group then has no healthy target at all, that tier is not serving the new image, and the script
+  exits 1 naming it, as for a service that never settles. A group already suspended beforehand is
+  left as found.
 - **It waits up to about an hour** for every service to settle and exits 1, naming each unsettled
   service, if one does not. For `terraform apply` that fails the apply and taints the resource, so
   the next apply forces a new deployment on every service again. Docker hygiene runs only after a
