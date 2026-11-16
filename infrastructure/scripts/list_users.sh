@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prints the emails of an environment's registered users, one per line, active only, test and Araya accounts excluded (read-only).
+# Prints the emails of an environment's registered users, one per line, active only, test and Araya accounts excluded, other test-like addresses listed on stderr (read-only).
 # Usage: infrastructure/scripts/list_users.sh [subscr|development]   (default: subscr, production)
 set -euo pipefail
 
@@ -13,7 +13,7 @@ PROXY=$(aws rds describe-db-proxies --db-proxy-name "${ENV}-optinist-rds-proxy" 
 OUT=$(sql_run "$PROXY" <<'SQL'
 SELECT DISTINCT email FROM users
  WHERE active = 1
-   AND email NOT LIKE '%test%'
+   AND email NOT LIKE '%@test.com'
    AND email NOT LIKE '%@araya.org'
    AND email NOT LIKE '%.araya.org'
  ORDER BY email;
@@ -22,4 +22,5 @@ SQL
 )
 # SSM returns only the first 24,000 characters of stdout; paginate the query if this trips.
 grep -q END_OF_LIST <<<"$OUT" || { echo "ABORT: output truncated by SSM, the list is incomplete" >&2; exit 1; }
-sed -n 's/^| \([^ ]*@[^ ]*\) *|$/\1/p' <<<"$OUT"
+awk -F' *[|] *' '$2 ~ /@/ { if (tolower($2) ~ /test/) print "excluded as a test address: " $2 > "/dev/stderr"; else { print $2; n++ } }
+  END { if (!n) { print "ABORT: no deliverable address in the output" > "/dev/stderr"; exit 1 } }' <<<"$OUT"
