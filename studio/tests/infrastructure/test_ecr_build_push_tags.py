@@ -6,6 +6,7 @@ from the tags the test puts on HEAD; the stub docker records every call.
 """
 
 import os
+import pty
 import re
 import shutil
 import subprocess
@@ -79,13 +80,16 @@ def build(tmp_path):
     _stub(bin_dir / "docker", f'echo "docker $*" >> "{calls}"')
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
-    def run(*args: str):
+    def run(*args: str, tty: bool = False):
         cmd = ["bash", str(scripts / "ecr_build_push.sh"), "--yes", *args]
-        result = subprocess.run(
-            cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=60
-        )
-        output = result.stdout + result.stderr
-        assert result.returncode == 0, output
+        if tty:
+            output, returncode = _run_on_a_terminal(cmd, repo, env)
+        else:
+            result = subprocess.run(
+                cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=60
+            )
+            output, returncode = result.stdout + result.stderr, result.returncode
+        assert returncode == 0, output
         pushes = [
             c for c in calls.read_text().splitlines() if c.startswith("docker push")
         ]
@@ -93,6 +97,28 @@ def build(tmp_path):
 
     run.repo = repo
     return run
+
+
+def _run_on_a_terminal(cmd, cwd, env):
+    """Run with stdout and stderr on a pseudo-terminal, as from a shell."""
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=slave, stderr=slave
+    )
+    os.close(slave)
+    chunks = []
+    # Read while it runs, or a full terminal buffer would block the script.
+    # The output ends with EOF on macOS and EIO on Linux.
+    while True:
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.close(master)
+    return b"".join(chunks).decode(errors="replace"), proc.wait(timeout=60)
 
 
 def _pushed_refs(pushes):
@@ -120,4 +146,25 @@ class TestVersionTag:
         assert _pushed_refs(pushes) == [
             f"{ECR_URI}:latest",
             f"{ECR_URI}:v9.9.9-hotfix",
+        ]
+
+
+class TestPushOutput:
+    def test_without_a_terminal_each_push_is_one_line(self, build):
+        # terraform apply's local-exec gives the script no terminal
+        _git(build.repo, "tag", "v9.9.9")
+        output, pushes = build()
+        assert pushes == [
+            f"docker push --quiet {ECR_URI}:latest",
+            f"docker push --quiet {ECR_URI}:v9.9.9",
+        ]
+        assert f"Pushing {ECR_URI}:latest..." in output
+        assert f"Pushing {ECR_URI}:v9.9.9..." in output
+
+    def test_on_a_terminal_the_progress_bars_stay(self, build):
+        _git(build.repo, "tag", "v9.9.9")
+        _, pushes = build(tty=True)
+        assert pushes == [
+            f"docker push {ECR_URI}:latest",
+            f"docker push {ECR_URI}:v9.9.9",
         ]

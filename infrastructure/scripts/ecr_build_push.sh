@@ -242,8 +242,16 @@ docker build -f studio/config/docker/Dockerfile \
 # Tag and push to ECR — both :latest (for ECS) and versioned (for history/rollback)
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:$VERSION_TAG
-docker push $ECR_URI:latest
-docker push $ECR_URI:$VERSION_TAG
+# Without a terminal (terraform apply, CI) the progress bars become one line per
+# layer and state, so print one line per tag instead
+for PUSH_TAG in latest "$VERSION_TAG"; do
+    echo "Pushing ${ECR_URI}:${PUSH_TAG}..."
+    if [ -t 1 ]; then
+        docker push "$ECR_URI:$PUSH_TAG"
+    else
+        docker push --quiet "$ECR_URI:$PUSH_TAG"
+    fi
+done
 
 echo ""
 echo "============================================"
