@@ -133,6 +133,10 @@ _structured_read_executor = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="structured-read"
 )
 STRUCTURED_READ_WAIT_SECONDS = 30
+# A structured request whose record's config another holder is fetching waits
+# this long for it before answering 423
+STRUCTURED_CONFIG_WAIT_SECONDS = 30
+STRUCTURED_CONFIG_POLL_SECONDS = 0.5
 # Matches DEFAULT_DRAWN_ROWS in TimeSeriesPlot.tsx
 INIT_FULL_RECORDS = 5
 INIT_FULL_POINTS = 500_000
@@ -1274,6 +1278,43 @@ def _structured_body(
     ).encode()
 
 
+async def _ensure_workflow_config(
+    workspace_id: str, unique_id: str, remote_bucket_name: str
+) -> None:
+    """
+    Fetch the record's metadata when this server lacks its workflow.yaml. A
+    server that has it touches neither the remote storage nor the record's lock,
+    which a run holds while it executes.
+    """
+    if not RemoteStorageController.is_available():
+        return
+    config_path = WorkflowConfigReader.get_config_yaml_path(workspace_id, unique_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + STRUCTURED_CONFIG_WAIT_SECONDS
+    while not os.path.exists(config_path):
+        try:
+            async with RemoteStorageReader(
+                remote_bucket_name,
+                workspace_id,
+                unique_id,
+                sync_mode=RemoteExperimentSyncMode.METADATA_ONLY,
+            ) as controller:
+                await controller.download_experiment_meta(workspace_id, unique_id)
+            return
+        except RemoteStorageLockError as e:
+            # Held by another request fetching it, or by a run
+            if loop.time() >= deadline:
+                logger.warning(e)
+                raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to sync workflow config: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to sync the record from cloud storage",
+            )
+        await asyncio.sleep(STRUCTURED_CONFIG_POLL_SECONDS)
+
+
 @router.get(
     "/structured/{workspace_id}/{unique_id}/{node_id}",
     dependencies=[Depends(workspace_access)],
@@ -1286,11 +1327,7 @@ async def get_structured_data(
     end_index: Annotated[int, Query(ge=0)] = 10,
     remote_bucket_name: str = Depends(get_outputs_remote_bucket_name),
 ):
-    # The config is the record's workflow.yaml, which an unsynced server lacks
-    await _ensure_visualization_synced(
-        join_filepath([DIRPATH.OUTPUT_DIR, workspace_id, unique_id]),
-        remote_bucket_name,
-    )
+    await _ensure_workflow_config(workspace_id, unique_id, remote_bucket_name)
     try:
         config = WorkflowConfigReader.read(workspace_id, unique_id)
     except Exception:

@@ -218,9 +218,10 @@ class TestStructuredCallSiteRefetchesAfterCleanup:
     """
 
     @pytest.fixture(autouse=True)
-    def record_synced(self):
-        """The record's own sync comes first; these cases are about its input."""
-        with patch(f"{MODULE}._ensure_visualization_synced", new_callable=AsyncMock):
+    def config_present(self):
+        """The record's config fetch comes first; these cases are about its
+        input."""
+        with patch(f"{MODULE}._ensure_workflow_config", new_callable=AsyncMock):
             yield
 
     @staticmethod
