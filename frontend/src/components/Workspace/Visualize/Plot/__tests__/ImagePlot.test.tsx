@@ -11,6 +11,7 @@ import { getImageDataApi } from "api/visualizations/Outputs"
 import { DisplayDataContext } from "components/Workspace/Visualize/DataContext"
 import { ImagePlot } from "components/Workspace/Visualize/Plot/ImagePlot"
 import { DATA_TYPE_SET } from "store/slice/DisplayData/DisplayDataType"
+import { initialState as pipelineInitialState } from "store/slice/Pipeline/PipelineSlice"
 import { getImageItemData } from "store/slice/VisualizeItem/VisualizeItemActions"
 import {
   addItemForWorkflowDialog,
@@ -44,8 +45,16 @@ function tooLarge() {
   return error
 }
 
-function newStore() {
-  const store = configureStore({ reducer: rootReducer })
+function newStore(uid?: string) {
+  const store = configureStore({
+    reducer: rootReducer,
+    preloadedState: {
+      pipeline: {
+        ...pipelineInitialState,
+        currentPipeline: uid ? { uid } : undefined,
+      },
+    },
+  })
   store.dispatch(setCurrentWorkspace(1))
   return store
 }
@@ -155,5 +164,20 @@ describe("ImagePlot", () => {
     await renderPlotAndWaitForFit(store, itemId)
 
     expect(requestedEndIndexes()).toEqual([10, 8, 10, 8])
+  })
+
+  it("asks for a dialog item's frames with the record's id, the narrowed window too", async () => {
+    jest
+      .mocked(getImageDataApi)
+      .mockRejectedValueOnce(tooLarge())
+      .mockResolvedValueOnce(eightFrames)
+    const store = newStore("rec1")
+    const itemId = addDialogItem(store)
+
+    await renderPlotAndWaitForFit(store, itemId)
+
+    expect(
+      jest.mocked(getImageDataApi).mock.calls.map(([, p]) => p.uniqueId),
+    ).toEqual(["rec1", "rec1"])
   })
 })
