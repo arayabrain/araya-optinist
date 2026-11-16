@@ -19,6 +19,7 @@ from terraform_source import (
     NEXT_TOP_LEVEL_BLOCK,
     TERRAFORM_DIR,
     attribute,
+    identifier_list,
     read,
     resource_block,
 )
@@ -817,13 +818,115 @@ class TestPublicAsgCapacity:
     def test_asg_terminates_the_oldest_instance_first(self):
         assert attribute(self.asg, "termination_policies") == '["OldestInstance"]'
 
-    def test_ecs_desired_count_tracks_the_asg(self):
-        """One task per instance. If these desync, instances run no container
-        and the target group reports them unhealthy."""
+    def test_ecs_desired_count_starts_at_the_asg_desired(self):
+        """One task per instance at creation. Later the provider's managed
+        scaling keeps the hosts at the task count."""
         service = resource_block(read(PUBLIC_SERVICE_TF), "aws_ecs_service", "public")
         assert re.search(
             r"desired_count\s*=\s*var\.public_asg_desired_capacity", service
         )
+
+
+class TestPublicCapacityProvider:
+    """ECS owns the public host count through its own capacity provider.
+
+    One task per host (static port 8000), so the service's desired count is
+    the one value: managed scaling adds a host for a task that has none, and
+    a scale-in removes only hosts with no task. Terraform must neither undo a
+    raise nor replace the service: a replacement stops every public task.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        public_tf = read(PUBLIC_SERVICE_TF)
+        self.provider = resource_block(public_tf, "aws_ecs_capacity_provider", "public")
+        self.asg = resource_block(public_tf, "aws_autoscaling_group", "public")
+        self.service = resource_block(public_tf, "aws_ecs_service", "public")
+        self.cluster_providers = resource_block(
+            read(COMPUTE_TF), "aws_ecs_cluster_capacity_providers", "main"
+        )
+
+    def test_provider_is_bound_to_the_public_asg(self):
+        assert (
+            attribute(self.provider, "auto_scaling_group_arn")
+            == "aws_autoscaling_group.public.arn"
+        )
+
+    def test_managed_scaling_keeps_one_host_per_task(self):
+        """At 100 % no spare host runs; below it, an idle host would sit
+        registered in the target group with no task."""
+        scaling = _nested_block(self.provider, "managed_scaling")
+        assert attribute(scaling, "status") == '"ENABLED"'
+        assert int(attribute(scaling, "target_capacity")) == 100
+
+    def test_scale_in_removes_only_hosts_with_no_task(self):
+        """ECS lifts scale-in protection only from a host with no task. The
+        group must protect every new host for that to hold."""
+        assert attribute(self.provider, "managed_termination_protection") == (
+            '"ENABLED"'
+        )
+        assert attribute(self.asg, "protect_from_scale_in") == "true"
+
+    def test_managed_draining_can_complete_its_hook(self):
+        """The service-linked role completes the draining hook only on a
+        group carrying ``AmazonECSManaged``; without it each scale-in waits
+        out the hook's timeout."""
+        assert attribute(self.provider, "managed_draining") == '"ENABLED"'
+        tags = re.findall(r'tag\s*\{\s*key\s*=\s*"([^"]+)"', self.asg)
+        assert "AmazonECSManaged" in tags
+
+    def test_cluster_carries_the_public_provider(self):
+        """A service can use only a provider attached to its cluster, and
+        an ignored list would never reach an existing cluster."""
+        providers = re.search(
+            r"^\s*capacity_providers\s*=\s*\[(.*?)\]",
+            self.cluster_providers,
+            re.DOTALL | re.MULTILINE,
+        )
+        assert providers, "capacity_providers list not found"
+        assert "aws_ecs_capacity_provider.public.name" in providers.group(1)
+        ignored = re.search(
+            r"^\s*ignore_changes\s*=\s*(\[.*?\])", self.cluster_providers, re.MULTILINE
+        )
+        assert not ignored or "capacity_providers" not in identifier_list(
+            ignored.group(1)
+        )
+
+    def test_cluster_default_strategy_stays_the_free_tier(self):
+        """Services that name no strategy keep landing on the free ASG."""
+        default = _nested_block(
+            self.cluster_providers, "default_capacity_provider_strategy"
+        )
+        assert (
+            attribute(default, "capacity_provider")
+            == "aws_ecs_capacity_provider.main.name"
+        )
+
+    def test_service_runs_on_the_public_provider(self):
+        """With ``launch_type`` a task with no free host fails placement
+        instead of waiting in PROVISIONING, and nothing adds a host."""
+        strategy = _nested_block(self.service, "capacity_provider_strategy")
+        assert (
+            attribute(strategy, "capacity_provider")
+            == "aws_ecs_capacity_provider.public.name"
+        )
+        assert not re.search(r"^\s*launch_type\s*=", self.service, re.MULTILINE)
+
+    def test_an_apply_leaves_a_raised_count_alone(self):
+        lifecycle = _nested_block(self.service, "lifecycle")
+        assert "desired_count" in identifier_list(
+            attribute(lifecycle, "ignore_changes")
+        )
+        asg_lifecycle = _nested_block(self.asg, "lifecycle")
+        assert "desired_capacity" in identifier_list(
+            attribute(asg_lifecycle, "ignore_changes")
+        )
+
+    def test_an_apply_cannot_replace_the_service(self):
+        """Terraform replaces a service that moves off ``launch_type``; an
+        existing one is switched with update-service before the apply."""
+        lifecycle = _nested_block(self.service, "lifecycle")
+        assert attribute(lifecycle, "prevent_destroy") == "true"
 
 
 def _fake_elbv2_rules(describe_rules_response):
