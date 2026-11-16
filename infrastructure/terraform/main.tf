@@ -613,9 +613,6 @@ output "launch_template_id" {
 output "frontend_config_autoscaling" {
   description = "Configuration values for frontend/.env.production"
   value = {
-    REACT_APP_SERVER_HOST             = aws_lb.autoscaling.dns_name
-    REACT_APP_SERVER_PORT             = "80"
-    REACT_APP_SERVER_PROTO            = "http"
     REACT_APP_EXPDB_METADATA_EDITABLE = true
   }
 }

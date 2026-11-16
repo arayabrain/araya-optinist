@@ -143,17 +143,6 @@ if [ "$SKIP_CONFIRM" = false ]; then
 fi
 
 # ===========================================
-# Get configuration from Terraform outputs
-# ===========================================
-AUTOSCALING_HOST=$(terraform -chdir="$TERRAFORM_DIR" output -raw domain_name)
-AUTOSCALING_PORT=$(terraform -chdir="$TERRAFORM_DIR" output -raw domain_port)
-AUTOSCALING_PROTO=$(terraform -chdir="$TERRAFORM_DIR" output -raw domain_protocol)
-
-echo "Autoscaling Host: $AUTOSCALING_HOST"
-echo "Autoscaling Protocol: $AUTOSCALING_PROTO"
-echo "Autoscaling Port: $AUTOSCALING_PORT"
-
-# ===========================================
 # 1. Build Autoscaling Image with Frontend
 # ===========================================
 IMAGE_TAG="latest"
@@ -205,8 +194,9 @@ if [ -n "$REACT_APP_GTM_ID" ] && ! [[ "$REACT_APP_GTM_ID" =~ ^GTM-[A-Z0-9]+$ ]];
     exit 1
 fi
 
-# Build frontend with custom domain for autoscaling
-echo "Building frontend for autoscaling with ${AUTOSCALING_PROTO}://${AUTOSCALING_HOST}:${AUTOSCALING_PORT}"
+# No API host is baked in: the bundle calls the origin that served it
+# (frontend/src/const/API.ts), so the app is same-origin on every host.
+echo "Building frontend (API calls go to the page's own origin)"
 if [ -n "$REACT_APP_GTM_ID" ]; then
     echo "Analytics ($ENVIRONMENT): $REACT_APP_GTM_ID (from $GTM_ID_SOURCE)"
 else
@@ -214,15 +204,14 @@ else
 fi
 cd "$REPO_ROOT/frontend"
 cat > .env.production << ENV_EOF
-REACT_APP_SERVER_HOST=${AUTOSCALING_HOST}
-REACT_APP_SERVER_PORT=${AUTOSCALING_PORT}
-REACT_APP_SERVER_PROTO=${AUTOSCALING_PROTO}
 REACT_APP_EXPDB_METADATA_EDITABLE=true
 REACT_APP_GTM_ID=${REACT_APP_GTM_ID:-}
 ENV_EOF
 
 yarn install
-yarn build
+# Empty rather than unset: the build never overrides a variable already in the
+# environment, so this outranks a gitignored frontend/.env* or a shell export.
+REACT_APP_SERVER_HOST= REACT_APP_SERVER_PORT= REACT_APP_SERVER_PROTO= yarn build
 cd "$REPO_ROOT"
 
 # Build the Docker image with embedded build metadata
