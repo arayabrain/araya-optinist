@@ -356,7 +356,7 @@ For background sync metrics (`ExperimentsSynced`, `SyncErrors`, `SyncErrorRate`,
 | `SECRET_KEY` | Signs the app-level JWT that wraps the Firebase refresh token, and the `ExToken` | Required, see the startup check below |
 | `ROUTING_SECRET_KEY` | HMAC key for premium routing IDs | Required in the cloud, see the startup check below |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | Lifetime of the app-level refresh JWT and of the `ExToken`. Every app-signed token must carry `exp` | `1440` |
-| `CORS_ORIGINS` | Comma-separated allowed origins | `*` |
+| `CORS_ORIGINS` | Comma-separated allowed origins | `*`. Terraform sets the app's origin with a custom domain, `*` without (`local.cors_origins`) |
 
 **Startup check** (`validate_signing_secrets()` in `secret_validation.py`): a key counts as weak when it is unset, empty, a placeholder published in this repository, or under 32 characters. A cloud service (`REMOTE_STORAGE_TYPE=2`) with a weak `SECRET_KEY` or `ROUTING_SECRET_KEY` logs "Refusing to start" and exits. With `USE_FIREBASE_TOKEN=False` the same applies to `SECRET_KEY` on any storage. Local multiuser only warns, and standalone is not checked.
 

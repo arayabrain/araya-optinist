@@ -788,7 +788,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "*"
+          value = local.cors_origins
         },
         {
           name  = "PYTHONUNBUFFERED"
@@ -1093,7 +1093,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "*"
+          value = local.cors_origins
         },
         {
           name  = "PYTHONUNBUFFERED"

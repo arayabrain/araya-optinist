@@ -235,7 +235,7 @@ resource "aws_ecs_task_definition" "background" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "*"
+          value = local.cors_origins
         },
         {
           name  = "PYTHONUNBUFFERED"

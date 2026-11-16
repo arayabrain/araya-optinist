@@ -223,7 +223,7 @@ resource "aws_ecs_task_definition" "public" {
         { name = "REMOTE_STORAGE_TYPE", value = "2" },
 
         { name = "LOG_LEVEL", value = "INFO" },
-        { name = "CORS_ORIGINS", value = "*" },
+        { name = "CORS_ORIGINS", value = local.cors_origins },
         { name = "PYTHONUNBUFFERED", value = "1" },
         { name = "OPTINIST_DIR", value = "/app/studio_data" },
 

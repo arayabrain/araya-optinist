@@ -504,6 +504,10 @@ locals {
   # it (aws_lb_listener_rule.apex_to_www). Scheme and port follow
   # aws_lb_listener.autoscaling_https.
   canonical_origin = var.enable_custom_domain ? "https://www.${var.frontend_domain}" : "http://${aws_lb.autoscaling.dns_name}:8080"
+
+  # Origins a browser may call the API from with credentials. The app itself is
+  # same-origin and needs none; dev keeps the wildcard.
+  cors_origins = var.enable_custom_domain ? local.canonical_origin : "*"
 }
 
 # =======

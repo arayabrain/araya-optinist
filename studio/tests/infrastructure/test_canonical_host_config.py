@@ -6,8 +6,10 @@ served from www only:
   else on the apex is (API calls, webhook POSTs, scripts).
 - Every service names www as the app's origin: FRONTEND_URL, and
   STRIPE_CALLBACK_URL where Stripe is used.
+- CORS allows that origin only.
 
-Without one (dev) the origin is the ALB DNS name on the HTTPS listener's port.
+Without one (dev) the origin is the ALB DNS name on the HTTPS listener's port,
+and CORS allows every origin.
 Configuration assertions: they pin the declaration, not what AWS applied.
 """
 
@@ -179,3 +181,21 @@ class TestCanonicalOrigin:
         """A checkout that returns to another host finds no session there."""
         values = _env_values(_task_definition(name), "STRIPE_CALLBACK_URL")
         assert values == ["local.canonical_origin"]
+
+
+class TestCorsOrigins:
+    """``local.cors_origins`` and the services that read it.
+
+    With ``*`` the app echoes any request origin with credentials allowed
+    (``get_cors_origin_options``). The app itself is same-origin and needs no
+    CORS; dev keeps the wildcard.
+    """
+
+    def test_custom_domain_allows_only_the_canonical_origin(self):
+        value = attribute(read(MAIN_TF), "cors_origins")
+        assert value == 'var.enable_custom_domain ? local.canonical_origin : "*"'
+
+    @pytest.mark.parametrize("name", sorted(TASK_DEFINITIONS))
+    def test_every_service_reads_it(self, name):
+        values = _env_values(_task_definition(name), "CORS_ORIGINS")
+        assert values == ["local.cors_origins"]
