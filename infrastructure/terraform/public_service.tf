@@ -118,7 +118,7 @@ resource "aws_autoscaling_group" "public" {
   }
 
   # force_delete=false so ASG-level removals respect the TG deregistration_delay
-  # (in-flight streaming responses get the 600s drain we promise above).
+  # (in-flight streaming responses get the drain set above, 600 s on production).
   force_delete              = false
   termination_policies      = ["OldestInstance"]
   wait_for_capacity_timeout = "0"
