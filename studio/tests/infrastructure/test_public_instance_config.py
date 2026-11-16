@@ -84,6 +84,9 @@ EXPECTED_ALB_ROUTING = {
     "authenticated_to_free": (320, None, "autoscaling"),
 }
 
+# Redirect rather than forward rules, pinned in test_canonical_host_config.py
+REDIRECT_RULES = {"apex_to_www"}
+
 
 def _variable_default(tf: str, name: str) -> str:
     """Return the ``default`` of one ``variable "<name>"`` block."""
@@ -289,7 +292,7 @@ class TestAlbRuleRouting:
     def test_the_declared_rule_set_is_exactly_the_pinned_set(self):
         """A rule added or removed without updating this table would otherwise
         go uncovered by the per-rule cases below."""
-        assert set(self.blocks) == set(EXPECTED_ALB_ROUTING)
+        assert set(self.blocks) == set(EXPECTED_ALB_ROUTING) | REDIRECT_RULES
 
     @pytest.mark.parametrize("name", sorted(EXPECTED_ALB_ROUTING))
     def test_rule_routes_its_paths_to_the_intended_tier(self, name):

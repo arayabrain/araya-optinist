@@ -209,6 +209,8 @@ resource "aws_ecs_task_definition" "public" {
         { name = "FRONTEND_SERVER_HOST", value = local.effective_frontend_domain },
         { name = "FRONTEND_SERVER_PORT", value = local.effective_frontend_port },
         { name = "FRONTEND_SERVER_PROTO", value = var.frontend_protocol },
+        # The app's own origin: the origin /auth trusts, and links the app builds
+        { name = "FRONTEND_URL", value = local.canonical_origin },
 
         { name = "INITIAL_FIREBASE_UID", value = var.optinist_admin_uid },
         { name = "INITIAL_USER_NAME", value = var.optinist_admin_name },
