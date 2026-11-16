@@ -236,6 +236,56 @@ class TestS3StorageController:
             with pytest.raises(InvalidPathError):
                 await controller.download_experiment_meta("1", "../../etc")
 
+    @pytest.mark.asyncio
+    async def test_experiment_meta_leaves_no_file_when_a_download_fails(
+        self, storage_dirs
+    ):
+        """A partly written file would be read as the record's config."""
+        controller = S3StorageController("bucket")
+        client = _s3_client()
+
+        async def failing_download(bucket, key, path):
+            # aioboto3 creates its target before the body arrives
+            Path(path).write_text("nodeDict:\n  par")
+            raise ConnectionError("connection reset")
+
+        client.download_file.side_effect = failing_download
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            await controller.download_experiment_meta("1", "rec")
+
+        record_dir = Path(DIRPATH.OUTPUT_DIR) / "1" / "rec"
+        assert list(record_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_experiment_meta_file_appears_only_once_complete(self, storage_dirs):
+        controller = S3StorageController("bucket")
+        client = _s3_client()
+        record_dir = Path(DIRPATH.OUTPUT_DIR) / "1" / "rec"
+        body = "nodeDict: {}\nedgeDict: {}\n"
+        target_seen_mid_download = []
+
+        async def download(bucket, key, path):
+            Path(path).write_text("")
+            target_seen_mid_download.append((record_dir / Path(key).name).exists())
+            Path(path).write_text(body)
+
+        client.download_file.side_effect = download
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            await controller.download_experiment_meta("1", "rec")
+
+        names = [
+            DIRPATH.EXPERIMENT_YML,
+            DIRPATH.SNAKEMAKE_CONFIG_YML,
+            DIRPATH.WORKFLOW_YML,
+        ]
+        assert target_seen_mid_download == [False, False, False]
+        assert sorted(p.name for p in record_dir.iterdir()) == sorted(names)
+        assert all((record_dir / name).read_text() == body for name in names)
+
 
 class TestOutputsVisualizationSync:
     @pytest.mark.asyncio

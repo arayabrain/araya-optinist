@@ -705,12 +705,23 @@ class S3StorageController(BaseRemoteStorageController):
                         Bucket=self.bucket_name, Key=file_remote_path
                     )
 
-                    # Download file from S3
-                    await __s3_client.download_file(
-                        self.bucket_name,
-                        file_remote_path,
-                        file_local_path,
-                    )
+                    # Download to a sibling tmp path then rename: callers take
+                    # the file's existence as a finished download, and
+                    # download_file creates its target before the body arrives
+                    tmp_path = f"{file_local_path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+                    try:
+                        await __s3_client.download_file(
+                            self.bucket_name,
+                            file_remote_path,
+                            tmp_path,
+                        )
+                        os.replace(tmp_path, file_local_path)
+                    finally:
+                        if os.path.exists(tmp_path):
+                            try:
+                                os.unlink(tmp_path)
+                            except OSError:
+                                pass
                     downloaded_count += 1
                     logger.debug(f"Downloaded: {file_remote_path}")
                 except Exception as e:
