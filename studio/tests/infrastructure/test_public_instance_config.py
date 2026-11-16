@@ -54,7 +54,7 @@ EXPECTED_ALB_ROUTING = {
         ("/api/public/dataview", "/api/public/dataview/*"),
         "public",
     ),
-    "users_me_writes_to_free": (304, ("/users/me",), "autoscaling"),
+    "account_deletion_to_free": (304, ("/users/me",), "autoscaling"),
     "auth_to_public": (305, ("/auth/*",), "public"),
     "users_me_to_public": (306, ("/users/me", "/users/me/*"), "public"),
     "log_report_to_public": (307, ("/log-report/*",), "public"),
@@ -312,13 +312,14 @@ class TestAlbRuleRouting:
                 r"listener_arn\s*=\s*aws_lb_listener\.autoscaling_https\.arn", block
             ), f"{name} is not attached to the https listener"
 
-    def test_the_users_me_write_rule_is_gated_on_method(self):
-        """Without the method condition p304 would take GET /users/me off
-        public and break login bootstrap during a free outage."""
+    def test_the_account_deletion_rule_is_gated_on_method(self):
+        """Without the method condition p304 would take GET and PUT /users/me
+        off public, breaking login bootstrap and name edits during a free
+        outage."""
         method = _nested_block(
-            self.blocks["users_me_writes_to_free"], "http_request_method"
+            self.blocks["account_deletion_to_free"], "http_request_method"
         )
-        assert attribute(method, "values") == '["PUT", "DELETE"]'
+        assert attribute(method, "values") == '["DELETE"]'
 
     def test_the_public_visualization_rule_is_gated_on_its_header(self):
         """p280 and p315 carry the same path pattern. Drop the header condition
@@ -389,19 +390,19 @@ class TestStripeCallsLandOnATierWithTheKey:
     Requests carry a Bearer token and no premium routing headers, as after the
     premium assignment is released or on the SPA's header-stripping retry."""
 
-    @pytest.mark.parametrize("method", ["PUT", "DELETE"])
-    def test_users_me_writes_reach_a_tier_with_the_stripe_key(self, method):
+    def test_account_deletion_reaches_a_tier_with_the_stripe_key(self):
         target = _static_rule_target(
-            method, "/users/me", {"Authorization": "Bearer token"}
+            "DELETE", "/users/me", {"Authorization": "Bearer token"}
         )
         assert "STRIPE_SECRET_KEY" in _task_definition_env_names(
             target
-        ), f"{method} /users/me routes to {target}, whose task has no Stripe key"
+        ), f"DELETE /users/me routes to {target}, whose task has no Stripe key"
 
-    def test_users_me_read_stays_on_public(self):
-        """The login bootstrap must survive a free-tier outage."""
+    @pytest.mark.parametrize("method", ["GET", "PUT"])
+    def test_users_me_read_and_profile_edit_stay_on_public(self, method):
+        """Login bootstrap and name edits must survive a free-tier outage."""
         target = _static_rule_target(
-            "GET", "/users/me", {"Authorization": "Bearer token"}
+            method, "/users/me", {"Authorization": "Bearer token"}
         )
         assert target == "public"
 

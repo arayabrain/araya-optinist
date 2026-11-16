@@ -2,7 +2,7 @@
 # 10:      maintenance page (scripts/maintenance_mode.sh, not Terraform)
 # 100-199: premium dynamic rules (created by premium-manager Lambda)
 # 200-312: public-bound (system-internal sync, /api/public/*, /auth/*,
-#          /users/me/*, /log-report/*, assets), except 304 (PUT/DELETE /users/me -> free)
+#          /users/me/*, /log-report/*, assets), except 304 (DELETE /users/me -> free)
 # 315-320: free-bound (authenticated own-data, anonymous flows, Authorization catch-all)
 # default: public TG (see compute.tf)
 
@@ -14,7 +14,7 @@ locals {
     sync_experiments_to_free             = 210
     visualizations_public_header         = 280
     public_dataview_api                  = 300
-    users_me_writes_to_free              = 304
+    account_deletion_to_free             = 304
     auth_to_public                       = 305
     users_me_to_public                   = 306
     log_report_to_public                 = 307
@@ -104,10 +104,10 @@ resource "aws_lb_listener_rule" "public_dataview_api" {
   }
 }
 
-# Profile edit and account deletion call Stripe; the public taskdef has no Stripe key.
-resource "aws_lb_listener_rule" "users_me_writes_to_free" {
+# Account deletion cancels Stripe subscriptions; the public taskdef has no Stripe key.
+resource "aws_lb_listener_rule" "account_deletion_to_free" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
-  priority     = local.alb_priority.users_me_writes_to_free
+  priority     = local.alb_priority.account_deletion_to_free
 
   condition {
     path_pattern {
@@ -117,7 +117,7 @@ resource "aws_lb_listener_rule" "users_me_writes_to_free" {
 
   condition {
     http_request_method {
-      values = ["PUT", "DELETE"]
+      values = ["DELETE"]
     }
   }
 
