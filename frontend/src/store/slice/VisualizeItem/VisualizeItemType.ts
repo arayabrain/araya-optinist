@@ -107,6 +107,7 @@ export interface TimeSeriesItem extends DisplayDataItemBaseType {
   refImageItemId: number | null
   shadeSourceItemId: number | null
   drawOrderList: string[]
+  defaultDrawnPath?: string
 }
 
 export type HeatMapZRangeMode = "auto" | "percentile" | "manual"
