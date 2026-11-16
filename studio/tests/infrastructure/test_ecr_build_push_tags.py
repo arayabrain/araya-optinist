@@ -150,7 +150,7 @@ class TestVersionTag:
 
 
 class TestPushOutput:
-    def test_without_a_terminal_each_push_is_one_line(self, build):
+    def test_without_a_terminal_the_pushes_are_quiet(self, build):
         # terraform apply's local-exec gives the script no terminal
         _git(build.repo, "tag", "v9.9.9")
         output, pushes = build()
