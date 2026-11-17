@@ -72,7 +72,7 @@ resource "aws_launch_template" "background" {
 resource "aws_instance" "background" {
   launch_template {
     id      = aws_launch_template.background.id
-    version = "$Latest"
+    version = aws_launch_template.background.latest_version
   }
 
   instance_type = var.background_instance_type
@@ -117,8 +117,9 @@ resource "aws_ecs_task_definition" "background" {
       memoryReservation = 512
       essential         = true
       workingDirectory  = "/app"
-      entryPoint        = ["/bin/sh", "-c"]
-      command           = ["./cloud-startup.sh"]
+      # exec makes the script PID 1, the process ECS sends SIGTERM to on stop.
+      entryPoint = ["/bin/sh", "-c"]
+      command    = ["exec ./cloud-startup.sh"]
 
       # No port mappings - background service doesn't serve HTTP
 
@@ -218,6 +219,10 @@ resource "aws_ecs_task_definition" "background" {
           value = var.s3_user_bucket_prefix
         },
         {
+          name  = "S3_USER_BUCKET_SECRET"
+          value = var.s3_user_bucket_secret
+        },
+        {
           name  = "REMOTE_STORAGE_TYPE"
           value = "2"
         },
@@ -286,6 +291,16 @@ resource "aws_ecs_task_definition" "background" {
         {
           name  = "DISABLE_BACKGROUND_SCHEDULER"
           value = "0"
+        },
+        {
+          name  = "UNVERIFIED_ACCOUNT_CLEANUP_MODE"
+          value = var.unverified_account_cleanup_mode
+        },
+        # Seeded accounts whose email_verified flag is set best-effort at
+        # provisioning time; the cleanup job must never touch them.
+        {
+          name  = "UNVERIFIED_CLEANUP_PROTECTED_UIDS"
+          value = join(",", concat([var.optinist_admin_uid], var.test_users[*].firebase_uid))
         },
         # Single worker for background service
         {

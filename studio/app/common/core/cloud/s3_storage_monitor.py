@@ -18,6 +18,7 @@ from studio.app.common.core.cloud.storage_tracking import (
 )
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.storage.s3_storage_controller import S3StorageController
+from studio.app.common.core.storage.storage_scan import get_s3_client, run_storage_scan
 from studio.app.common.core.subscription.constants import (
     PlanName,
     S3Pagination,
@@ -68,29 +69,15 @@ class S3StorageMonitor:
 
         try:
             # Get all workspaces the user has access to
-            from sqlmodel import or_, select
-
-            from studio.app.common import models as common_model
+            from studio.app.common.core.workspace.workspace_services import (
+                WorkspaceService,
+            )
             from studio.app.common.db.database import session_scope
 
             with session_scope() as db:
-                workspaces_query = (
-                    select(common_model.Workspace.id)
-                    .join(
-                        common_model.WorkspacesShareUser,
-                        common_model.Workspace.id
-                        == common_model.WorkspacesShareUser.workspace_id,
-                        isouter=True,
-                    )
-                    .filter(
-                        common_model.Workspace.deleted.is_(False),
-                        or_(
-                            common_model.WorkspacesShareUser.user_id == user_id,
-                            common_model.Workspace.user_id == user_id,
-                        ),
-                    )
+                workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(
+                    db, user_id
                 )
-                workspace_ids = db.execute(workspaces_query).scalars().all()
 
             logger.info(f"Checking S3 storage for user {user_id} across all workspaces")
 
@@ -202,84 +189,32 @@ class S3StorageMonitor:
 
         Returns:
             Total storage size in bytes
+
+        The listings run in a worker thread (run_storage_scan), not on the
+        event loop.
         """
         total_size = 0
-        s3_client = None
 
         try:
             # Get all workspaces the user has access to
-            from sqlmodel import or_, select
-
-            from studio.app.common import models as common_model
+            from studio.app.common.core.workspace.workspace_services import (
+                WorkspaceService,
+            )
             from studio.app.common.db.database import session_scope
 
             with session_scope() as db:
-                workspaces_query = (
-                    select(common_model.Workspace.id)
-                    .join(
-                        common_model.WorkspacesShareUser,
-                        common_model.Workspace.id
-                        == common_model.WorkspacesShareUser.workspace_id,
-                        isouter=True,
-                    )
-                    .filter(
-                        common_model.Workspace.deleted.is_(False),
-                        or_(
-                            common_model.WorkspacesShareUser.user_id == user_id,
-                            common_model.Workspace.user_id == user_id,
-                        ),
-                    )
+                workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(
+                    db, user_id
                 )
-                workspace_ids = db.execute(workspaces_query).scalars().all()
 
             logger.info(
                 f"[Streaming] Checking S3 storage for user {user_id} "
                 f"across {len(workspace_ids)} workspaces"
             )
 
-            # Create S3 client with explicit lifecycle management
-            s3_client: "S3Client" = boto3.client("s3")
-
-            # Check both input and output directories for each workspace
-            for workspace_id in workspace_ids:
-                prefixes = [
-                    f"{S3StorageController.S3_BASE_PATH}/"
-                    f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
-                    f"{S3StorageController.S3_BASE_PATH}/"
-                    f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
-                ]
-
-                for prefix in prefixes:
-                    try:
-                        # Use custom generator for true streaming
-                        # (no metadata accumulation)
-                        prefix_size = 0
-                        page_count = 0
-
-                        for page in self._stream_s3_objects(
-                            s3_client, self.bucket_name, prefix
-                        ):
-                            if "Contents" in page:
-                                # Process page immediately and calculate size
-                                page_size = sum(obj["Size"] for obj in page["Contents"])
-                                prefix_size += page_size
-                                total_size += page_size
-                                page_count += 1
-
-                            # Page is automatically clears
-                            # collected when loop continues
-
-                        if page_count > 0:
-                            logger.debug(
-                                f"[Streaming] Prefix {prefix}: {prefix_size:,} bytes "
-                                f"({page_count} pages)"
-                            )
-
-                    except Exception as e:
-                        logger.warning(
-                            f"[Streaming] Failed to get size for prefix {prefix}: {e}"
-                        )
-                        continue
+            total_size = await run_storage_scan(
+                self._sum_workspace_prefixes_streaming, workspace_ids
+            )
 
         except Exception as e:
             logger.error(
@@ -287,20 +222,60 @@ class S3StorageMonitor:
                 f"user {user_id}: {e}"
             )
             return 0
-        finally:
-            # Ensure S3 client is properly closed
-            if s3_client:
-                try:
-                    s3_client.close()
-                except Exception as close_error:
-                    logger.warning(
-                        f"[Streaming] Error closing S3 client: {close_error}"
-                    )
 
         logger.info(
             f"[Streaming] Calculated S3 storage size for user {user_id}: "
             f"{total_size:,} bytes"
         )
+        return total_size
+
+    def _sum_workspace_prefixes_streaming(self, workspace_ids: List[int]) -> int:
+        """Bytes under each workspace's input and output prefix; blocking."""
+        total_size = 0
+        # The process's shared client: not closed here
+        s3_client = get_s3_client()
+
+        # Check both input and output directories for each workspace
+        for workspace_id in workspace_ids:
+            prefixes = [
+                f"{S3StorageController.S3_BASE_PATH}/"
+                f"{S3StorageController.S3_INPUT_DIR}/{workspace_id}/",
+                f"{S3StorageController.S3_BASE_PATH}/"
+                f"{S3StorageController.S3_OUTPUT_DIR}/{workspace_id}/",
+            ]
+
+            for prefix in prefixes:
+                try:
+                    # Use custom generator for true streaming
+                    # (no metadata accumulation)
+                    prefix_size = 0
+                    page_count = 0
+
+                    for page in self._stream_s3_objects(
+                        s3_client, self.bucket_name, prefix
+                    ):
+                        if "Contents" in page:
+                            # Process page immediately and calculate size
+                            page_size = sum(obj["Size"] for obj in page["Contents"])
+                            prefix_size += page_size
+                            total_size += page_size
+                            page_count += 1
+
+                        # Page is automatically clears
+                        # collected when loop continues
+
+                    if page_count > 0:
+                        logger.debug(
+                            f"[Streaming] Prefix {prefix}: {prefix_size:,} bytes "
+                            f"({page_count} pages)"
+                        )
+
+                except Exception as e:
+                    logger.warning(
+                        f"[Streaming] Failed to get size for prefix {prefix}: {e}"
+                    )
+                    continue
+
         return total_size
 
     def calculate_storage_alert_level(

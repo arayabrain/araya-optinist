@@ -184,21 +184,51 @@ fi
 # worker and app can shut down gracefully; without this the signal reaches
 # only the shell and children are killed abruptly.
 #
-# Install the trap BEFORE launching any child so a stop signal arriving
-# during startup (between process launch and trap installation) is still
-# forwarded. CLEANUP_PID / APP_PID are empty until their process starts;
-# the guards below skip any child that hasn't launched yet.
-_forward_shutdown() {
-    echo "Received shutdown signal, forwarding to child processes..."
+# Install the trap BEFORE launching any child so a stop signal arriving while
+# the children start is still forwarded. CLEANUP_PID / APP_PID are empty until
+# their process starts; _term_once skips any child that hasn't launched yet.
+# Before the trap (the database wait, the migrations) the script, as PID 1,
+# ignores SIGTERM, and a stop there ends at the SIGKILL.
+#
+# The trap and the end of the script both forward, but each child gets
+# SIGTERM once: a second one can deadlock uvicorn's multi-worker parent in its
+# signal handler. SIGNALLED_PIDS lists the PIDs already sent it; a PID is
+# recorded before its kill, so a trap that runs in between skips it.
+SIGNALLED_PIDS=""
+_term_once() {
+    [ -n "$1" ] || return 0
+    case " $SIGNALLED_PIDS " in *" $1 "*) return 0 ;; esac
+    SIGNALLED_PIDS="$SIGNALLED_PIDS $1"
     # `|| true` is required, not tidiness: `set -e` applies to a trap-invoked
-    # body, and a kill against an exited child ends the `&&` list non-zero,
-    # aborting the handler mid-way. The call site at the end of the script is
-    # exempt -- it sits in a `|| true` list.
-    [ -n "$CLEANUP_PID" ] && kill -TERM "$CLEANUP_PID" 2>/dev/null || true
-    [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null || true
-    [ -n "$LB_CHECK_PID" ] && kill -TERM "$LB_CHECK_PID" 2>/dev/null || true
+    # body, and a kill against an exited child fails, aborting the handler
+    # mid-way.
+    kill -TERM "$1" 2>/dev/null || true
 }
-trap _forward_shutdown TERM INT
+_forward_shutdown() {
+    _term_once "$CLEANUP_PID"
+    _term_once "$APP_PID"
+    _term_once "$LB_CHECK_PID"
+}
+trap 'echo "Received shutdown signal, forwarding to child processes..."; _forward_shutdown' TERM INT
+
+# bash runs a trap only once the foreground command returns, but a trapped
+# signal ends `wait` at once. The startup pause therefore sleeps in the
+# background: a stop during it is forwarded at once, not when the pause ends,
+# which would take the rest of the pause out of the app's drain time.
+# `|| true`: the interrupted `wait` returns 128 + the signal number.
+_pause() {
+    sleep "$1" &
+    wait $! || true
+}
+
+# For the same reason, a stop while a child drains ends `wait` before the child
+# has exited; wait again until it has.
+_wait_exit() {
+    [ -n "$1" ] || return 0
+    while kill -0 "$1" 2>/dev/null; do
+        wait "$1" 2>/dev/null || true
+    done
+}
 
 # Start standalone cleanup worker on free-tier instances
 # This runs DataCleanupJob in its own process, filtered by INSTANCE_ID,
@@ -217,7 +247,7 @@ APP_PID=$!
 
 # Allow initial startup time matching ECS health check startPeriod
 echo "Waiting for initial startup..."
-sleep 30
+_pause 30
 
 # Single initial health check before load balancer check
 echo "Verifying initial health..."
@@ -271,11 +301,14 @@ elif [ -n "$CLEANUP_PID" ] && ! kill -0 "$CLEANUP_PID" 2>/dev/null; then
     echo "Cleanup worker exited unexpectedly (status: $EXIT_STATUS), stopping the task"
 fi
 
-# _forward_shutdown only sends SIGTERM; wait for the children to drain rather
-# than cutting in-flight requests. `|| true` throughout: a kill or wait against
-# an already-dead process fails, which `set -e` would take as our exit status.
+# _forward_shutdown only sends SIGTERM, and only to children the trap has not:
+# the rest when one exits on its own, or the load balancer check when a stop
+# came before it started. Then wait for the children to drain rather than
+# cutting in-flight requests, also when a stop arrives during the drain.
+# `|| true`: a kill against an already-dead process fails, which `set -e`
+# would take as our exit status.
 _forward_shutdown || true
-wait "$APP_PID" 2>/dev/null || true
-[ -n "$CLEANUP_PID" ] && { wait "$CLEANUP_PID" 2>/dev/null || true; }
-[ -n "$LB_CHECK_PID" ] && { wait "$LB_CHECK_PID" 2>/dev/null || true; }
+_wait_exit "$APP_PID"
+_wait_exit "$CLEANUP_PID"
+_wait_exit "$LB_CHECK_PID"
 exit "$EXIT_STATUS"

@@ -18,6 +18,8 @@
   launch template against the AMI and gp3's limits.
 - Uvicorn workers: every task definition that starts cloud-startup.sh sets
   its own count (the public and background ones live in their own files).
+- Startup command: every such task definition execs the script, so it runs
+  as PID 1 and receives the stop signal.
 - Health check grace: every service that starts cloud-startup.sh outlasts
   its database wait.
 """
@@ -33,6 +35,7 @@ from terraform_source import (
     identifier_list,
     read,
     resource_block,
+    resource_blocks,
     string_list,
     variable_block,
 )
@@ -140,6 +143,14 @@ class TestFreeAsgScaleIn:
             self.service,
         )
         assert constraints == ["attribute:tier == free"]
+
+    def test_asg_replaces_hosts_ecs_cannot_fix(self):
+        """ECS replaces an unhealthy task by itself; only the target group
+        check replaces a host that never gets a task or that ECS keeps
+        re-placing onto while it is wedged, the only free host. ``EC2`` would
+        leave both until someone acts. The cost: past the ASG grace, a task
+        restart that does not serve within about 300 s loses its instance."""
+        assert attribute(self.asg, "health_check_type") == '"ELB"'
 
     def test_asg_declares_no_initial_lifecycle_hook(self):
         """Guards the ``ignore_changes`` carve-out: a block added here, plain
@@ -249,7 +260,7 @@ TIER_SIZING_DEFAULTS = {
         "container_memory_reservation_mib": 4096,
         "container_max_swap_mib": 32768,
         "container_swappiness": 20,
-        "root_volume_gib": 48,
+        "root_volume_gib": 64,
         "swap_volume_gib": 32,
     },
 }
@@ -624,19 +635,23 @@ class TestWorkflowTierSizingVariables:
         ]
 
 
+# Every task definition that starts cloud-startup.sh, as (file, name);
+# test_every_startup_task_definition_is_covered keeps the list complete.
+STARTUP_TASK_DEFINITIONS = [
+    ("compute.tf", "autoscaling"),
+    ("compute.tf", "premium"),
+    ("public_service.tf", "public"),
+    ("background_service.tf", "background"),
+]
+
+UVICORN_WORKERS = {"autoscaling": "3", "premium": "2", "public": "1", "background": "1"}
+
+
 class TestUvicornWorkers:
     """Every task definition that starts cloud-startup.sh sets its worker count."""
 
-    @pytest.mark.parametrize(
-        "tf_file,task_definition,workers",
-        [
-            ("compute.tf", "autoscaling", "3"),
-            ("compute.tf", "premium", "2"),
-            ("public_service.tf", "public", "1"),
-            ("background_service.tf", "background", "1"),
-        ],
-    )
-    def test_worker_count_is_explicit(self, tf_file, task_definition, workers):
+    @pytest.mark.parametrize("tf_file,task_definition", STARTUP_TASK_DEFINITIONS)
+    def test_worker_count_is_explicit(self, tf_file, task_definition):
         """Unset, cloud-startup.sh's default would apply; each worker holds a
         full app process out of the memory the instance shares."""
         block = resource_block(
@@ -645,7 +660,44 @@ class TestUvicornWorkers:
         values = re.findall(
             r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
         )
-        assert values == [workers]
+        assert values == [UVICORN_WORKERS[task_definition]]
+
+
+class TestStartupCommand:
+    """Every task definition that starts cloud-startup.sh makes it PID 1."""
+
+    @pytest.mark.parametrize("tf_file,task_definition", STARTUP_TASK_DEFINITIONS)
+    def test_script_replaces_the_shell(self, tf_file, task_definition):
+        """ECS sends the stop SIGTERM to PID 1 only. A plain ``sh -c`` in the
+        image forks the script and stays PID 1 itself, so the script's trap
+        never runs and the container is killed at stopTimeout. ``exec`` does
+        not depend on the shell skipping that fork."""
+        block = resource_block(
+            read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
+        )
+        commands = [
+            string_list(value)
+            for value in re.findall(
+                r"^\s*command\s*=\s*(\[.*\])\s*$", block, re.MULTILINE
+            )
+        ]
+        assert string_list(attribute(block, "entryPoint")) == ["/bin/sh", "-c"]
+        assert [c for c in commands if c[:1] != ["CMD-SHELL"]] == [
+            ["exec ./cloud-startup.sh"]
+        ]
+
+    def test_every_startup_task_definition_is_covered(self):
+        """A task definition added later with the script falls under the worker
+        count and startup command tests rather than outside them."""
+        found = sorted(
+            (path.name, name)
+            for path in TERRAFORM_DIR.glob("*.tf")
+            for name, block in resource_blocks(
+                read(path), "aws_ecs_task_definition"
+            ).items()
+            if "cloud-startup.sh" in block
+        )
+        assert found == sorted(STARTUP_TASK_DEFINITIONS)
 
 
 class TestServiceHealthCheckGrace:

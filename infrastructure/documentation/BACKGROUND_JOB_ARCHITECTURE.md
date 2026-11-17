@@ -245,6 +245,7 @@ View logs at: `/ecs/subscr-background-optinist-cloud-taskdef`
 | `S3_DEFAULT_BUCKET_NAME` | S3 bucket for experiments | Required | Required |
 | `INTERNAL_API_SECRET` | Shared secret for internal API calls | Required (caller) | Required (receiver) |
 | `ALB_DNS_NAME` | ALB hostname for proactive download calls | Required | Not set |
+| `OPTINIST_MIN_FREE_DISK_GIB` | Free space to keep on the host's data disk; a run or upload that would go under it is refused with 507 (`0` disables) | `8` | `8` |
 
 ---
 

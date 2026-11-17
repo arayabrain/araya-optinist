@@ -2690,10 +2690,7 @@ def cleanup_duplicate_rules_for_routing_id(listener_arn: str, routing_id: str) -
                                     )
                                     if tg_arn and tg_arn != autoscaling_tg:
                                         try:
-                                            _delete_premium_tg_unhealthy_alarm(tg_arn)
-                                            elbv2.delete_target_group(
-                                                TargetGroupArn=tg_arn
-                                            )
+                                            _delete_premium_tg(elbv2, tg_arn)
                                             print(
                                                 f"Deleted associated "
                                                 f"target group: {tg_arn}"
@@ -2859,6 +2856,25 @@ def _delete_premium_tg_unhealthy_alarm(tg_arn: str) -> None:
         print(f"[premium-alarm] action=delete name={alarm_name} tg={tg_arn}")
     except Exception as e:
         print(f"WARNING: Failed to delete unhealthy-host alarm {alarm_name}: {e}")
+
+
+# Mirrored in premium_cleanup.py, where it returns False instead of raising.
+def _delete_premium_tg(elbv2: "ElasticLoadBalancingv2Client", tg_arn: str) -> None:
+    """Delete a premium TG, then its alarm unless a newer TG has taken its name.
+
+    Raises if the TG delete fails, and the alarm is kept. The alarm is named
+    after the TG name, and a delete may succeed for an ARN that is already
+    gone, so the alarm goes only once the name is free.
+    """
+    elbv2.delete_target_group(TargetGroupArn=tg_arn)
+    try:
+        elbv2.describe_target_groups(Names=[_tg_arn_suffix(tg_arn).split("/")[1]])
+        print(f"Keeping the alarm of {tg_arn}: its name is in use again")
+    except Exception as e:
+        if "TargetGroupNotFound" in str(e):
+            _delete_premium_tg_unhealthy_alarm(tg_arn)
+        else:
+            print(f"Keeping the alarm of {tg_arn}: cannot check its name: {e}")
 
 
 def create_or_get_target_group(user_id: int, vpc_id: str) -> str:
@@ -3769,8 +3785,7 @@ def _assign_premium_user_impl(
                         f"({old_arn}) before creating new one"
                     )
                     try:
-                        _delete_premium_tg_unhealthy_alarm(old_arn)
-                        elbv2.delete_target_group(TargetGroupArn=old_arn)
+                        _delete_premium_tg(elbv2, old_arn)
                     except Exception as del_err:
                         print(f"Warning: could not delete orphaned TG: {del_err}")
             except ClientError as desc_err:
@@ -3936,8 +3951,7 @@ def _assign_premium_user_impl(
         try:
             # Clean up target group if created (skip placeholder markers)
             if target_group_arn and target_group_arn != PremiumAssignment.RESERVING:
-                _delete_premium_tg_unhealthy_alarm(target_group_arn)
-                elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+                _delete_premium_tg(elbv2, target_group_arn)
                 print(f"Cleaned up target group after error: {target_group_arn}")
         except Exception as cleanup_error:
             print(f"Failed to cleanup target group: {str(cleanup_error)}")
@@ -4959,8 +4973,7 @@ def _teardown_alb_resources(user_id, rule_arn, target_group_arn):
         and target_group_arn != autoscaling_tg_arn
     ):
         try:
-            _delete_premium_tg_unhealthy_alarm(target_group_arn)
-            elbv2.delete_target_group(TargetGroupArn=target_group_arn)
+            _delete_premium_tg(elbv2, target_group_arn)
             print(f"Deleted target group: {target_group_arn}")
         except Exception as tg_error:
             error_msg = f"Error deleting target group: {str(tg_error)}"

@@ -31,6 +31,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionPeriods,
 )
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from studio.tests.app.common.upload_request import upload_request
 
 # ============================================================================
 # Fixtures
@@ -1551,7 +1552,7 @@ def _call_create_file(user_id, filename="test.tiff"):
             workspace_id="1",
             filename=filename,
             background_tasks=Mock(),
-            file=Mock(),
+            request=upload_request(),
             current_user=Mock(id=user_id),
             remote_bucket_name="",
             db=Mock(),

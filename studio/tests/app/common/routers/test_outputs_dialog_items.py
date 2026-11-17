@@ -196,14 +196,16 @@ async def test_another_request_is_answered_while_a_timeseries_record_is_read(
     node_dir, monkeypatch, route
 ):
     hold = Hold()
-    load_timeseries_record = outputs._load_timeseries_record
+    load_timeseries_records = outputs._load_timeseries_records
 
-    def slow_load_timeseries_record(dirpath, record_id):
+    def slow_load_timeseries_records(dirpath, record_ids):
         if os.path.basename(dirpath) == "fluorescence":
             hold()
-        return load_timeseries_record(dirpath, record_id)
+        return load_timeseries_records(dirpath, record_ids)
 
-    monkeypatch.setattr(outputs, "_load_timeseries_record", slow_load_timeseries_record)
+    monkeypatch.setattr(
+        outputs, "_load_timeseries_records", slow_load_timeseries_records
+    )
 
     # Another timeseries read waits its turn; an image item does not
     held, other = await get_while_held(
@@ -218,18 +220,18 @@ async def test_another_request_is_answered_while_a_timeseries_record_is_read(
 @pytest.mark.asyncio
 async def test_timeseries_records_are_read_one_at_a_time(node_dir, monkeypatch):
     running, overlap = [], []
-    load_timeseries_record = outputs._load_timeseries_record
+    load_timeseries_records = outputs._load_timeseries_records
 
-    def counted_load_timeseries_record(dirpath, record_id):
+    def counted_load_timeseries_records(dirpath, record_ids):
         token = object()
         running.append(token)
         overlap.append(len(running))
         time.sleep(0.1)
         running.remove(token)
-        return load_timeseries_record(dirpath, record_id)
+        return load_timeseries_records(dirpath, record_ids)
 
     monkeypatch.setattr(
-        outputs, "_load_timeseries_record", counted_load_timeseries_record
+        outputs, "_load_timeseries_records", counted_load_timeseries_records
     )
 
     async with httpx.AsyncClient(app=app, base_url="http://test") as http:
