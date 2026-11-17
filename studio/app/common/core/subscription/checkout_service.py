@@ -336,7 +336,11 @@ class CheckoutService:
 
     @staticmethod
     def create_or_update_subscription(
-        db: Session, user_id: int, plan_id: int, expiration_date: datetime
+        db: Session,
+        user_id: int,
+        plan_id: int,
+        expiration_date: datetime,
+        trial_end: Optional[datetime] = None,
     ) -> int:
         """
         Create new subscription or update existing one.
@@ -349,6 +353,8 @@ class CheckoutService:
             user_id: Internal user ID
             plan_id: Subscription plan ID
             expiration_date: When subscription expires
+            trial_end: The Stripe subscription's trial end; None when it has
+                no trial. Always written, so the row mirrors Stripe.
 
         Returns:
             Subscription user ID
@@ -365,7 +371,7 @@ class CheckoutService:
 
         if existing_subscription:
             return CheckoutService._apply_subscription_update(
-                existing_subscription, plan_id, expiration_date
+                existing_subscription, plan_id, expiration_date, trial_end
             )
 
         # Create new subscription. ``subscription_users.user_id`` is unique,
@@ -383,6 +389,7 @@ class CheckoutService:
                     plan_id=plan_id,
                     user_id=user_id,
                     expiration=expiration_date,
+                    trial_end=trial_end,
                     sync_status=SyncStatus.SYNCED,
                 )
                 db.add(new_subscription)
@@ -404,17 +411,21 @@ class CheckoutService:
                 # it, surface the original error rather than swallow it.
                 raise
             return CheckoutService._apply_subscription_update(
-                existing_subscription, plan_id, expiration_date
+                existing_subscription, plan_id, expiration_date, trial_end
             )
 
     @staticmethod
     def _apply_subscription_update(
-        subscription: UserSubscription, plan_id: int, expiration_date: datetime
+        subscription: UserSubscription,
+        plan_id: int,
+        expiration_date: datetime,
+        trial_end: Optional[datetime] = None,
     ) -> int:
         """Apply the standard field updates to an existing subscription row."""
         subscription.plan_id = plan_id
         subscription.sync_status = SyncStatus.SYNCED
         subscription.expiration = expiration_date
+        subscription.trial_end = trial_end
         subscription.scheduled_downgrade = False
         subscription.updated_at = SubscriptionService.get_current_datetime()
         return subscription.id
@@ -575,7 +586,13 @@ class CheckoutService:
 
                     # Sync to database: create/update subscription
                     CheckoutService.create_or_update_subscription(
-                        db, user_id, recovered_plan_id, expiration_date
+                        db,
+                        user_id,
+                        recovered_plan_id,
+                        expiration_date,
+                        trial_end=(
+                            datetime_from_timestamp(trial_end) if trial_end else None
+                        ),
                     )
 
                     # Ensure provider and account are linked

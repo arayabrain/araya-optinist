@@ -88,6 +88,10 @@ class UserSubscriptionResponse(BaseModel):
     plan_name: str
     plan_price: int
     status: int = Field(..., description="1=Active, 2=Cancelled, 3=Expired, 4=CANCELED")
+    trial_end: Optional[datetime] = None
+    is_trial: bool = Field(
+        False, description="True while the free trial runs (trial_end ahead)"
+    )
     created_at: datetime
     updated_at: datetime
 
