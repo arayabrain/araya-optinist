@@ -311,9 +311,10 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
   // Row 819: a rolling deployment of the public tier must not interrupt what it
   // serves. force-new-deployment is the same action a release performs.
   test("OUT-02 - A rolling public-tier deployment keeps serving throughout", async () => {
-    // Each replaced task can spend the full 600s deregistration delay
-    // draining, and the tier runs two tasks, so the rollout's worst case runs
-    // to roughly half an hour once per-task placement time is included.
+    // Each replaced task can spend its target group's full deregistration
+    // delay draining (600 s on production, 60 s on development), and the tier
+    // runs two tasks, so the rollout's worst case runs to roughly half an hour
+    // on production once per-task placement time is included.
     test.setTimeout(3_300_000)
     skipIfTooCloseToScheduledStop(55)
     const p = progressLog("22-disruptive", "OUT-02")
@@ -353,7 +354,8 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       )
       p.step(
         `forced a new deployment over ${priorDeployment}; each replaced task ` +
-          `can drain for the full 600s deregistration delay`,
+          `can drain for the full deregistration delay (600 s on production, ` +
+          `60 s on development)`,
       )
       // Poll the front door while the deployment rolls; a rolling update keeps
       // the old task in service until the new one is healthy, so every one of

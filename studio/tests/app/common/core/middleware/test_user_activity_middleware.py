@@ -326,6 +326,39 @@ class TestUserTierDetection:
             assert user_id is None
             assert tier is None
 
+    def test_a_deactivated_user_is_not_tracked(self):
+        """Tracking runs after the response, so the DELETE /users/me that
+        deactivated the user would otherwise open a free session for them."""
+        from studio.app.common.core.middleware.user_activity_middleware import (
+            _get_user_id_and_tier,
+        )
+        from studio.app.common.models import Organization, User
+        from studio.tests.app.common.sqlite_harness import sqlite_session
+
+        with sqlite_session([Organization.__table__, User.__table__]) as db:
+            db.add(Organization(id=1, name="Org"))
+            db.add(
+                User(
+                    id=TEST_USER_ID,
+                    organization_id=1,
+                    uid=TEST_UID,
+                    name="Deleted",
+                    email="deleted@example.com",
+                    attributes={},
+                    active=False,
+                )
+            )
+            db.commit()
+
+            with patch(
+                "studio.app.common.db.database.get_db", return_value=iter([db])
+            ), patch(
+                "studio.app.common.core.subscription.subscription_service."
+                "SubscriptionService.get_user_subscription",
+                return_value=None,
+            ):
+                assert _get_user_id_and_tier(TEST_UID) == (None, None)
+
 
 class TestBackwardsCompatibility:
     """Test backwards compatibility alias"""

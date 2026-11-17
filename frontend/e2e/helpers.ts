@@ -491,6 +491,48 @@ const SWEEP_TIMEOUT_MS = 120_000
 // missing dependency reads as such and not as a product bug.
 export const FIREBASE_PYTHON = process.env.FIREBASE_ADMIN_PYTHON || "python3"
 
+// verifyEmail forces email_verified through the backend container, which a
+// deployed run has no local copy of; FIREBASE_PYTHON reaches the same shared
+// project from the host. Skip with a name when it cannot import firebase_admin,
+// because the alternative is a failure that reads like a product bug.
+export function firebaseAdminSkipReason(): string {
+  try {
+    execFileSync(FIREBASE_PYTHON, ["-c", "import firebase_admin"], {
+      stdio: "ignore",
+    })
+    return ""
+  } catch {
+    return (
+      `${FIREBASE_PYTHON} cannot import firebase_admin; set ` +
+      `FIREBASE_ADMIN_PYTHON to an interpreter that can, to force ` +
+      `email_verified on a deployed throwaway account`
+    )
+  }
+}
+
+export function forceEmailVerified(email: string) {
+  const key = path.join(
+    REPO_ROOT,
+    "studio",
+    "config",
+    "auth",
+    "firebase_private.json",
+  )
+  execFileSync(
+    FIREBASE_PYTHON,
+    [
+      "-c",
+      "import sys,firebase_admin\n" +
+        "from firebase_admin import auth, credentials\n" +
+        "firebase_admin.initialize_app(credentials.Certificate(sys.argv[1]))\n" +
+        "auth.update_user(auth.get_user_by_email(sys.argv[2]).uid, email_verified=True)\n",
+      key,
+      email,
+    ],
+    { stdio: "pipe" },
+  )
+}
+
 // A run that dies before its afterAll orphans the Firebase user even though the
 // DB row is gone, which puts it beyond the reach of any DB-driven cleanup.
 // Returns how many accounts the sweep removed; the script lists each address
@@ -713,6 +755,56 @@ export function stripeGet(
     throw new Error(`Stripe GET ${apiPath}: ${JSON.stringify(body.error)}`)
   }
   return body
+}
+
+// Stripe writes, for the opt-in lanes that make their own throwaway subscriber.
+// Test mode only: a live key would bill a real card.
+export function stripePost(
+  apiPath: string,
+  params: Record<string, string | number | boolean> = {},
+  method: "POST" | "DELETE" = "POST",
+): Record<string, any> {
+  const key = stripeKey()
+  if (!key.startsWith("sk_test_")) {
+    throw new Error("refusing to write to Stripe with a non-test key")
+  }
+  const form = Object.entries(params)
+    .map(
+      ([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`,
+    )
+    .join("&")
+  const out = execSync(
+    `curl -sS -X ${method} -H "Authorization: Bearer $STRIPE_KEY" ` +
+      `--data-binary @- ${JSON.stringify(`https://api.stripe.com${apiPath}`)}`,
+    {
+      env: { ...process.env, STRIPE_KEY: key },
+      input: form,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 30_000,
+    },
+  ).toString()
+  const body = JSON.parse(out)
+  if (body.error) {
+    throw new Error(
+      `Stripe ${method} ${apiPath}: ${JSON.stringify(body.error)}`,
+    )
+  }
+  return body
+}
+
+// The end of the current billing period. Newer Stripe API versions carry this
+// on the subscription item, not on the subscription, so reading it off the top
+// level silently yields undefined.
+export function periodEnd(subscription: Record<string, any>): number {
+  const items = (subscription.items?.data ?? []) as Record<string, any>[]
+  const ends = items
+    .map((item) => item.current_period_end as number)
+    .filter((end) => typeof end === "number")
+  expect(
+    ends.length,
+    "the subscription has no item with a period end",
+  ).toBeGreaterThan(0)
+  return Math.max(...ends)
 }
 
 // The one Stripe subscription belonging to an account, by email.
