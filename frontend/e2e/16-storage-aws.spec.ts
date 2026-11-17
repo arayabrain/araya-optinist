@@ -20,7 +20,7 @@ import {
   FREE_USER,
   PREMIUM_LOG_GROUP,
   PREMIUM_USER,
-  PUBLIC_LOG_GROUP,
+  PUBLIC_DATAVIEW_LOG_GROUP,
   RUN_TEST_TIMEOUT_MS,
   apiHeaders,
   apiLogin,
@@ -1051,14 +1051,16 @@ for (const tier of TIERS) {
           .toBe(200)
 
         // Lazy-fetch evidence is conditional by design: a pre-warmed public
-        // cache leaves no download line, which the sheet calls moot
+        // cache leaves no download line, which the sheet calls moot. The
+        // public DataView tier serves reproduce (ALB p300), so the line is in
+        // its log group.
         const downloaded = cloudwatchHas(
-          PUBLIC_LOG_GROUP,
+          PUBLIC_DATAVIEW_LOG_GROUP,
           `Download data from S3 [${bucketName}]`,
           t0,
         )
         console.log(
-          `[16-storage-aws] ${id} lazy-fetch line in ${PUBLIC_LOG_GROUP}: ` +
+          `[16-storage-aws] ${id} lazy-fetch line in ${PUBLIC_DATAVIEW_LOG_GROUP}: ` +
             (downloaded
               ? "found"
               : "not found (pre-warmed cache - moot per the sheet)"),
@@ -1974,12 +1976,13 @@ test.describe("Publish sync status transitions on the real tiers", () => {
           "background job corrected it, not the public read this row is about",
       ).toBe(versionBefore + 1)
       // Quote-free by necessity: cloudwatchHas rejects a pattern carrying
-      // either quote, and the line quotes both statuses.
+      // either quote, and the line quotes both statuses. The reproduce route
+      // that writes it is served by the public DataView tier (ALB p300).
       const healLine = `${wsId}/${uid} data is available, updating sync status from`
       await expect
-        .poll(() => cloudwatchHas(PUBLIC_LOG_GROUP, healLine, t0), {
+        .poll(() => cloudwatchHas(PUBLIC_DATAVIEW_LOG_GROUP, healLine, t0), {
           ...CLOUDWATCH_POLL,
-          message: `no self-heal line for ${wsId}/${uid} in ${PUBLIC_LOG_GROUP}`,
+          message: `no self-heal line for ${wsId}/${uid} in ${PUBLIC_DATAVIEW_LOG_GROUP}`,
         })
         .toBe(true)
     } finally {
