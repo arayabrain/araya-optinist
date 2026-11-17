@@ -184,6 +184,18 @@ class TestResolution:
         assert info["tag"] == "v2.0.0-rc1"
         assert info["release_tag"] == ""
 
+    def test_release_tag_needs_exactly_three_numeric_parts(self, repo):
+        # ecr_build_push.sh tags the image with it, so a short version or a
+        # date tag must not count as a release
+        _git(repo, "checkout", "-q", "v1.0.10")
+        for name in ("v1.0.9", "v1.0.10", "ann-tag"):
+            _git(repo, "tag", "-d", name)
+        for name in ("v1", "v1.2", "20261117", "v1.2.3.4"):
+            _git(repo, "tag", name)
+        info = resolve(repo)
+        assert info["release_tag"] == ""
+        assert info["tag"] != ""
+
     def test_a_non_version_tag_never_outranks_a_release(self, repo):
         # 'zzz-nightly' sorts above 'v1.0.10' in any refname ordering, so the
         # release preference has to be a filter, not a tie-break.
