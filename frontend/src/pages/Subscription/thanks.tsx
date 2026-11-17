@@ -47,14 +47,18 @@ const Thanks: React.FC = () => {
     return <Loading loading={true} />
   }
 
+  // A trial cancelled before its end takes no payment, so it gets no date
+  const firstChargeDate =
+    userSubscription?.is_trial && !userSubscription.scheduled_downgrade
+      ? userSubscription.trial_end
+      : null
+
   switch (validationStatus) {
     case CheckoutValidationStatus.SUCCESS:
       return (
         <PaymentResult
           type={CheckoutValidationStatus.SUCCESS}
-          trialEnd={
-            userSubscription?.is_trial ? userSubscription.trial_end : null
-          }
+          trialEnd={firstChargeDate}
         />
       )
     case CheckoutValidationStatus.PAYMENT_FAILED:

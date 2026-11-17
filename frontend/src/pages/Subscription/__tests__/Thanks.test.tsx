@@ -90,6 +90,23 @@ describe("Thanks page after checkout", () => {
     expect(screen.queryByText(PAYMENT_EMAIL)).not.toBeInTheDocument()
   })
 
+  it("names no charge date for a trial whose cancellation is scheduled", async () => {
+    // The checkout URL reopened after cancelling: the trial still runs, but no
+    // payment follows it
+    mockGetUserSubscriptionApi.mockResolvedValue(
+      subscriptionResponse({
+        is_trial: true,
+        trial_end: "2027-01-15T00:00:00",
+        scheduled_downgrade: true,
+      }),
+    )
+
+    renderThanks()
+
+    expect(await screen.findByText(PAYMENT_EMAIL)).toBeInTheDocument()
+    expect(screen.queryByText(/first payment/)).not.toBeInTheDocument()
+  })
+
   it("keeps the payment sentence for a paid checkout", async () => {
     mockGetUserSubscriptionApi.mockResolvedValue(subscriptionResponse({}))
 
