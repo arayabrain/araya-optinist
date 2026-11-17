@@ -6,6 +6,7 @@ import {
   AWS_REGION,
   CLOUDWATCH_POLL,
   PREMIUM_USER,
+  PUBLIC_DATAVIEW_LOG_GROUP,
   PUBLIC_LOG_GROUP,
   apiHeaders,
   apiLogin,
@@ -128,9 +129,9 @@ async function publishedRecord(): Promise<PublicRecord | undefined> {
   }
 }
 
-// 200 = served from the EFS cache. 202 = published but not synced, which is the
-// route's own way of saying it had to go back to S3 - the failure this row is
-// about.
+// 200 = readable: from the EFS cache, or downloaded from S3 within the same
+// request. 202 = published but still not displayable after that. So a 200 does
+// not show the cache was there; s3DownloadsOf does.
 async function reproduceStatus(record: PublicRecord): Promise<number> {
   const anon = await request.newContext({ baseURL: apiUrl() })
   try {
@@ -142,6 +143,60 @@ async function reproduceStatus(record: PublicRecord): Promise<number> {
   } finally {
     await anon.dispose()
   }
+}
+
+// The public DataView task's container; awslogs names each task's stream
+// ecs/<container>/<task id>
+const PUBLIC_DATAVIEW_CONTAINER = "development-optinist-cloud-container"
+
+function runningTaskStreams(service: string): string[] {
+  const arns = awsJson<string[]>(
+    `ecs list-tasks --cluster ${CLUSTER} --service-name ${service} ` +
+      `--desired-status RUNNING --query taskArns`,
+  )
+  expect(arns.length, `${service} has no running task`).toBeGreaterThan(0)
+  return arns.map(
+    (arn) => `ecs/${PUBLIC_DATAVIEW_CONTAINER}/${arn.split("/").pop()}`,
+  )
+}
+
+// Logs reach CloudWatch with a lag. Wait until each stream holds an event
+// ingested after `since`: events arrive in order, so everything logged before
+// it is in too. Each poll sends a list request, which the tier logs.
+async function waitForIngestionPast(
+  streams: string[],
+  since: number,
+): Promise<void> {
+  const deadline = Date.now() + 300_000
+  for (const stream of streams) {
+    for (;;) {
+      await publishedRecord()
+      const times = awsJson<number[]>(
+        `logs get-log-events --log-group-name ${PUBLIC_DATAVIEW_LOG_GROUP} ` +
+          `--log-stream-name ${stream} --limit 50 ` +
+          `--query 'events[].ingestionTime'`,
+      )
+      if (times.some((t) => t > since)) break
+      expect(
+        Date.now() < deadline,
+        `${stream} had no event ingested after the read within 5 min`,
+      ).toBe(true)
+      await new Promise((r) => setTimeout(r, 10_000))
+    }
+  }
+}
+
+// Every S3 download of a record, by the startup sync or by a read, logs
+// S3StorageController.download_experiment's line with the record's local path.
+// None in the streams means the tasks found the record in the cache.
+function s3DownloadsOf(record: PublicRecord, streams: string[]): string[] {
+  return awsJson<string[]>(
+    `logs filter-log-events --log-group-name ${PUBLIC_DATAVIEW_LOG_GROUP} ` +
+      `--log-stream-names ${streams.join(" ")} ` +
+      `--filter-pattern '"Download data from remote storage" ` +
+      `"/output/${record.workspace!.id}/${record.uid}"' ` +
+      `--query 'events[].message'`,
+  )
 }
 
 async function pollService(
@@ -437,8 +492,9 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
   // stop-first and public DataView answers 503 meanwhile; the sign-in routes
   // stay on the public tier and must keep answering throughout.
   test("OUT-06 - A public DataView deployment keeps the published cache, and sign-in answers throughout", async () => {
-    // One task replaced stop-first: up to the 600s deregistration delay, then
-    // the new task's start and two passing health checks
+    // One task replaced stop-first: the deregistration delay (600 s on
+    // production, 60 s here), then the new task's start and two passing
+    // health checks; the log check after it waits up to 5 min
     test.setTimeout(2_700_000)
     skipIfTooCloseToScheduledStop(45)
     const p = progressLog("22-disruptive", "OUT-06")
@@ -520,13 +576,22 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       )
 
       // The new task mounted the same EFS filesystem, so the record is still
-      // there: 202 here would mean the replacement lost the cache and the
-      // route fell back to S3.
+      // there. A lost cache would be refilled from S3 and still answer 200,
+      // so the new task's log is what tells the two apart.
+      const readAt = Date.now()
       expect(
         await reproduceStatus(record!),
-        `published ${record!.uid} after the task replacement (202 = re-syncing ` +
-          `from S3, so EFS did not preserve it)`,
+        `published ${record!.uid} unreadable after the task replacement`,
       ).toBe(200)
+      const streams = runningTaskStreams(PUBLIC_DATAVIEW_SERVICE)
+      await waitForIngestionPast(streams, readAt)
+      const downloads = s3DownloadsOf(record!, streams)
+      expect(
+        downloads.length,
+        `the new task downloaded ${record!.uid} from S3, so EFS did not ` +
+          `preserve it (or its row's sync status is pending / error, which ` +
+          `downloads on every read): ${(downloads[0] ?? "").slice(0, 300)}`,
+      ).toBe(0)
       p.step("EFS preserved the published cache across the replacement")
     } finally {
       await anon.dispose()
