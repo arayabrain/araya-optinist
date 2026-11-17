@@ -1093,7 +1093,10 @@ export async function stageSecondRunningInstance(
   // - a sweep stops a running instance that holds no user.
   // Stopped on two polls in a row is past the manager's 15s stop-waiter, so
   // the stop is settled: start it again and restore the desired count the
-  // manager's sync may have lowered meanwhile.
+  // manager's sync may have lowered meanwhile. A few times only: a candidate
+  // stopped again and again has something stopping it on purpose.
+  const maxRestarts = 3
+  let restarts = 0
   let stoppedPolls = 0
   await expect
     .poll(
@@ -1105,7 +1108,12 @@ export async function stageSecondRunningInstance(
         ).not.toBe("gone")
         stoppedPolls = state === "stopped" ? stoppedPolls + 1 : 0
         if (stoppedPolls >= 2) {
-          p.step(`${candidate} was stopped again; restarting it`)
+          expect(
+            restarts,
+            `${candidate} was stopped again after ${restarts} restarts`,
+          ).toBeLessThan(maxRestarts)
+          restarts++
+          p.step(`${candidate} was stopped again; restart ${restarts}`)
           awsJson(`ec2 start-instances --instance-ids ${candidate}`)
           raiseDesiredCount()
           stoppedPolls = 0
