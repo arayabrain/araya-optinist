@@ -20,10 +20,7 @@ from studio.app.common.core.subscription.constants import (
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
-from studio.app.common.core.utils.datetime_utils import (
-    datetime_from_timestamp,
-    get_current_timestamp,
-)
+from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionProvider,
@@ -55,16 +52,14 @@ class CheckoutService:
     def subscription_expiration(
         status: Optional[str], trial_end: Optional[int], period_end: Optional[int]
     ) -> Optional[int]:
-        """Trial end while the trial runs, otherwise the period end.
+        """Trial end while the subscription is trialing, otherwise the period end.
 
-        Stripe may keep ``trial_end`` after the trial converts, so a set value
-        alone does not mean the trial is still running.
+        Stripe may keep ``trial_end`` after the trial converts, so only the
+        status says whether the trial is still running.
         """
-        trial_running = trial_end and (
-            status == StripeSubscriptionStatus.TRIAL
-            or trial_end > get_current_timestamp()
-        )
-        return trial_end if trial_running else period_end
+        if trial_end and status == StripeSubscriptionStatus.TRIAL:
+            return trial_end
+        return period_end
 
     @staticmethod
     def get_existing_subscription(

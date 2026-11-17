@@ -1392,7 +1392,7 @@ class TestSubscriptionLifecycleWebhooks:
         [
             ("trialing", 10, 40, "trial"),
             ("trialing", -1, 29, "trial"),
-            ("active", 10, 40, "trial"),
+            ("active", 10, 40, "period"),
             ("active", -60, 20, "period"),
             ("past_due", -60, 20, "period"),
             ("active", None, 20, "period"),
@@ -1402,7 +1402,7 @@ class TestSubscriptionLifecycleWebhooks:
     def test_subscription_expiration_rule(
         self, status, trial_days, period_days, expected
     ):
-        """Trial end only while the trial runs (by status or by time)."""
+        """Trial end only while the status is trialing, whatever the clock says."""
         now = get_current_datetime()
 
         def ts(days):
