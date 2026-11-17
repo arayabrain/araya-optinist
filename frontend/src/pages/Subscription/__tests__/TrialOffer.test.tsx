@@ -1,32 +1,33 @@
 /**
  * The free-trial line on the Subscription page's paid plan card.
  *
- * Shown only to a user the API has no subscription for: anyone who bought
- * before gets no trial, so they keep the card as it was.
+ * Shown only once the API has answered that the user has no subscription:
+ * anyone who bought before gets no trial, and a pending or failed request says
+ * nothing about it. Driven against the real subscription reducer, so the order
+ * in which the two requests settle is the one the page sees.
  */
+
+/* eslint-disable no-undef -- `jest` is the injected global here rather than the
+   `@jest/globals` import, because babel-plugin-jest-hoist rejects an imported
+   `jest` being referenced inside a `jest.mock` factory. */
 
 import { Provider } from "react-redux"
 import { MemoryRouter } from "react-router-dom"
 
-import configureMockStore from "redux-mock-store"
-
-import { describe, it, expect, jest } from "@jest/globals"
+import { describe, it, expect, beforeEach } from "@jest/globals"
+import { configureStore } from "@reduxjs/toolkit"
 import "@testing-library/jest-dom"
-import { render, screen, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 
 import { SubscriptionUserStatus } from "const/Subscription"
 import SubscriptionPlans from "pages/Subscription"
+import subscriptionReducer from "store/slice/Subscriptions/SubscriptionSlice"
 
-jest.mock("store/slice/Subscriptions/SubscriptionActions", () => ({
-  getSubscriptionPlan: () => ({
-    type: "subscription/getSubscriptionPlan/mock",
-  }),
-  getUserSubscription: () => ({
-    type: "subscription/getUserSubscription/mock",
-  }),
-  createCheckoutSession: () => ({ type: "subscription/createCheckout/mock" }),
-  cancelSubscription: () => ({ type: "subscription/cancel/mock" }),
-  reactivateSubscription: () => ({ type: "subscription/reactivate/mock" }),
+const mockGetSubscriptionPlansApi = jest.fn()
+const mockGetUserSubscriptionApi = jest.fn()
+jest.mock("api/subscriptions/Subscriptions", () => ({
+  getSubscriptionPlansApi: () => mockGetSubscriptionPlansApi(),
+  getUserSubscriptionApi: () => mockGetUserSubscriptionApi(),
 }))
 
 const plan = (id: number, name: string, price: number) => ({
@@ -40,54 +41,56 @@ const plan = (id: number, name: string, price: number) => ({
   created_at: "2026-01-01T00:00:00",
 })
 
+const PLANS = [plan(1, "Free", 0), plan(2, "Premium", 5000)]
+
 const TRIAL_OFFER = "First-time subscribers get 30 days free"
 
-const renderPlans = (
-  userSubscription: Record<string, unknown> | null,
-  userSubscriptionLoading = false,
-) =>
+const later = <T,>(ms: number, value: T) =>
+  new Promise<T>((resolve) => setTimeout(() => resolve(value), ms))
+
+const renderPlans = () => {
+  const store = configureStore({
+    reducer: {
+      subscription: subscriptionReducer,
+      user: () => ({ currentUser: { id: 1 }, loading: false }),
+    },
+  })
   render(
-    <Provider
-      store={configureMockStore([])({
-        user: { currentUser: { id: 1 }, loading: false },
-        subscription: {
-          plans: [plan(1, "Free", 0), plan(2, "Premium", 5000)],
-          userSubscription,
-          loading: false,
-          checkoutLoading: false,
-          error: null,
-          plansLoading: false,
-          userSubscriptionLoading,
-          serverTime: null,
-          deletionPriority: null,
-          deletionPriorityLoading: false,
-        },
-      })}
-    >
+    <Provider store={store}>
       <MemoryRouter>
         <SubscriptionPlans />
       </MemoryRouter>
     </Provider>,
   )
+  return store
+}
 
 describe("Subscription page trial offer", () => {
-  it("offers the trial on the paid card to a user who never subscribed", () => {
-    renderPlans(null)
+  beforeEach(() => {
+    mockGetSubscriptionPlansApi.mockReset()
+    mockGetUserSubscriptionApi.mockReset()
+    mockGetSubscriptionPlansApi.mockResolvedValue(PLANS)
+  })
 
-    const premium = screen.getByTestId("plan-card-Premium")
-    expect(within(premium).getByText(TRIAL_OFFER)).toBeInTheDocument()
+  it("offers the trial on the paid card to a user who never subscribed", async () => {
+    mockGetUserSubscriptionApi.mockResolvedValue(null)
+
+    renderPlans()
+
+    const premium = await screen.findByTestId("plan-card-Premium")
+    expect(await within(premium).findByText(TRIAL_OFFER)).toBeInTheDocument()
     expect(
       within(screen.getByTestId("plan-card-Free")).queryByText(TRIAL_OFFER),
     ).not.toBeInTheDocument()
   })
 
-  it("leaves the card unchanged for a user who subscribed before", () => {
+  it("leaves the card unchanged for a user who subscribed before", async () => {
     // A lapsed subscription: the user is free again but gets no second trial
-    renderPlans({
+    mockGetUserSubscriptionApi.mockResolvedValue({
       id: 1,
       plan_id: 2,
       user_id: 1,
-      expiration: "2026-01-01T00:00:00",
+      expiration: "2026-01-01T00:00:00+00:00",
       is_expired: true,
       scheduled_downgrade: false,
       status: SubscriptionUserStatus.EXPIRED,
@@ -97,16 +100,37 @@ describe("Subscription page trial offer", () => {
       trial_end: null,
     })
 
+    const store = renderPlans()
+
+    await waitFor(() =>
+      expect(store.getState().subscription.userSubscription).not.toBeNull(),
+    )
     expect(screen.getByTestId("plan-card-Premium")).toBeInTheDocument()
     expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
   })
 
-  it("waits for the subscription when the plans arrive first", () => {
-    // The shared `loading` is already false, and `userSubscription` is still
-    // the initial null, so only the pending request tells the cases apart
-    renderPlans(null, true)
+  it("waits for the subscription when the plans arrive first", async () => {
+    mockGetUserSubscriptionApi.mockReturnValue(new Promise(() => {}))
 
-    expect(screen.getByTestId("plan-card-Premium")).toBeInTheDocument()
+    renderPlans()
+
+    expect(await screen.findByTestId("plan-card-Premium")).toBeInTheDocument()
+    expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
+  })
+
+  it("offers nothing when the subscription cannot be read", async () => {
+    // The plans arriving after the failure clear the shared error, so only
+    // the failed request itself tells this from "never subscribed"
+    mockGetUserSubscriptionApi.mockRejectedValue(new Error("network"))
+    mockGetSubscriptionPlansApi.mockImplementation(() => later(20, PLANS))
+
+    const store = renderPlans()
+
+    expect(await screen.findByTestId("plan-card-Premium")).toBeInTheDocument()
+    await waitFor(() =>
+      expect(store.getState().subscription.plansLoading).toBe(false),
+    )
+    expect(store.getState().subscription.error).toBeNull()
     expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
   })
 })

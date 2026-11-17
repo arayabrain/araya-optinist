@@ -41,6 +41,8 @@ export interface SubscriptionState {
   error: string | null
   plansLoading: boolean
   userSubscriptionLoading: boolean
+  // True once GET /mgmts has answered; `userSubscription` null then means none
+  userSubscriptionLoaded: boolean
   serverTime: string | null
   deletionPriority: string | null
   deletionPriorityLoading: boolean

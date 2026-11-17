@@ -29,7 +29,7 @@ import {
 import {
   selectSubscriptionPlans,
   selectUserSubscription,
-  selectUserSubscriptionLoading,
+  selectUserSubscriptionLoaded,
   selectSubscriptionLoading,
   selectSubscriptionError,
   selectIsSubscriptionExpired,
@@ -52,7 +52,7 @@ const SubscriptionPlans = () => {
   const user = useSelector(selectCurrentUser)
   const plans = useSelector(selectSubscriptionPlans)
   const userSubscription = useSelector(selectUserSubscription)
-  const userSubscriptionLoading = useSelector(selectUserSubscriptionLoading)
+  const userSubscriptionLoaded = useSelector(selectUserSubscriptionLoaded)
   const loading = useSelector(selectSubscriptionLoading)
   const error = useSelector(selectSubscriptionError)
   const isSubscriptionExpired = useSelector(selectIsSubscriptionExpired)
@@ -400,19 +400,18 @@ const SubscriptionPlans = () => {
                     {/* The API returns no subscription for a user who never
                         bought one, so this checkout may start a trial. Stripe
                         history can still rule it out, hence the general
-                        wording. Wait for that answer: the plans can arrive
-                        first. */}
-                    {!isFree &&
-                      !userSubscriptionLoading &&
-                      !userSubscription && (
-                        <Typography
-                          variant="body2"
-                          sx={{ color: "#16a34a", fontWeight: 500, mt: 1 }}
-                        >
-                          First-time subscribers get{" "}
-                          {SubscriptionPeriods.TRIAL_PERIOD_DAYS} days free
-                        </Typography>
-                      )}
+                        wording. Only an answer counts: while the request is
+                        pending or after it failed, the subscription is also
+                        null. */}
+                    {!isFree && userSubscriptionLoaded && !userSubscription && (
+                      <Typography
+                        variant="body2"
+                        sx={{ color: "#16a34a", fontWeight: 500, mt: 1 }}
+                      >
+                        First-time subscribers get{" "}
+                        {SubscriptionPeriods.TRIAL_PERIOD_DAYS} days free
+                      </Typography>
+                    )}
                   </PriceContainer>
 
                   {plan.billing_cycle === 2 && (
