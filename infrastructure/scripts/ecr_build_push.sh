@@ -12,7 +12,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # ===========================================
 # Usage: ./ecr_build_push.sh [--tag <version-tag>] [--yes] [--deploy]
 #   --tag <tag>  : Custom version tag (default: the release tag on HEAD, such as
-#                  v1.2.3, else auto-generated YYYYMMDD-HHMMSS-<git-sha>)
+#                  v1.2.3, when the repository does not have it yet, else
+#                  auto-generated YYYYMMDD-HHMMSS-<git-sha>)
 #   --yes        : Skip confirmation prompt
 #   --deploy     : After push, force-new-deployment on EVERY service in the
 #                  cluster so all tiers re-pull the just-pushed :latest
@@ -105,13 +106,29 @@ GIT_BRANCH="$GIT_INFO_BRANCH"
 GIT_TAG="$GIT_INFO_TAG"
 BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # A release commit gets its version even without --tag, which terraform apply
-# never passes; a prerelease or untagged commit gets a timestamp
+# never passes; a prerelease or untagged commit gets a timestamp.
+# A release tag already in the repository stays on the image it marks: a rebuild
+# of the release commit (a rollback apply, a retry) is a new image and gets a
+# timestamp. Only --tag moves a tag. A failed check also falls back to the timestamp
+TIMESTAMP_TAG="$(date +%Y%m%d-%H%M%S)-${GIT_SHA}"
+TAG_WARNING=""
 if [ -n "$CUSTOM_TAG" ]; then
     VERSION_TAG="$CUSTOM_TAG"
 elif [ -n "$GIT_INFO_RELEASE_TAG" ]; then
-    VERSION_TAG="$GIT_INFO_RELEASE_TAG"
+    TAG_CHECK_ERR=$(mktemp)
+    if aws ecr describe-images --repository-name "$REPO_NAME" \
+        --image-ids imageTag="$GIT_INFO_RELEASE_TAG" --region "$REGION" >/dev/null 2>"$TAG_CHECK_ERR"; then
+        VERSION_TAG="$TIMESTAMP_TAG"
+        TAG_WARNING="${GIT_INFO_RELEASE_TAG} is already in ${REPO_NAME} and stays on that image; this build is tagged ${VERSION_TAG}. To move ${GIT_INFO_RELEASE_TAG}, run this script with --tag ${GIT_INFO_RELEASE_TAG}"
+    elif grep -q ImageNotFoundException "$TAG_CHECK_ERR"; then
+        VERSION_TAG="$GIT_INFO_RELEASE_TAG"
+    else
+        VERSION_TAG="$TIMESTAMP_TAG"
+        TAG_WARNING="could not check whether ${GIT_INFO_RELEASE_TAG} is already in ${REPO_NAME}, so this build is tagged ${VERSION_TAG}: $(cat "$TAG_CHECK_ERR")"
+    fi
+    rm -f "$TAG_CHECK_ERR"
 else
-    VERSION_TAG="$(date +%Y%m%d-%H%M%S)-${GIT_SHA}"
+    VERSION_TAG="$TIMESTAMP_TAG"
 fi
 
 # ===========================================
@@ -136,6 +153,11 @@ echo ""
 PRODUCTION_ENV="subscr"
 if [ "$ENVIRONMENT" = "$PRODUCTION_ENV" ]; then
     echo "  *** WARNING: You are pushing to PRODUCTION! ***"
+    echo ""
+fi
+
+if [ -n "$TAG_WARNING" ]; then
+    echo "  WARNING: ${TAG_WARNING}"
     echo ""
 fi
 
@@ -244,19 +266,27 @@ docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:$VERSION_TAG
 # Without a terminal (terraform apply, CI) docker drops its progress bars, sizes
 # included, and prints a line per layer and state. Keep a count instead: a line
-# each time a layer upload ends; a layer already in the registry is only counted
+# each time a layer upload ends; a layer already in the registry is only counted.
+# The containerd image store lists no layers up front (no Preparing lines) and
+# also reports the config and manifest uploads, so there the line gives the
+# uploads alone, with no total
 count_pushed_layers() {
-    local tag="$1" line total=0 finished=0
+    local tag="$1" line total=0 finished=0 uploaded=0
     while IFS= read -r line; do
         case "$line" in
             *": Preparing") total=$((total + 1)) ;;
             *": Pushed")
                 finished=$((finished + 1))
-                echo "  ${tag}: ${finished}/${total} layers"
+                uploaded=$((uploaded + 1))
+                if [ "$total" -gt 0 ]; then
+                    echo "  ${tag}: ${finished}/${total} layers"
+                else
+                    echo "  ${tag}: ${uploaded} pushed"
+                fi
                 ;;
-            *": Layer already exists"|*": Mounted from "*) finished=$((finished + 1)) ;;
+            *": Layer already exists"|*": Already exists"|*": Mounted from "*) finished=$((finished + 1)) ;;
             *": Waiting"|"The push refers to repository"*) ;;
-            *) echo "$line" ;;
+            *) printf '%s\n' "$line" ;;
         esac
     done
 }
@@ -279,6 +309,9 @@ echo "  Environment : ${ENVIRONMENT}"
 echo "  latest      : ${ECR_URI}:latest"
 echo "  Version     : ${ECR_URI}:${VERSION_TAG}"
 echo "============================================"
+if [ -n "$TAG_WARNING" ]; then
+    echo "  WARNING: ${TAG_WARNING}"
+fi
 
 # ===========================================
 # Optional: force every service to re-pull :latest
