@@ -407,6 +407,12 @@ export const selectTimeSeriesItemDrawOrderList =
     throw new Error("invalid VisualaizeItemType")
   }
 
+export const selectTimeSeriesItemDefaultDrawnPath =
+  (itemId: number) => (state: RootState) => {
+    const item = selectVisualizeItemById(itemId)(state)
+    return isTimeSeriesItem(item) ? item.defaultDrawnPath : undefined
+  }
+
 export const selectTimeSeriesItemRefImageItemId =
   (itemId: number) => (state: RootState) => {
     const item = selectVisualizeItemById(itemId)(state)

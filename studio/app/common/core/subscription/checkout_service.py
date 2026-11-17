@@ -42,6 +42,13 @@ class CheckoutService:
     """Service class for handling checkout operations"""
 
     @staticmethod
+    def subscription_period_end(subscription: Dict[str, Any]) -> Optional[int]:
+        """Period end of a Stripe subscription; API basil keeps it on items only."""
+        items = (subscription.get("items") or {}).get("data") or []
+        ends = [i["current_period_end"] for i in items if i.get("current_period_end")]
+        return max(ends) if ends else subscription.get("current_period_end")
+
+    @staticmethod
     def get_existing_subscription(
         db: Session, user_id: int
     ) -> Optional[UserSubscription]:
@@ -552,7 +559,9 @@ class CheckoutService:
 
                     # Determine expiration from Stripe subscription
                     trial_end = getattr(stripe_sub, "trial_end", None)
-                    current_period_end = getattr(stripe_sub, "current_period_end", None)
+                    current_period_end = CheckoutService.subscription_period_end(
+                        stripe_sub
+                    )
 
                     if trial_end:
                         expiration_date = datetime_from_timestamp(trial_end)

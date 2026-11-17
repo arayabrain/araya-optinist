@@ -67,7 +67,9 @@ async def test_a_second_data_filter_waits_for_the_first(monkeypatch):
 
     monkeypatch.setattr(run, "WorkflowNodeDataFilter", fake_filter(on_filter))
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         first = asyncio.create_task(http.post("/run/filter/1/uid/first"))
         await wait_until(hold.started)
         second = asyncio.create_task(http.post("/run/filter/1/uid/second"))
@@ -105,7 +107,9 @@ async def test_a_data_filter_waits_for_the_roi_edit_under_way(monkeypatch):
         "?workspace_id=1"
     )
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         edit = asyncio.create_task(http.post(cancel_url))
         await wait_until(hold.started)
         filtering = asyncio.create_task(http.post("/run/filter/1/uid/suite2p_roi_x"))

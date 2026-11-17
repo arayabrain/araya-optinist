@@ -77,6 +77,8 @@ resource "aws_lb_target_group" "autoscaling" {
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
 
+  deregistration_delay = local.free_tg_deregistration_delay
+
   health_check {
     enabled             = true
     healthy_threshold   = 2
@@ -649,8 +651,9 @@ resource "aws_ecs_task_definition" "autoscaling" {
       memoryReservation = local.free_tier_sizing.container_memory_reservation_mib
       essential         = true
       workingDirectory  = "/app"
-      entryPoint        = ["/bin/sh", "-c"]
-      command           = ["./cloud-startup.sh"]
+      # exec makes the script PID 1, the process ECS sends SIGTERM to on stop.
+      entryPoint = ["/bin/sh", "-c"]
+      command    = ["exec ./cloud-startup.sh"]
 
       linuxParameters = {
         maxSwap    = local.free_tier_sizing.container_max_swap_mib
@@ -949,8 +952,9 @@ resource "aws_ecs_task_definition" "premium" {
       memoryReservation = local.premium_tier_sizing.container_memory_reservation_mib
       essential         = true
       workingDirectory  = "/app"
-      entryPoint        = ["/bin/sh", "-c"]
-      command           = ["./cloud-startup.sh"]
+      # exec makes the script PID 1, the process ECS sends SIGTERM to on stop.
+      entryPoint = ["/bin/sh", "-c"]
+      command    = ["exec ./cloud-startup.sh"]
 
       linuxParameters = {
         maxSwap    = local.premium_tier_sizing.container_max_swap_mib
