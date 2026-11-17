@@ -343,8 +343,16 @@ class TestAlbRuleRouting:
 
 
 def _static_rule_target(method: str, path: str, headers: dict) -> str:
-    """Target group of the first static rule matching the request, by priority."""
-    blocks = _listener_rule_blocks()
+    """Target group of the first static rule matching the request, by priority.
+
+    Redirect rules are left out: they match only page loads, never the API
+    calls modelled here.
+    """
+    blocks = {
+        name: block
+        for name, block in _listener_rule_blocks().items()
+        if name not in REDIRECT_RULES
+    }
     priorities = _terraform_rule_priorities()
     for name in sorted(blocks, key=lambda n: priorities[_rule_priority_key(blocks[n])]):
         block = blocks[name]
