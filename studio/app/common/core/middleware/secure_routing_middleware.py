@@ -25,10 +25,11 @@ import hashlib
 import hmac
 import os
 import time
+from typing import Optional
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt
+from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_jwt_async
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware.constants import (
     DEFAULT_ROUTING_SECRET_KEY,
@@ -41,13 +42,15 @@ from studio.app.common.core.middleware.user_activity_middleware import (
 )
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.subscription.constants import SubscriptionPlanIds
+from studio.app.common.db.database import run_db_lookup
 
 logger = AppLogger.get_logger()
 
 # Routing secret key for generating non-reversible routing IDs
 ROUTING_SECRET_KEY = os.environ.get("ROUTING_SECRET_KEY", DEFAULT_ROUTING_SECRET_KEY)
 
-# Tier cache: {uid: (tier, timestamp)}
+# Tier cache: {uid: (tier, timestamp)}. A miss is filled from a worker thread,
+# so entries are removed with pop() and iterated over a copy.
 _tier_cache = {}
 _TIER_CACHE_TTL = 300  # 5 minutes
 _MAX_CACHE_SIZE = 10000  # Prevent unbounded growth
@@ -131,9 +134,16 @@ def invalidate_user_tier_cache(uid: str) -> None:
     Args:
         uid: Firebase user ID to invalidate
     """
-    if uid in _tier_cache:
-        del _tier_cache[uid]
+    if _tier_cache.pop(uid, None) is not None:
         logger.info("Invalidated tier cache for user")
+
+
+def _fresh_cached_tier(uid: str) -> Optional[str]:
+    """The cached tier, or None if absent or older than the TTL."""
+    cached = _tier_cache.get(uid)
+    if cached is not None and time.time() - cached[1] < _TIER_CACHE_TTL:
+        return cached[0]
+    return None
 
 
 def get_user_tier_cached(uid: str) -> str:
@@ -151,17 +161,16 @@ def get_user_tier_cached(uid: str) -> str:
     if len(_tier_cache) > _MAX_CACHE_SIZE:
         expired_keys = [
             k
-            for k, (_, ts) in _tier_cache.items()
+            for k, (_, ts) in list(_tier_cache.items())
             if current_time - ts >= _TIER_CACHE_TTL
         ]
         for key in expired_keys:
-            del _tier_cache[key]
+            _tier_cache.pop(key, None)
 
     # Check cache
-    if uid in _tier_cache:
-        tier, timestamp = _tier_cache[uid]
-        if current_time - timestamp < _TIER_CACHE_TTL:
-            return tier
+    tier = _fresh_cached_tier(uid)
+    if tier is not None:
+        return tier
 
     # Cache miss - query database
     # Note: Some imports inside function to avoid circular imports at module load time
@@ -253,7 +262,7 @@ class SecureRoutingMiddleware:
         firebase_token = auth_header[7:]  # Remove "Bearer "
 
         # Extract UID from JWT (reuses existing auth infrastructure)
-        uid, error = extract_uid_from_firebase_jwt(firebase_token)
+        uid, error = await extract_uid_from_firebase_jwt_async(firebase_token)
         if error:
             logger.debug(f"Failed to verify Firebase token: {error}")
 
@@ -261,8 +270,8 @@ class SecureRoutingMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Get tier with caching
-        tier = get_user_tier_cached(uid)
+        # Get tier with caching; a miss queries the database off the event loop
+        tier = _fresh_cached_tier(uid) or await run_db_lookup(get_user_tier_cached, uid)
 
         # Validate routing ID if present in request (detect header spoofing).
         # Unconditional for all tiers — prevents a free-tier caller from

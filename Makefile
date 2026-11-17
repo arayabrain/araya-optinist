@@ -136,6 +136,19 @@ workflow_count_it:
 		$$compose build workflow_count_it; \
 		$$compose run --rm workflow_count_it'
 
+.PHONY: expiration_it
+expiration_it:
+	# Expiration deletion integration test: the real job against a migrated
+	# MySQL and an S3 API (moto server).
+	# Needs a real database: run per-PR by expiration-it.yml on deletion changes.
+	# Single shell with an EXIT trap so the throwaway stack is always torn down.
+	@bash -euc '\
+		compose="docker compose -f docker-compose.expiration-it.yml"; \
+		trap "$$compose down -v" EXIT; \
+		$$compose down -v; \
+		$$compose build expiration_it; \
+		$$compose run --rm expiration_it'
+
 
 ############################## For Building ##############################
 

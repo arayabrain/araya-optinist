@@ -38,6 +38,9 @@ mysql_password      = "<PLACEHOLDER-generate-new>"
 stripe_secret_key     = "sk_test_<PLACEHOLDER>"
 stripe_webhook_secret = "whsec_test_<PLACEHOLDER>"
 
+# Verified SES sender for expiration lifecycle emails (empty = disabled)
+notification_from_email = ""
+
 # OptiNiSt configuration (generate new secrets for dev)
 optinist_secret_key  = "<PLACEHOLDER-generate-new>"
 routing_secret_key   = "<PLACEHOLDER-generate-new>"

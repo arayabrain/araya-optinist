@@ -51,9 +51,11 @@ class RoiIntegration:
         """
         get area of ith region in roi.
         i.e. get sum of ith column of 2d array.
+        In roi's dtype in both modes, so the overlap ratios in apply round the
+        same way (float32, as np.sum gives for a dense roi).
         """
         if self.sparse:
-            return utils.count_nonzero_values_in_col_csc(roi, i)
+            return roi.dtype.type(utils.count_nonzero_values_in_col_csc(roi, i))
         return np.sum(
             roi[:, i]
         )  # for dense array, np.count_nonzero is slower than np.sum(col)

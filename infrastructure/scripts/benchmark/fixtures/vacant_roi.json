@@ -1,0 +1,14 @@
+{
+  "name": "bench-vacant-roi",
+  "description": "suite2p file_convert -> registration -> vacant_roi (its own fixture: snakemake runs two rules at once)",
+  "nodes": [
+    {"id": "suite2p_file_convert_bench", "label": "suite2p_file_convert", "path": "suite2p/suite2p_file_convert"},
+    {"id": "suite2p_registration_bench", "label": "suite2p_registration", "path": "suite2p/suite2p_registration"},
+    {"id": "vacant_roi_bench", "label": "vacant_roi", "path": "utils/vacant_roi"}
+  ],
+  "edges": [
+    ["input_bench", "image", "ImageData", "suite2p_file_convert_bench", "image", "ImageData"],
+    ["suite2p_file_convert_bench", "ops", "Suite2pData", "suite2p_registration_bench", "ops", "Suite2pData"],
+    ["suite2p_registration_bench", "mc_images", "ImageData", "vacant_roi_bench", "mc_images", "ImageData"]
+  ]
+}

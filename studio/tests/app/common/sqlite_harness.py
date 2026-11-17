@@ -72,6 +72,17 @@ def sqlite_session(tables):
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    with sqlite_tables(engine, tables):
+        with Session(engine) as session:
+            yield session
+
+
+@contextmanager
+def sqlite_tables(engine, tables):
+    """Create ``tables`` on a SQLite ``engine``, for the duration of the block.
+
+    MySQL's ``ON UPDATE`` server defaults are left out while it lasts.
+    """
     stripped = []
     for table in tables:
         for col in table.columns:
@@ -81,8 +92,7 @@ def sqlite_session(tables):
                 col.server_default = None
     try:
         SQLModel.metadata.create_all(engine, tables=tables)
-        with Session(engine) as session:
-            yield session
+        yield
     finally:
         for col, default in stripped:
             col.server_default = default

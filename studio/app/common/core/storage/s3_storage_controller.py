@@ -30,6 +30,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
     StorageDirectoryType,
+    local_path_for_remote_key,
 )
 from studio.app.common.core.utils.filepath_creater import join_filepath
 from studio.app.common.db.database import session_scope
@@ -54,7 +55,7 @@ class S3StorageController(BaseRemoteStorageController):
     S3 Storage Controller
     """
 
-    S3_BASE_PATH = os.environ.get("S3_BASE_PATH", "/app/studio_data").lstrip("/")
+    S3_BASE_PATH = os.environ.get("S3_BASE_PATH", "/app/studio_data").strip("/")
     S3_INPUT_DIR = "input"
     S3_OUTPUT_DIR = "output"
     VALIDATION_MAX_OBJECTS = 500
@@ -357,6 +358,16 @@ class S3StorageController(BaseRemoteStorageController):
                 all_s3_objects = await self._list_s3_objects_paginated(
                     __s3_client, input_data_remote_path, max_files=MAX_DOWNLOAD_FILES
                 )
+                # The listing is a bare string prefix: "a.tif" also lists "a.tif2".
+                all_s3_objects = [
+                    obj
+                    for obj in all_s3_objects
+                    if obj["Key"] == input_data_remote_path
+                    or (
+                        obj["Key"].startswith(f"{input_data_remote_path}/")
+                        and not obj["Key"].endswith("/")
+                    )
+                ]
 
                 if not all_s3_objects:
                     logger.warning(
@@ -370,7 +381,8 @@ class S3StorageController(BaseRemoteStorageController):
                 all_s3_objects.sort(key=lambda obj: obj["Key"].count("/"))
 
                 target_files_count = len(all_s3_objects)
-                s3_prefix = __class__.make_s3_input_prefix()
+                s3_prefix = __class__.make_s3_input_prefix(workspace_id)
+                local_root = join_filepath([DIRPATH.INPUT_DIR, workspace_id])
 
                 for index, s3_object in enumerate(all_s3_objects):
                     s3_file_path = s3_object["Key"]
@@ -379,8 +391,11 @@ class S3StorageController(BaseRemoteStorageController):
                     # Compute local path from S3 path
                     # s3_file_path: app/studio_data/input/{workspace_id}/{relative_path}
                     # local path:   {INPUT_DIR}/{workspace_id}/{relative_path}
-                    relative_path = s3_file_path.replace(s3_prefix, "")
-                    local_file_path = os.path.join(DIRPATH.INPUT_DIR, relative_path)
+                    local_file_path = local_path_for_remote_key(
+                        s3_file_path, s3_prefix, local_root
+                    )
+                    if local_file_path is None:
+                        continue
 
                     await self._download_s3_with_update_check(
                         __s3_client,
@@ -455,7 +470,7 @@ class S3StorageController(BaseRemoteStorageController):
 
                 for obj in all_s3_objects:
                     key = obj["Key"]
-                    filename = key.replace(prefix, "")
+                    filename = key.removeprefix(prefix)
                     if filename and not filename.endswith("/"):
                         objects.append(
                             {
@@ -605,18 +620,13 @@ class S3StorageController(BaseRemoteStorageController):
                     # Download metadata files
                     for metadata_filename in metadata_filenames:
                         file_remote_path = experiment_dir + metadata_filename
-                        flie_local_path = os.path.join(
-                            DIRPATH.DATA_DIR, experiment_dir, metadata_filename
+                        flie_local_path = local_path_for_remote_key(
+                            file_remote_path,
+                            __class__.make_s3_output_prefix(),
+                            DIRPATH.OUTPUT_DIR,
                         )
-
-                        # Fix duplicate path issue
-                        dup_path = (
-                            f"/{__class__.S3_BASE_PATH}/{__class__.S3_BASE_PATH}/"
-                        )
-                        if dup_path in flie_local_path:
-                            flie_local_path = flie_local_path.replace(
-                                dup_path, f"/{__class__.S3_BASE_PATH}/"
-                            )
+                        if flie_local_path is None:
+                            continue
 
                         if not os.path.isfile(flie_local_path):
                             try:
@@ -675,12 +685,8 @@ class S3StorageController(BaseRemoteStorageController):
         async with self.__get_s3_client() as __s3_client:
             for metadata_filename in metadata_filenames:
                 file_remote_path = experiment_prefix + metadata_filename
-                file_local_path = os.path.join(
-                    DIRPATH.DATA_DIR,
-                    __class__.S3_OUTPUT_DIR,
-                    workspace_id,
-                    unique_id,
-                    metadata_filename,
+                file_local_path = join_filepath(
+                    [DIRPATH.OUTPUT_DIR, workspace_id, unique_id, metadata_filename]
                 )
 
                 # Skip if file already exists locally
@@ -921,11 +927,16 @@ class S3StorageController(BaseRemoteStorageController):
         async with self.__get_s3_client() as __s3_client:
             target_files_count = len(target_files)
             for index, remote_config_yml_abs_path in enumerate(target_files):
-                relative_config_yml_path = remote_config_yml_abs_path.replace(
-                    f"{self.__s3_storage_url}/", ""
+                s3_url_prefix = f"{self.__s3_storage_url}/"
+                local_config_yml_path = local_path_for_remote_key(
+                    remote_config_yml_abs_path, s3_url_prefix, DIRPATH.DATA_DIR
+                )
+                if local_config_yml_path is None:
+                    continue
+                relative_config_yml_path = remote_config_yml_abs_path.removeprefix(
+                    s3_url_prefix
                 )
                 remote_config_yml_path = relative_config_yml_path
-                local_config_yml_path = f"{DIRPATH.DATA_DIR}/{relative_config_yml_path}"
                 local_config_yml_dir = os.path.dirname(local_config_yml_path)
 
                 if not os.path.isfile(local_config_yml_path):
@@ -988,7 +999,7 @@ class S3StorageController(BaseRemoteStorageController):
         async with self.__get_s3_client() as __s3_client:
             all_s3_objects = await self._list_s3_objects_paginated(
                 __s3_client,
-                experiment_remote_path,
+                f"{experiment_remote_path}/",
                 max_files=MAX_DOWNLOAD_EXPERIMENT_FILES,
             )
 
@@ -1051,16 +1062,11 @@ class S3StorageController(BaseRemoteStorageController):
                     continue
 
                 # make paths
-                local_abs_path = os.path.join(
-                    os.path.dirname(DIRPATH.OUTPUT_DIR), s3_file_path.lstrip("/")
+                local_abs_path = local_path_for_remote_key(
+                    s3_file_path, f"{experiment_remote_path}/", experiment_local_path
                 )
-
-                # Fix duplicate path issue
-                dup_path = f"/{__class__.S3_BASE_PATH}/{__class__.S3_BASE_PATH}/"
-                if dup_path in local_abs_path:
-                    local_abs_path = local_abs_path.replace(
-                        dup_path, f"/{__class__.S3_BASE_PATH}/"
-                    )
+                if local_abs_path is None:
+                    continue
 
                 await self._download_s3_with_update_check(
                     __s3_client,

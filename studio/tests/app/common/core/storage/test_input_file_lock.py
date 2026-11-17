@@ -48,6 +48,21 @@ class TestLockPath:
             input_dir, "ws1", ".locks", "sub", "dir", "data.tif.lock"
         )
 
+    @pytest.mark.parametrize("length, hashed", [(250, False), (251, True)])
+    def test_lock_name_fits_the_255_byte_file_name_limit(
+        self, input_dir, length, hashed
+    ):
+        """The lock name adds ".lock" to the file name, which may be 255 bytes
+        itself; a name that would not fit is replaced by its hash, in place."""
+        name = "m" * (length - 4) + ".tif"
+        path = InputFileLock._lock_path("ws1", "sub/" + name)
+        assert os.path.dirname(path) == os.path.join(input_dir, "ws1", ".locks", "sub")
+        assert (os.path.basename(path) != name + ".lock") == hashed
+        assert len(os.path.basename(path).encode()) <= 255
+        assert path != InputFileLock._lock_path("ws1", "sub/n" + name[1:])
+        with InputFileLock.acquire_sync("ws1", "sub/" + name):
+            assert os.path.isfile(path)
+
 
 class TestAcquireRelease:
     @pytest.mark.asyncio

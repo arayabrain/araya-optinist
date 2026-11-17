@@ -6,9 +6,11 @@ import copy
 import os
 import sys
 import types
+import weakref
 
 import numpy as np
 import pytest
+import tifffile
 
 from studio.app.common.core.workflow.workflow_params import read_default_params
 from studio.app.optinist.dataclass import Suite2pData
@@ -30,9 +32,12 @@ def suite2p_stub(monkeypatch):
     calls = {}
 
     class BinaryFile:
+        """suite2p 1.1.0's: a memory map of the file."""
+
         def __init__(self, Ly, Lx, filename, n_frames=None, write=False):
-            calls["binary"] = dict(filename=filename, n_frames=n_frames, write=write)
             self.shape = (n_frames, Ly, Lx)
+            mode = "r+" if write else "r"
+            self.file = np.memmap(filename, np.int16, mode, shape=self.shape)
 
         def __enter__(self):
             return self
@@ -41,17 +46,27 @@ def suite2p_stub(monkeypatch):
             return False
 
         def __getitem__(self, indices):
-            n = len(range(*indices.indices(self.shape[0])))
-            return np.zeros((n,) + self.shape[1:], np.int16)
+            return self.file[indices]
 
-    def pipeline(save_path, f_reg, run_registration, settings, device):
+        def __setitem__(self, indices, frames):
+            self.file[indices] = frames
+
+    def pipeline(save_path, f_reg, run_registration, settings, device, f_raw=None):
+        n, Ly, Lx = f_reg.shape
+        # what registration does: reads f_raw's frames (f_reg's without one),
+        # shifts their bidiphase in place, and writes the registered frames
+        # into f_reg. f_raw is tested for truth as assign_reg_io does, so a
+        # plain array there fails as it would in suite2p.
+        frames = (f_reg if not f_raw else f_raw)[0:n]
         calls["pipeline"] = dict(
             save_path=save_path,
+            input=np.array(frames),
             run_registration=run_registration,
             settings=copy.deepcopy(settings),
             device=device,
         )
-        n, Ly, Lx = f_reg.shape
+        frames[:, 1::2] += 1
+        f_reg[0:n] = frames + 100
         reg_outputs = {
             "refImg": np.ones((Ly, Lx), np.float32),
             "meanImg": np.full((Ly, Lx), 2, np.float32),  # the input's is ones
@@ -75,17 +90,31 @@ def suite2p_stub(monkeypatch):
     return calls
 
 
-def _input_ops(tmp_path):
+def _movie(Ly=H, Lx=W):
+    return np.arange(FRAMES * Ly * Lx).reshape(FRAMES, Ly, Lx).astype(np.int16)
+
+
+def _input_ops(tmp_path, Ly=H, Lx=W):
+    """File conversion's ops, and its binary of _movie()."""
+    binary = tmp_path / "data.bin"
+    _movie(Ly, Lx).tofile(binary)
     return Suite2pData(
         {
-            "meanImg": np.ones((H, W), np.float32),
+            "meanImg": np.ones((Ly, Lx), np.float32),
             "nframes": FRAMES,
-            "Ly": H,
-            "Lx": W,
-            "reg_file": str(tmp_path / "data.bin"),
+            "Ly": Ly,
+            "Lx": Lx,
+            "reg_file": str(binary),
             "batch_size": 500,
         }
     )
+
+
+def _registered(movie):
+    """What the stubbed registration writes for movie."""
+    registered = movie.copy()
+    registered[:, 1::2] += 1
+    return registered + 100
 
 
 def test_yaml_lands_in_the_settings_tree_and_only_registration_runs(
@@ -168,15 +197,71 @@ def test_a_block_size_that_is_not_two_numbers_is_refused(
         suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
 
 
-def test_the_binary_is_registered_in_place(output_dir, tmp_path, suite2p_stub):
+def test_registration_writes_mc_images_and_leaves_the_binary_unregistered(
+    output_dir, tmp_path, suite2p_stub
+):
     params = read_default_params("suite2p_registration")
+
+    info = suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
+
+    np.testing.assert_array_equal(suite2p_stub["pipeline"]["input"], _movie())
+    np.testing.assert_array_equal(
+        np.fromfile(tmp_path / "data.bin", np.int16), _movie().ravel()
+    )
+    (path,) = info["mc_images"].path
+    np.testing.assert_array_equal(tifffile.imread(path), _registered(_movie()))
+    # the movie suite2p_roi and ROI editing read
+    ops = info["ops"].data
+    assert ops["registered_tiff"] == path
+    # not under reg_file, which an earlier release reads as registered
+    assert ops["raw_file"] == str(tmp_path / "data.bin")
+    assert "reg_file" not in ops
+
+
+def test_the_map_is_closed_before_mc_images_is_renamed(
+    output_dir, tmp_path, suite2p_stub, monkeypatch
+):
+    # Windows cannot rename a file that is still mapped
+    maps, mapped_at_rename = [], []
+    memmap, replace = tifffile.memmap, os.replace
+
+    def recording_memmap(*args, **kwargs):
+        mapped = memmap(*args, **kwargs)
+        maps.append(weakref.ref(mapped))
+        return mapped
+
+    def recording_replace(src, dst):
+        if str(src).endswith(".partial"):
+            mapped_at_rename.extend(ref() is not None for ref in maps)
+        replace(src, dst)
+
+    monkeypatch.setattr(tifffile, "memmap", recording_memmap)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    params = read_default_params("suite2p_registration")
+
     suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
 
-    assert suite2p_stub["binary"] == {
-        "filename": str(tmp_path / "data.bin"),
-        "n_frames": FRAMES,
-        "write": True,
-    }
+    assert mapped_at_rename == [False]
+
+
+def test_a_second_registration_registers_the_first_ones_result(
+    output_dir, tmp_path, suite2p_stub
+):
+    params = read_default_params("suite2p_registration")
+    first = suite2p_registration(_input_ops(tmp_path), output_dir, params=params)
+    second_dir = tmp_path / "output" / "default" / "uid" / "second"
+    second_dir.mkdir()
+
+    second = suite2p_registration(first["ops"], str(second_dir), params=params)
+
+    once = _registered(_movie())
+    np.testing.assert_array_equal(suite2p_stub["pipeline"]["input"], once)
+    (path,) = second["mc_images"].path
+    np.testing.assert_array_equal(tifffile.imread(path), _registered(once))
+    # the first node's result is left as it was
+    np.testing.assert_array_equal(tifffile.imread(first["mc_images"].path[0]), once)
+    assert second["ops"].data["registered_tiff"] == path
+    assert second["ops"].data["raw_file"] == str(tmp_path / "data.bin")
 
 
 def test_output_ops_keep_the_flat_contract_and_carry_the_settings(
@@ -187,7 +272,15 @@ def test_output_ops_keep_the_flat_contract_and_carry_the_settings(
 
     ops = info["ops"].data
     # what suite2p_roi, suite2p_spike_deconv and ROI editing read
-    for key in ("reg_file", "nframes", "Ly", "Lx", "batch_size", "meanImg"):
+    for key in (
+        "registered_tiff",
+        "raw_file",
+        "nframes",
+        "Ly",
+        "Lx",
+        "batch_size",
+        "meanImg",
+    ):
         assert key in ops, key
     for key in ("refImg", "meanImgE", "yrange", "xrange", "badframes"):
         assert key in ops, key
@@ -223,9 +316,6 @@ def test_nonrigid_needs_a_frame_larger_than_the_block_on_both_axes(
     # when an axis has a single block, and raises
     params = read_default_params("suite2p_registration")
     assert params["registration"]["block_size"] == [128, 128]
-    ops = _input_ops(tmp_path).data
-    ops.update(Ly=Ly, Lx=Lx, meanImg=np.ones((Ly, Lx), np.float32))
-
-    suite2p_registration(Suite2pData(ops), output_dir, params=params)
+    suite2p_registration(_input_ops(tmp_path, Ly, Lx), output_dir, params=params)
 
     assert suite2p_stub["pipeline"]["settings"]["registration"]["nonrigid"] is nonrigid

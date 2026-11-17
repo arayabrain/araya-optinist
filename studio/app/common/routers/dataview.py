@@ -1,11 +1,12 @@
 import asyncio
 import os
+from types import SimpleNamespace
 from typing import List, Optional, Sequence, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi_pagination.ext.sqlmodel import paginate
-from sqlalchemy import update
+from sqlalchemy import case, literal, update
 from sqlalchemy.sql import Select
 from sqlmodel import Session, select
 
@@ -38,6 +39,7 @@ from studio.app.common.schemas.dataview import (
     DataviewRecord,
     DataviewRecordHeader,
     DataviewRecordSearchOptions,
+    HiddenOutputChange,
     LocalSyncStatus,
     PageWithHeader,
     PublishFlags,
@@ -54,6 +56,7 @@ logger = AppLogger.get_logger()
 # Max concurrent S3 pre-sync operations during bulk publish (bounds the
 # per-request fan-out of RemoteStorageReader clients on one uvicorn process).
 PUBLISH_PRESYNC_CONCURRENCY = 8
+HIDDEN_OUTPUTS_BATCH = 100
 
 
 RECORDS_SORT_MAPPING = {
@@ -143,6 +146,7 @@ def get_records_filtered_query(
 @public_router.get(
     "",
     response_model=PageWithHeader[DataviewRecord],
+    response_model_exclude={"items": {"__all__": {"hidden_outputs"}}},
     description="""
 - Search and respond to data for display in Public Dataview
 """,
@@ -362,7 +366,17 @@ async def public_reproduce_experiment(
                     f"already updated by another process"
                 )
 
-    return await reproduce_experiment(workspace_id, unique_id)
+    result = await reproduce_experiment(workspace_id, unique_id)
+    if record.hidden_outputs:
+        for function in result.function.values():
+            function["outputPaths"] = {
+                key: value
+                for key, value in (function.get("outputPaths") or {}).items()
+                if not DataviewService.is_hidden_output(
+                    record, (value or {}).get("path")
+                )
+            }
+    return result
 
 
 # NOTE: This function is not specific to the dataview router module.
@@ -675,15 +689,20 @@ async def publish_dataview_records(
 
             # Use SQLAlchemy's update() with WHERE clause for optimistic locking
             # This is the proper ORM way to implement optimistic locking
+            values = dict(
+                publish_status=new_publish_status,
+                local_sync_status=new_sync_status,
+                version=models.ExperimentRecord.version + 1,
+            )
+            if flag == PublishFlags.on and record.hidden_outputs is None:
+                values["hidden_outputs"] = DataviewService.effective_hidden_outputs(
+                    record
+                )
             stmt = (
                 update(models.ExperimentRecord)
                 .where(models.ExperimentRecord.id == record.id)
                 .where(models.ExperimentRecord.version == current_version)
-                .values(
-                    publish_status=new_publish_status,
-                    local_sync_status=new_sync_status,
-                    version=models.ExperimentRecord.version + 1,
-                )
+                .values(**values)
             )
 
             result = db.execute(stmt)
@@ -732,6 +751,105 @@ async def publish_dataview_records(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Failed to publish experiment after multiple retries",
     )
+
+
+def _owner_hidden_outputs(record: models.ExperimentRecord) -> List[str]:
+    try:
+        return DataviewService.effective_hidden_outputs(record, strict=True)
+    except Exception as e:
+        logger.warning(f"Default hidden outputs unavailable for {record.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Output visibility is not available yet. Please try again.",
+        )
+
+
+@router.get(
+    "/hidden_outputs/{id}",
+    response_model=List[str],
+    description="""
+- The outputs of a Dataview record hidden from public viewers (owner only),
+  the defaults if the owner has not chosen yet
+""",
+)
+async def get_hidden_outputs(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = DataviewService.find_user_owned_dataview_record(db, id, current_user.id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return _owner_hidden_outputs(record)
+
+
+@router.put(
+    "/hidden_outputs/{id}",
+    response_model=List[str],
+    description="""
+- Hide one output of a Dataview record from public viewers, or show it again
+  (owner only). Responds with the record's full hidden list.
+""",
+)
+async def put_hidden_outputs(
+    id: int,
+    change: HiddenOutputChange,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = DataviewService.find_user_owned_dataview_record(db, id, current_user.id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    path = DataviewService.canonical_output_path(change.path)
+    if not path.startswith(f"{record.workspace_id}/{record.uid}/"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Path is not an output of this record",
+        )
+
+    # A delta against the stored list, so a stale client cannot re-publish others.
+    paths = set(_owner_hidden_outputs(record))
+    if change.hidden:
+        paths.add(path)
+    else:
+        paths.discard(path)
+    paths = sorted(paths)
+
+    result = db.execute(
+        update(models.ExperimentRecord)
+        .where(models.ExperimentRecord.id == record.id)
+        .where(models.ExperimentRecord.version == record.version)
+        .values(hidden_outputs=paths, version=models.ExperimentRecord.version + 1)
+    )
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Concurrent modification detected. Please try again.",
+        )
+    return paths
+
+
+def _validate_for_bulk_publish(records: List[SimpleNamespace]) -> Tuple[list, list]:
+    """Each record's validation failure, else its default hidden outputs if unset"""
+    failed, defaults = [], []
+    for record in records:
+        validation = PublishValidator.validate(
+            workspace_id=str(record.workspace_id),
+            unique_id=record.uid,
+            user_has_s3_bucket=True,  # Already checked by the caller
+            check_files_on_disk=True,
+        )
+        if not validation.can_publish:
+            failed.append(
+                {"id": record.id, "name": record.name, "reason": validation.reason}
+            )
+        elif record.hidden_outputs is None and not record.publish_status:
+            defaults.append(
+                (record.id, DataviewService.effective_hidden_outputs(record))
+            )
+    return failed, defaults
 
 
 @router.post(
@@ -803,23 +921,21 @@ async def multiple_publish_dataview_records(
                 return_exceptions=True,
             )
 
-        # Validate each record
-        failed_records = []
-        for record_id, record in owned_records:
-            validation = PublishValidator.validate(
-                workspace_id=str(record.workspace_id),
-                unique_id=record.uid,
-                user_has_s3_bucket=True,  # Already checked above
-                check_files_on_disk=True,
+        # Plain copies: the file reads run in a thread, away from the session
+        snapshots = [
+            SimpleNamespace(
+                id=record.id,
+                name=record.name,
+                workspace_id=record.workspace_id,
+                uid=record.uid,
+                hidden_outputs=record.hidden_outputs,
+                publish_status=record.publish_status,
             )
-            if not validation.can_publish:
-                failed_records.append(
-                    {
-                        "id": record_id,
-                        "name": record.name,
-                        "reason": validation.reason,
-                    }
-                )
+            for _, record in owned_records
+        ]
+        failed_records, defaults = await asyncio.to_thread(
+            _validate_for_bulk_publish, snapshots
+        )
 
         if failed_records:
             logger.warning(
@@ -837,6 +953,21 @@ async def multiple_publish_dataview_records(
             if len(failed_records) > 5:
                 detail += f"... and {len(failed_records) - 5} more"
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+        column = models.ExperimentRecord.hidden_outputs
+        for start in range(0, len(defaults), HIDDEN_OUTPUTS_BATCH):
+            batch = dict(defaults[start : start + HIDDEN_OUTPUTS_BATCH])
+            db.execute(
+                update(models.ExperimentRecord)
+                .where(models.ExperimentRecord.id.in_(list(batch)))
+                .where(column.is_(None))
+                .values(
+                    hidden_outputs=case(
+                        {i: literal(p, column.type) for i, p in batch.items()},
+                        value=models.ExperimentRecord.id,
+                    )
+                )
+            )
 
     DataviewService.multiple_publish_dataview_records(db, current_user.id, ids, flag)
 

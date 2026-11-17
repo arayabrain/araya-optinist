@@ -91,3 +91,23 @@ describe("handleWorkflowYamlError", () => {
     expect(snackbar.mock.calls[0][0]).toBe("Failed to Run workflow")
   })
 })
+
+describe("handleWorkflowYamlError: 507 local disk full", () => {
+  test("shows the server's detail, which says what to do", () => {
+    const snackbar = jest.fn<SnackbarKey, [string, OptionsObject?]>(() => "key")
+    handleWorkflowYamlError(
+      {
+        response: {
+          status: 507,
+          data: {
+            detail:
+              "Cannot run workflow: The analysis server's local disk is nearly full. Delete records you no longer need.",
+          },
+        },
+      },
+      snackbar,
+    )
+    expect(snackbar.mock.calls[0][0]).toContain("local disk is nearly full")
+    expect(snackbar.mock.calls[0][1]).toMatchObject({ variant: "warning" })
+  })
+})

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals"
 
+import { ANNOUNCEMENT_DISMISSED_KEY } from "const/Announcement"
 import type { User } from "store/slice/User/UserType"
 import type { RootState } from "store/store"
 
@@ -261,6 +262,16 @@ describe("UserSlice", () => {
       const clearOrder = mockClearRoutingInfo.mock.invocationCallOrder[0]
       const saveOrder = mockSaveToken.mock.invocationCallOrder[0]
       expect(clearOrder).toBeLessThan(saveOrder)
+    })
+
+    it("should clear the announcement dismissal so it shows again", () => {
+      const state = userSlice.reducer(undefined, { type: "@@INIT" })
+
+      userSlice.reducer(state, loginFulfilledAction)
+
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith(
+        ANNOUNCEMENT_DISMISSED_KEY,
+      )
     })
 
     it("should drop a stale ex token when the backend issues none", () => {

@@ -31,6 +31,8 @@ studio/test_data/input/1/test_x2.tif
 !studio/test_data/logs/
 !studio/test_data/output_test/
 !studio/test_data/test_workflow/
+# vendor sample files the microscope reader tests fetch on first run
+studio/tests/app/optinist/microscopes/samples/
 docs/_build
 
 studio/notebooks

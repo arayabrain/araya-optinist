@@ -224,7 +224,7 @@ resource "aws_autoscaling_group" "main" {
   name                      = "${local.env_prefix}-asg"
   vpc_zone_identifier       = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns         = [aws_lb_target_group.autoscaling.arn]
-  health_check_type         = "ELB"
+  health_check_type         = "ELB" # not EC2: only the TG check replaces a registered host with no task, or a wedged one
   health_check_grace_period = 900
   default_cooldown          = 300
 
@@ -586,7 +586,7 @@ resource "aws_instance" "premium" {
 
   launch_template {
     id      = aws_launch_template.premium.id
-    version = "$Latest"
+    version = aws_launch_template.premium.latest_version
   }
 
   instance_type = var.premium_instance_type
@@ -677,6 +677,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         {
           name  = "AWS_DEFAULT_REGION"
           value = var.aws_region
+        },
+        {
+          name  = "ANNOUNCEMENT_SSM_PARAMETER"
+          value = aws_ssm_parameter.announcement.name
         },
         {
           name  = "CLOUDWATCH_LOG_GROUP"
@@ -972,6 +976,10 @@ resource "aws_ecs_task_definition" "premium" {
           value = var.aws_region
         },
         {
+          name  = "ANNOUNCEMENT_SSM_PARAMETER"
+          value = aws_ssm_parameter.announcement.name
+        },
+        {
           name  = "CLOUDWATCH_LOG_GROUP"
           value = "/ecs/${var.environment}-premium-optinist-cloud-taskdef"
         },
@@ -1246,6 +1254,7 @@ resource "aws_ecs_service" "autoscaling" {
     expression = "attribute:tier == free"
   }
 
+  # Cold starts only: past the ASG's grace, a restart not serving in ~300 s loses its instance
   health_check_grace_period_seconds = 900
 
   # desired_count above is the creation value only. At runtime the

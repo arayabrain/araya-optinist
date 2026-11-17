@@ -30,13 +30,16 @@
 | manual                       | no automated counterpart; follow the sheet's own Action / Expected columns                                                                                       |
 
 Everything except the Playwright IDs and the opt-in lanes runs on every non-docs
-PR. Two backend lanes are also opt-in: `test_premium_lock_integration.py`
-(`RUN_PREMIUM_LOCK_IT=1`, real `GET_LOCK`, `make premium_lock_it`) and
+PR. Three backend lanes are also opt-in: `test_premium_lock_integration.py`
+(`RUN_PREMIUM_LOCK_IT=1`, real `GET_LOCK`, `make premium_lock_it`),
 `test_workflow_count_integration.py` (`RUN_WORKFLOW_COUNT_IT=1`, real
-connections, `make workflow_count_it`). Both collect and skip otherwise, and
-both run in the Monday `Weekly Regression`.
+connections, `make workflow_count_it`) and
+`test_expiration_lifecycle_integration.py` (`RUN_EXPIRATION_IT=1`, real MySQL
+with moto S3 and SES, `make expiration_it`). All collect and skip otherwise, and
+all run in the Monday `Weekly Regression`.
 
-The opt-in lanes never run per PR. `@slow` runs in the Monday `Weekly
+The opt-in lanes never run per PR, except `make expiration_it`, which
+`expiration-it.yml` runs on PRs that touch the deletion path. `@slow` runs in the Monday `Weekly
 Regression` (`gh workflow run e2e.yml --ref <branch>`); `@prem`, `@disruptive`,
 the S3 lane and the two Stripe lanes (`CHECKOUT-0x`, `STRIPE-0x`) are excluded
 even from that, because each performs genuine work against the deployed dev
@@ -725,7 +728,7 @@ the reason in its own Notes cell in the sheet. Causes are defined under
 | 811                                                   | A premium user still reaches their instance while free is down                                                                                                                                                                                                                                                           | `test_public_instance_config.py::TestAlbRuleRouting`; `::TestAlbPriorityBandsAreDisjoint` (the premium band sits below the static rules and cannot collide with them); OUT-03 (**@disruptive**: a real assignment taken before the outage, then a fresh login, the status endpoint and a healthy `premium-<id>-tg` all asserted with the free service at zero) |
 | 819                                                   | Published data persists across a public task replacement                                                                                                                                                                                                                                                                 | `test_public_instance_config.py::TestPublishedDataSurvivesTaskReplacement` (partial - the EFS creation token, the volume mounted at the output directory via the published-data access point, and the 600 s deregistration delay); OUT-02 (**@disruptive**: the same published record read through `/api/public/dataview/workflow/reproduce` before and after a forced public deployment, 200 both times - a 202 afterwards would mean it re-synced from S3) |
 | 824                                                   | UnHealthyHostCount alarm for the public target group                                                                                                                                                                                                                                                                     | `test_public_instance_config.py::TestPublicUnhealthyHostsAlarm` (partial - a public key exists, the metric, the per-target-group name, the period and thresholds, and both `alarm_actions` and `ok_actions` wired; the alarm firing is manual); HEALTH-27 (read-only: the alarm's own history shows its last ALARM was an evaluation - CloudWatch's `Threshold Crossed` reason and evaluated datapoints above the threshold - which a `set-alarm-state` test cannot fake. The dev alarm's actions are empty by design, so the notification half has nothing to assert); ASG-01 (**@disruptive**: the alarm really goes to ALARM on evaluated datapoints and recovers to OK on its own, with the front door serving throughout) |
-| 827                                                   | Public ASG replaces an unhealthy instance                                                                                                                                                                                                                                                                                | `test_public_instance_config.py::TestPublicAsgCapacity::test_asg_replaces_instances_the_load_balancer_reports_unhealthy`; `::TestPublicServicePlacement` (partial - `health_check_type`, the grace period and the placement constraint; the real replacement is manual); ASG-01 (**@disruptive**: terminates one public instance - the row's own Action, not `set-instance-health`, which would write the verdict the ASG is meant to reach - then asserts the ASG settles back at two InService instances, the replacement is healthy in the public target group, a public ECS task is really placed on it, and every front-door probe is 200 throughout) |
+| 827                                                   | Public ASG replaces an unhealthy instance                                                                                                                                                                                                                                                                                | `test_public_instance_config.py::TestPublicAsgCapacity::test_asg_replaces_hosts_ecs_cannot_fix`; `::TestPublicServicePlacement` (partial - `health_check_type`, the grace period and the placement constraint; the real replacement is manual); ASG-01 (**@disruptive**: terminates one public instance - the row's own Action, not `set-instance-health`, which would write the verdict the ASG is meant to reach - then asserts the ASG settles back at two InService instances, the replacement is healthy in the public target group, a public ECS task is really placed on it, and every front-door probe is 200 throughout) |
 | 831                                                   | Multiple concurrent users view the public page                                                                                                                                                                                                                                                                           | DV-18 (**opt-in**, `@slow`; partial - three concurrent `/api/public/dataview` reads return 200 with byte-identical payloads containing a known record; a real multi-viewer load test is manual) |
 | 814                                                   | Published-experiment detail data on the deployed public tier                                                                                                                                                                                                                                                             | PUB-05 / PUB-06 (**opt-in**, `@slow`: the published record's input panels really render their plots and data grid for an anonymous visitor, which is stronger than a 200 - the visualization endpoints cannot answer wrongly and still produce a plot) |
 | 832                                                   | Concurrent anonymous load on the public read API                                                                                                                                                                                                                                                                         | HEALTH-26 (20 concurrent anonymous reads, all 200, above the sheet's throughput floor - Playwright request contexts in place of the `ab` benchmark) |
@@ -864,6 +867,14 @@ free ASG carries exactly its launch hook and ECS's draining hook. The retired
 terminate hook can only be removed by hand, and Terraform never shows it, so this
 read is what notices an environment where the removal was skipped. The
 procedure is in `FREE_MANAGER_ARCHITECTURE.md`, *Lifecycle Hooks*.
+
+**`free-` / `public-serving-below-desired` have no row either.** They fire when
+a tier serves fewer healthy targets than its ASG wants hosts, the case where ECS
+deregistered a target and the ASG's ELB check sees the host as unused, not
+unhealthy, outside an ECS deployment. `test_public_instance_config.py::TestServingBelowDesiredAlarm`
+pins each query, the deployment gate and the window, and `test_compute_config.py::TestFreeAsgScaleIn::test_asg_replaces_hosts_ecs_cannot_fix`
+pins the free ASG to `ELB`. HEALTH-10 and HEALTH-11 read the deployed alarms; the
+alarm firing is manual.
 
 **The background tier's log timestamps were wrong until this lane was written.**
 Its `awslogs-multiline-pattern` expected a leading `[` the application never

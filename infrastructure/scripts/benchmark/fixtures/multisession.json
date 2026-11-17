@@ -1,0 +1,10 @@
+{
+  "name": "bench-multisession",
+  "description": "input -> caiman_cnmf_multisession (the input node's file, outside the experiment; shipped parameters, 2 sessions)",
+  "nodes": [
+    {"id": "cnmf_multisession_bench", "label": "cnmf_multisession", "path": "caiman/cnmf_multisession"}
+  ],
+  "edges": [
+    ["input_bench", "image", "ImageData", "cnmf_multisession_bench", "images", "ImageData"]
+  ]
+}

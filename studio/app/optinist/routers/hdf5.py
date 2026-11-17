@@ -1,4 +1,5 @@
 import os
+from functools import partial
 from typing import List
 
 import h5py
@@ -29,17 +30,17 @@ logger = AppLogger.get_logger()
 class HDF5Getter:
     @classmethod
     def get(cls, filepath) -> List[HDF5Node]:
-        cls.hdf5_list: List[HDF5Node] = []
+        hdf5_list: List[HDF5Node] = []
         with h5py.File(filepath, "r") as f:
-            f.visititems(cls.get_ds_dictionaries)
+            f.visititems(partial(cls.get_ds_dictionaries, hdf5_list))
 
-        return cls.hdf5_list
+        return hdf5_list
 
     @classmethod
-    def get_ds_dictionaries(cls, path: str, node: h5py.Dataset):
+    def get_ds_dictionaries(cls, hdf5_list: list, path: str, node: h5py.Dataset):
         if isinstance(node, h5py.Dataset):
             if node.shape:  # skips scalar and null-dataspace datasets
-                cls.recursive_dir_tree(cls.hdf5_list, path.split("/"), node, "")
+                cls.recursive_dir_tree(hdf5_list, path.split("/"), node, "")
 
     @classmethod
     def recursive_dir_tree(

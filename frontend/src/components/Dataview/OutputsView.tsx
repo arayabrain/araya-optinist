@@ -1,5 +1,7 @@
-import { ReactElement } from "react"
-import { useSelector } from "react-redux"
+import { ReactElement, useEffect, useState } from "react"
+import { useDispatch, useSelector } from "react-redux"
+
+import { enqueueSnackbar } from "notistack"
 
 import {
   Box,
@@ -12,8 +14,19 @@ import {
 import BaseNodesView, {
   renderVisualizationItems,
   useDataviewVisualizationCleanup,
+  VisualizationItemData,
 } from "components/Dataview/BaseNodesView"
-import { selectOutputVisualizationItems } from "store/slice/Dataview/DataviewSelectors"
+import OutputsOutline from "components/Dataview/OutputsOutline"
+import {
+  getHiddenOutputs,
+  putHiddenOutputs,
+} from "store/slice/Dataview/DataviewActions"
+import {
+  selectDataviewPrivateRecord,
+  selectOutputVisualizationItems,
+} from "store/slice/Dataview/DataviewSelectors"
+import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
+import { AppDispatch } from "store/store"
 
 type OutputsViewProps = {
   open: boolean
@@ -21,6 +34,23 @@ type OutputsViewProps = {
   workspaceId: number | undefined
   uid: string | undefined
   handleClose: () => void
+}
+
+// Collapses `//`, `.` and `..` the way the backend stores hidden paths
+const canonicalPath = (path: string) =>
+  path
+    .split("/")
+    .reduce<string[]>((parts, part) => {
+      if (part === "..") parts.pop()
+      else if (part !== "" && part !== ".") parts.push(part)
+      return parts
+    }, [])
+    .join("/")
+
+// hidden_outputs are relative to the output dir; legacy records carry absolute paths
+const isSamePath = (hidden: string, path: string) => {
+  const canonical = canonicalPath(path)
+  return canonical === hidden || canonical.endsWith(`/${hidden}`)
 }
 
 const OutputsView = ({
@@ -31,21 +61,89 @@ const OutputsView = ({
   handleClose,
 }: OutputsViewProps) => {
   useDataviewVisualizationCleanup(open)
+  const dispatch = useDispatch<AppDispatch>()
 
   const outputVisualizationItems = useSelector(
     selectOutputVisualizationItems(uid),
   )
+  const record = useSelector(selectDataviewPrivateRecord(workspaceId, uid))
+  const recordId = record?.id
+  const hiddenOutputs = record?.hidden_outputs ?? []
+  const editable = !is_public && recordId != null
+  const [loaded, setLoaded] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  // The store can still hold the previous record's pipeline on the first render
+  const pipelineUid = useSelector(selectPipelineLatestUid)
+  const hasOutputs =
+    pipelineUid === uid &&
+    outputVisualizationItems.some((s) => s.items.length > 0)
+
+  // Stored list or defaults; waits for reproduce, which downloads the metadata
+  useEffect(() => {
+    setLoaded(false)
+    if (!open || !editable || recordId == null || !hasOutputs) return
+    let current = true
+    dispatch(getHiddenOutputs({ id: recordId }))
+      .unwrap()
+      .then(() => current && setLoaded(true))
+      .catch(
+        () =>
+          current &&
+          enqueueSnackbar("Failed to load output visibility", {
+            variant: "error",
+          }),
+      )
+    return () => {
+      current = false
+    }
+  }, [dispatch, open, editable, recordId, hasOutputs])
+
+  const isPublic = (item: VisualizationItemData) =>
+    !hiddenOutputs.some((h) => isSamePath(h, item.filePath))
+
+  const handleToggle = (item: VisualizationItemData, toPublic: boolean) => {
+    if (recordId == null) return
+    setSaving(true)
+    dispatch(
+      putHiddenOutputs({
+        id: recordId,
+        path: item.filePath,
+        hidden: !toPublic,
+      }),
+    )
+      .unwrap()
+      .catch(() =>
+        enqueueSnackbar(`Failed to update visibility of ${item.title}`, {
+          variant: "error",
+        }),
+      )
+      .finally(() => setSaving(false))
+  }
 
   const renderData = (): ReactElement[] => {
-    if (outputVisualizationItems.length === 0) {
+    const sections = outputVisualizationItems.filter(
+      (pathInfo) => pathInfo.items.length > 0,
+    )
+    if (sections.length === 0) {
       return []
     }
 
-    const visualizationSections: ReactElement[] = []
+    if (editable) {
+      return [
+        <OutputsOutline
+          key="outputs-outline"
+          sections={sections}
+          isPublic={isPublic}
+          onToggle={handleToggle}
+          disabled={saving || !loaded}
+        />,
+      ]
+    }
 
-    outputVisualizationItems.forEach((pathInfo) => {
-      if (pathInfo.items.length > 0) {
-        visualizationSections.push(
+    return [
+      <Box key="visualization-container" sx={{ p: 2 }}>
+        {sections.map((pathInfo) => (
           <Box key={`node-section-${pathInfo.nodeId}`} sx={{ mb: 4 }}>
             <Typography variant="h5" gutterBottom sx={{ mb: 2 }}>
               {pathInfo.nodeName}
@@ -60,14 +158,8 @@ const OutputsView = ({
             <Grid container spacing={2}>
               {renderVisualizationItems(pathInfo.items)}
             </Grid>
-          </Box>,
-        )
-      }
-    })
-
-    return [
-      <Box key="visualization-container" sx={{ p: 2 }}>
-        {visualizationSections}
+          </Box>
+        ))}
       </Box>,
     ]
   }

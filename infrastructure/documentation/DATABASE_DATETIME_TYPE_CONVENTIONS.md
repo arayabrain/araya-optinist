@@ -58,7 +58,7 @@ Several tables use both types. A loose pattern exists (audit columns `TIMESTAMP`
 |-------|---------------------|--------------------|
 | `background_tasks` | `created_at`, `updated_at` | `started_at`, `completed_at` |
 | `storage_operations` | `created_at` | `completed_at` |
-| `subscription_users` | `created_at`, `last_synced` | `updated_at`, `expiration`, `deletion_processed_at` |
+| `subscription_users` | `created_at`, `last_synced` | `updated_at`, `expiration`, `deletion_processed_at`, `grace_start_notified_at`, `grace_reminder_notified_at`, `reprocess_notified_at` |
 | `user_storage_usage` | (none) | `created_at`, `last_updated`, `last_full_scan` |
 
 ---

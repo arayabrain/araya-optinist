@@ -78,7 +78,7 @@ export const ThumbnailImage = memo(function ThumbnailImage({
           justifyContent: "center",
         }}
       >
-        <CircularProgress size={20} />
+        <CircularProgress size={20} aria-label="Loading thumbnail" />
       </Box>
     )
   }

@@ -1,10 +1,12 @@
 # Packages in conda env for [optinist]
 dependencies:
-  - python=3.9
+  - python=3.11
   - numpy<2
   - pip
   - h5py>=3.8.0
   - pip:
+      - numpy<2
+      - pandas<3
       - scikit-learn==1.1.*
       - statsmodels==0.13.*
       - pynwb<3

@@ -2,7 +2,6 @@
 # import joblib
 # import json
 
-import numpy as np
 import scipy.sparse
 
 from studio.app.optinist.wrappers.lccd.lccd_python.blob_detector import BlobDetector
@@ -42,9 +41,9 @@ class LCCD:
         roi = filter_roi_by_area(
             roi, self.roi_integration.min_area, self.roi_integration.max_area
         )
-        if self.roi_integration.sparse:
-            roi = np.array(roi.todense())
-        return roi
+        # (pixels, ROIs), sparse whatever the stages' settings: dense, it holds
+        # every pixel for every ROI (1 MB per ROI at 512 x 512 in float32)
+        return scipy.sparse.csc_matrix(roi)
 
 
 # def main(args):

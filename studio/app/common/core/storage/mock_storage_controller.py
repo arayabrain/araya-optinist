@@ -10,6 +10,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     InputFileLock,
     RemoteExperimentSyncMode,
     StorageDirectoryType,
+    local_path_for_remote_key,
 )
 from studio.app.common.core.utils.filepath_creater import (
     create_directory,
@@ -229,10 +230,15 @@ class MockStorageController(BaseRemoteStorageController):
         # do copy data from remote storage
         target_files_count = len(target_files)
         for index, remote_config_yml_path in enumerate(target_files):
-            relative_config_yml_path = remote_config_yml_path.replace(
-                f"{__class__.MOCK_OUTPUT_DIR}/", ""
+            mock_output_prefix = f"{__class__.MOCK_OUTPUT_DIR}/"
+            local_config_yml_path = local_path_for_remote_key(
+                remote_config_yml_path, mock_output_prefix, DIRPATH.OUTPUT_DIR
             )
-            local_config_yml_path = f"{DIRPATH.OUTPUT_DIR}/{relative_config_yml_path}"
+            if local_config_yml_path is None:
+                continue
+            relative_config_yml_path = remote_config_yml_path.removeprefix(
+                mock_output_prefix
+            )
             local_config_yml_dir = os.path.dirname(local_config_yml_path)
 
             if not os.path.isfile(local_config_yml_path):
@@ -264,10 +270,10 @@ class MockStorageController(BaseRemoteStorageController):
             DIRPATH.WORKFLOW_YML,
         ]
 
-        experiment_remote_dir = (
-            f"{__class__.MOCK_OUTPUT_DIR}/{workspace_id}/{unique_id}"
+        experiment_remote_dir = self._make_experiment_remote_path(
+            workspace_id, unique_id
         )
-        experiment_local_dir = f"{DIRPATH.OUTPUT_DIR}/{workspace_id}/{unique_id}"
+        experiment_local_dir = self._make_experiment_local_path(workspace_id, unique_id)
 
         logger.debug(
             f"download experiment metadata from remote storage (mock). "

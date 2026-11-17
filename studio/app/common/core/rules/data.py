@@ -13,6 +13,7 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.logger_context_helpers import (
     init_client_id_from_snakemake_config,
 )
+from studio.app.common.core.rules.benchmark_recorder import BenchmarkRecorder
 
 logger = AppLogger.get_logger()
 
@@ -25,6 +26,8 @@ def main():
         from studio.app.common.core.utils.pickle_handler import PickleWriter
         from studio.app.common.core.workflow.workflow import NodeType, NodeTypeUtil
         from studio.app.const import FILETYPE
+
+        BenchmarkRecorder.mark("imports_done")
 
         # Initialize client_id from snakemake config
         init_client_id_from_snakemake_config(snakemake.config)
@@ -66,4 +69,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with BenchmarkRecorder.record(snakemake):
+        main()

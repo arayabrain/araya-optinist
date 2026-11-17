@@ -35,7 +35,8 @@ here, `MANUAL` is not. An e2e citation ending in `@slow` is gated behind
 `Coverage` label says. Re-derive from the sheets rather
 than adjusting a total by hand.
 
-The opt-in lanes never run per PR. `@slow` runs in the Monday `Weekly
+The opt-in lanes never run per PR, except `make expiration_it`, which
+`expiration-it.yml` runs on PRs that touch the deletion path. `@slow` runs in the Monday `Weekly
 Regression` (`gh workflow run e2e.yml --ref <branch>`); `@prem`, `@disruptive`
 and the S3 lane are excluded even from that, because each performs genuine work
 against the deployed dev environment, costs money and mutates shared

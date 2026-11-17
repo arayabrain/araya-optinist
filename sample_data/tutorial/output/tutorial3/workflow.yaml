@@ -183,7 +183,7 @@ nodeDict:
               path: blob_detector/max_area
             sparse:
               type: child
-              value: false
+              value: true
               path: blob_detector/sparse
         roi_integration:
           type: parent
@@ -202,7 +202,7 @@ nodeDict:
               path: roi_integration/max_area
             sparse:
               type: child
-              value: false
+              value: true
               path: roi_integration/sparse
         lccd:
           type: parent

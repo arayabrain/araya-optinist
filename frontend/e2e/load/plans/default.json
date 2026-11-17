@@ -1,0 +1,53 @@
+{
+  "name": "default",
+  "step_deadline_s": 120,
+  "cooldown_s": 240,
+  "settle_s": 600,
+  "cutoff_utc": "12:40",
+  "probe_stop_s": { "public": 5, "free": 5 },
+  "screens": [
+    {
+      "screen": "dashboard",
+      "cap": 50,
+      "steps": [
+        { "users": 1 },
+        { "users": 10 },
+        {
+          "users": 50,
+          "probe_stop_s": { "free": 10 },
+          "when": ["previous.stopped_by in none,free"]
+        },
+        { "users": 100, "probe_stop_s": { "free": 10 } }
+      ]
+    },
+    {
+      "screen": "usersme",
+      "cap": 50,
+      "steps": [{ "users": 50 }, { "users": 100 }]
+    },
+    {
+      "screen": "dialog",
+      "cap": 20,
+      "steps": [
+        { "users": 1 },
+        { "users": 5 },
+        { "users": 10 },
+        { "users": 20 },
+        { "users": 50 }
+      ]
+    },
+    {
+      "screen": "public",
+      "cap": 30,
+      "steps": [
+        { "users": 1 },
+        { "users": 5 },
+        { "users": 10 },
+        { "users": 20, "when": ["previous.public_probe_max < 3"] },
+        { "users": 30, "when": ["previous.public_probe_max < 3"] },
+        { "users": 50, "when": ["previous.public_probe_max < 3"] },
+        { "users": 100, "when": ["previous.public_probe_max < 3"] }
+      ]
+    }
+  ]
+}

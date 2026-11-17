@@ -21,6 +21,10 @@ Other Makefile targets:
 | `make test_backend_native` | The same backend tests, outside Docker |
 | `make test_frontend` | Frontend tests only in Docker |
 
+The microscope reader tests in `studio/tests/app/optinist/microscopes/` fetch two
+public vendor sample files (18 MB) into `samples/` beside them on first run and
+skip, naming the cause, when the download fails or a vendor SDK is unavailable.
+
 ### Frontend only (local, from `frontend/`)
 
 | Command | Use case |

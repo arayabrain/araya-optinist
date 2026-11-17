@@ -81,8 +81,8 @@ class IsxdReader(MicroscopeDataReaderBase):
                 "data_type": movie.data_type.__name__,
             },
             "spacing": {
-                "width": spacing.num_pixels[0],
-                "height": spacing.num_pixels[1],
+                "width": spacing.num_pixels[1],
+                "height": spacing.num_pixels[0],
             },
             "timing": {
                 "start": start_datatime,
@@ -164,7 +164,6 @@ class IsxdReader(MicroscopeDataReaderBase):
         for channel_no in range(channels_count):
             for i in range(movie.timing.num_samples):
                 single_plane_buffer = movie.get_frame_data(i).astype(pixel_np_dtype)
-                single_plane_buffer = single_plane_buffer.T  # rotate YX->XY
                 result_channels_stacks[channel_no, i] = single_plane_buffer
 
         return result_channels_stacks

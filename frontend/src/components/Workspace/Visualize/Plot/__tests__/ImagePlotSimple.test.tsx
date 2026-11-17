@@ -7,10 +7,7 @@ import thunk from "redux-thunk"
 import { describe, it, expect, jest, beforeEach } from "@jest/globals"
 import { render, screen, fireEvent } from "@testing-library/react"
 
-import {
-  ImagePlotSimple,
-  ImagePlotSimpleWithLoading,
-} from "components/Workspace/Visualize/Plot/ImagePlotSimple"
+import { ImagePlotSimple } from "components/Workspace/Visualize/Plot/ImagePlotSimple"
 
 const mockStore = configureStore([thunk])
 
@@ -338,6 +335,65 @@ describe("ImagePlotSimple Component", () => {
       // Should show loading progress bar
       expect(screen.getByRole("progressbar")).toBeDefined()
     })
+
+    // The fetch is dispatched from an effect, so the first painted frame has no
+    // store entry at all and used to fall through to the no-data branch.
+    it("shows the loading indicator before the fetch registers in the store", () => {
+      store = mockStore({
+        displayData: { image: {}, loading: false, loadingStack: [] },
+      })
+
+      renderWithProviders(
+        <ImagePlotSimple filePath="/test/image.tiff" workspaceId={1} />,
+      )
+
+      expect(
+        screen.getByRole("progressbar", { name: "Loading thumbnail" }),
+      ).toBeDefined()
+      expect(
+        screen.getByLabelText("May need to sync from cloud storage"),
+      ).toBeDefined()
+      expect(screen.queryByText("No image data")).toBeNull()
+    })
+
+    // Without a workspaceId the effect never dispatches, so an indicator would spin forever.
+    it("shows no data rather than a stuck indicator when workspaceId is missing", () => {
+      store = mockStore({
+        displayData: { image: {}, loading: false, loadingStack: [] },
+      })
+
+      renderWithProviders(
+        <ImagePlotSimple filePath="/test/image.tiff" workspaceId={0} />,
+      )
+
+      expect(screen.queryByRole("progressbar")).toBeNull()
+      expect(screen.getByText("No image data")).toBeDefined()
+    })
+
+    it("shows no data once a fetch resolves with nothing in it", () => {
+      store = mockStore({
+        displayData: {
+          image: {
+            "/test/image.tiff": {
+              type: "image",
+              data: [],
+              pending: false,
+              fulfilled: true,
+              error: null,
+            },
+          },
+          loading: false,
+          loadingStack: [],
+        },
+      })
+
+      renderWithProviders(
+        <ImagePlotSimple filePath="/test/image.tiff" workspaceId={1} />,
+      )
+
+      expect(screen.queryByRole("progressbar")).toBeNull()
+      expect(screen.getByText("No image data")).toBeDefined()
+    })
   })
 
   describe("No data state", () => {
@@ -468,115 +524,6 @@ describe("ImagePlotSimple Component", () => {
 
       // Should NOT dispatch getImageData action when already initialized
       expect(mockGetImageData).not.toHaveBeenCalled()
-    })
-  })
-})
-
-describe("ImagePlotSimpleWithLoading Component", () => {
-  let store: ReturnType<typeof mockStore>
-
-  beforeEach(() => {
-    mockGetImageData.mockClear()
-  })
-
-  const renderWithProviders = (
-    component: React.ReactElement,
-    customStore?: ReturnType<typeof mockStore>,
-  ) => {
-    return render(<Provider store={customStore || store}>{component}</Provider>)
-  }
-
-  // The sync overlay is not covered here, or anywhere: it cannot render for
-  // these states, because its gate wants a pending fetch on data that is not
-  // initialized and the pending selector is false until it is.
-  describe("Wrapper states", () => {
-    it("renders the inner pending progressbar while a fetch is pending", () => {
-      const initialState = {
-        displayData: {
-          image: {
-            "/test/image.tiff": {
-              type: "image",
-              data: [],
-              pending: true,
-              fulfilled: false,
-              error: null,
-            },
-          },
-          loading: true,
-          loadingStack: [true],
-        },
-      }
-      store = mockStore(initialState)
-
-      renderWithProviders(
-        <ImagePlotSimpleWithLoading
-          filePath="/test/image.tiff"
-          workspaceId={1}
-        />,
-      )
-
-      expect(screen.getByRole("progressbar")).toBeDefined()
-    })
-
-    it("renders the chart once the data is initialized", () => {
-      const initialState = {
-        displayData: {
-          image: {
-            "/test/image.tiff": {
-              type: "image",
-              data: [
-                [
-                  [1, 2, 3],
-                  [4, 5, 6],
-                ],
-              ],
-              pending: false,
-              fulfilled: true,
-              error: null,
-            },
-          },
-          loading: false,
-          loadingStack: [],
-        },
-      }
-      store = mockStore(initialState)
-
-      renderWithProviders(
-        <ImagePlotSimpleWithLoading
-          filePath="/test/image.tiff"
-          workspaceId={1}
-        />,
-      )
-
-      expect(screen.getByTestId("plotly-chart")).toBeDefined()
-    })
-
-    it("passes uniqueId to inner ImagePlotSimple component", () => {
-      const initialState = {
-        displayData: {
-          image: {},
-          loading: false,
-          loadingStack: [],
-        },
-      }
-      store = mockStore(initialState)
-
-      renderWithProviders(
-        <ImagePlotSimpleWithLoading
-          filePath="/test/image.tiff"
-          workspaceId={1}
-          uniqueId="test-workflow-id"
-        />,
-      )
-
-      // Should dispatch with uniqueId
-      expect(mockGetImageData).toHaveBeenCalledWith({
-        path: "/test/image.tiff",
-        workspaceId: 1,
-        uniqueId: "test-workflow-id",
-        startIndex: 1,
-        endIndex: 1,
-      })
     })
   })
 })

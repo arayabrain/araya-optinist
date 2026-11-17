@@ -1,4 +1,4 @@
-import { AxiosProgressEvent } from "axios"
+import { AxiosError, AxiosProgressEvent } from "axios"
 
 import { createAsyncThunk, createAction } from "@reduxjs/toolkit"
 
@@ -25,6 +25,17 @@ export const setDownloadProgress = createAction<{
   requestId: string
   progress: number
 }>(`${FILE_UPLOADER_SLICE_NAME}/setDownloadProgress`)
+
+// The thunks reject with the axios error; a string detail (507 disk full,
+// 403 quota) says what to do. A 422 detail is an array: use the fallback.
+export const uploadRejectionMessage = (
+  payload: unknown,
+  fallback: string,
+): string => {
+  const detail = (payload as AxiosError<{ detail?: unknown }> | undefined)
+    ?.response?.data?.detail
+  return typeof detail === "string" ? detail : fallback
+}
 
 export const uploadFile = createAsyncThunk<
   {
@@ -148,7 +159,7 @@ export const getStatusLoadViaUrl = createAsyncThunk<
 })
 
 export const URL_UPLOAD_POLL_INTERVAL_MS = 1000
-// A poll that reaches a worker other than the downloading one gets a 404
+// A poll that reaches another instance than the downloading one gets a 404
 export const URL_UPLOAD_MAX_FAILED_POLLS = 30
 
 export const waitForUploadViaUrl = createAsyncThunk<

@@ -22,6 +22,17 @@ class OutputData:
     meta: Optional[PlotMetaData] = None
 
 
+# Not a subclass of OutputData: pydantic would take OutputData's model for it
+@dataclass
+class ImageOutputData:
+    """An image item as stored: columns and index keep the file's types."""
+
+    data: Union[List, Dict, str]
+    columns: List[Union[int, str]] = None
+    index: List[Union[int, str]] = None
+    meta: Optional[PlotMetaData] = None
+
+
 @dataclass
 class JsonTimeSeriesData(OutputData):
     xrange: list = None

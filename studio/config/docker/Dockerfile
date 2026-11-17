@@ -59,6 +59,10 @@ RUN bash run_download_model_files.sh && rm run_download_model_files.sh
 
 # copy optinist files
 COPY frontend/build /app/frontend/build
+# gzip copies of the bundle, served to browsers that accept gzip (PrecompressedStaticFiles)
+RUN find /app/frontend/build/static -type f \
+        \( -name '*.js' -o -name '*.css' -o -name '*.svg' \) \
+        -exec gzip -9 -k -n -f {} +
 COPY studio /app/studio
 COPY sample_data /app/sample_data
 COPY infrastructure/scripts /app/scripts

@@ -27,6 +27,7 @@ Weekly and monthly checks are automated by maintenance scripts that collect data
 - [Weekly Checks — weekly-maintenance.sh](#weekly-checks--weekly-maintenancesh)
 - [Monthly Checks — monthly-maintenance.sh](#monthly-checks--monthly-maintenancesh)
 - [Quarterly Checks](#quarterly-checks)
+- [Planned Downtime: Announcement and Maintenance Page](#planned-downtime-announcement-and-maintenance-page)
 - [Reference: CloudWatch Dashboard](#reference-cloudwatch-dashboard)
 - [Reference: Log Groups and Error Patterns](#reference-log-groups-and-error-patterns)
 - [Reference: Alarm Response Procedures](#reference-alarm-response-procedures)
@@ -84,6 +85,7 @@ The infrastructure lead has Terraform access and handles infrastructure-level ch
 | **Quarterly** | Review and update ASG capacity settings | Infrastructure lead | Manual |
 | **Quarterly** | Review RDS storage growth | Infrastructure lead | Manual |
 | **Quarterly** | Security audit (dependencies, IAM) | Infrastructure lead | Manual |
+| **Every 6 h, and after each deploy** | Docker hygiene on every ECS host (prune stopped containers and unused images) | Automatic | SSM association `<env>-docker-hygiene` (see [Host Root Volume Hygiene](#host-root-volume-hygiene)) |
 
 ---
 
@@ -350,6 +352,67 @@ The RDS instance has 20GB gp3 storage. Plan to increase if free storage trends b
 
 ---
 
+## Planned Downtime: Announcement and Maintenance Page
+
+Two operator switches tell users about planned downtime. Neither needs a deploy or a Terraform apply.
+
+| Switch | What users see | Set with |
+|--------|----------------|----------|
+| Announcement | A warning in the centre of the header on signed-in pages; clicking it opens the full text | SSM parameter `/<environment>/optinist/announcement` |
+| Maintenance page | A static 503 page on every path instead of the app | `infrastructure/scripts/maintenance_mode.sh` |
+
+`<environment>` is the Terraform `var.environment` value: `development` or `subscr`.
+
+### Announcement
+
+The value is JSON. `message` is plain text, up to 500 characters; state the date, time and time zone of the downtime in it. The header shows the first line; the window shows the whole text, so put details after a `\n\n`. `until` is an ISO 8601 time with a time zone; the notice disappears after it. `from` is optional, in the same format; the notice appears only once it has passed, so it can be set ahead of time. Without `from` it shows at once.
+
+```bash
+aws ssm put-parameter --overwrite --region ap-northeast-1 \
+  --name /<environment>/optinist/announcement \
+  --value '{"message": "Scheduled maintenance Wed 5 Nov 13:00-14:00 JST\n\nThe site will be unavailable.", "until": "2026-11-05T05:00:00Z"}'
+```
+
+Clear it early with `--value '{}'`.
+
+- Each backend worker caches the value for 60 seconds. A fresh page load shows a change within about a minute; open tabs re-check every 10 minutes.
+- "Hide until next sign-in" in the window dismisses it. A dismissal lasts until the next sign-in in that browser, or until the message text changes. Editing the message shows it again to everyone.
+- A value that is not JSON, lacks a field, or has a `from` or `until` that is not ISO 8601 or has no time zone shows nothing and logs a warning starting `Announcement` in the ECS logs. An `until` in the past or a `from` in the future also shows nothing, without a warning.
+- Standalone installs never show announcements.
+- Check it with `curl -s https://<host>/announcement`, which returns `{"id": ..., "message": ...}` while the notice is live.
+- Anyone with `ssm:PutParameter` on the parameter can change it. The ECS task role can only read it.
+
+### Maintenance page
+
+```bash
+infrastructure/scripts/maintenance_mode.sh <environment> on
+infrastructure/scripts/maintenance_mode.sh <environment> status
+infrastructure/scripts/maintenance_mode.sh <environment> off
+```
+
+- `on` adds a listener rule at priority 10 on the HTTPS listener that answers every path with the 503 page in `infrastructure/scripts/maintenance_page.html`. The page must stay under the ALB's 1024-character limit; the script refuses a longer one.
+- Terraform does not manage the rule, so an apply during the window leaves it in place. `status` is the only record that it is on.
+- Target-group health checks bypass listener rules, so targets stay healthy and the autoscaling groups do not react.
+- The 503 comes from the ALB, so it counts toward `HTTPCode_ELB_5XX_Count`, not the target 5XX alarm.
+- Every request through the ALB is blocked, including Stripe webhooks (Stripe retries them) and the premium manager's experiment-sync trigger (it logs the failure and continues).
+- Open tabs reload onto the page at their next failed API call. The page reloads itself every 5 minutes, so tabs return to the app once it is off.
+- `robots.txt` also returns 503, which pauses search-engine crawling. Keep windows under a day.
+
+### Runbook
+
+1. A week ahead, post the announcement. Load the site in a private window to check it.
+2. At the start of the window, run `maintenance_mode.sh <environment> on`. Check that `curl -si https://<host>/ | head -1` shows 503.
+3. Do the work. Check the backend from inside a container with ECS Exec, since the browser app cannot be reached past the rule:
+   ```bash
+   aws ecs execute-command --region ap-northeast-1 --cluster <environment>-optinist-cloud-cluster \
+     --task <task-id> --container <environment>-optinist-cloud-container --interactive \
+     --command "python -c \"import urllib.request as u; print(u.urlopen('http://localhost:8000/health').read())\""
+   ```
+4. Run `maintenance_mode.sh <environment> off`. Check that `curl -si https://<host>/ | head -1` shows 200.
+5. Clear the announcement, or let `until` pass.
+
+---
+
 ## Reference: CloudWatch Dashboard
 
 **Dashboard name:** `subscr-optinist-monitoring`
@@ -449,6 +512,8 @@ There is no scale-down alarm. The free-manager Lambda removes capacity by user c
 | `subscr-optinist-public-tg-response-time-high` | p95 > 5s for 25 of 30 min | Sustained SPA/public-dataview latency. Check public instance health and cold-cache reads. |
 | `subscr-optinist-free-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Free workflow instance failing health checks. Check ECS task and EBS I/O. |
 | `subscr-optinist-public-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | SPA delivery / public-dataview at risk. Check public ASG instances. |
+| `subscr-optinist-free-serving-below-desired` | Healthy targets < ASG desired hosts for 25 of 30 min, outside an ECS deployment | A host the ASG does not replace (ECS deregistered its target). Check ASG activity first: a refresh or scale-out in progress is expected. Otherwise find the host with no healthy target and set it unhealthy in the ASG. |
+| `subscr-optinist-public-serving-below-desired` | Healthy targets < ASG desired hosts for 35 of 40 min, outside an ECS deployment | Same check on the public tier. The other public host keeps serving meanwhile. A host replacement is short for about 25 min (two 600 s drains), so the window is longer than free's. |
 
 ### Background Service Alarms
 
@@ -495,6 +560,8 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 | `subscr-optinist-public-tg-response-time-high` | `monitoring.tf` | Persistent high latency on the public tier |
 | `subscr-optinist-free-tg-unhealthy-hosts` | `monitoring.tf` | Free workflow instance down |
 | `subscr-optinist-public-tg-unhealthy-hosts` | `monitoring.tf` | SPA delivery / public-dataview at risk |
+| `subscr-optinist-free-serving-below-desired` | `monitoring.tf` | Free tier down with no automatic replacement |
+| `subscr-optinist-public-serving-below-desired` | `monitoring.tf` | Public tier short of a host with no automatic replacement |
 | `subscr-optinist-ebs-queue-length-high` | `monitoring.tf` | Disk saturation can fail health checks and evict the instance |
 | `subscr-optinist-load-average-high` | `monitoring.tf` | EC2 hosts saturated, all services degrade |
 | `subscr-monthly-cost-high` | `monitoring.tf` | Unexpected cost spike |
@@ -559,6 +626,64 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 - **Monthly:** Review slow query log for optimization opportunities (covered by `monthly-maintenance.sh` section 2)
 - **Quarterly:** Check storage growth trend and plan increases (see [Quarterly Checks](#3-rds-storage-growth))
 - **As needed:** If connection count alarms fire, review application connection pooling
+
+### Host Root Volume Hygiene
+
+Every ECS host keeps docker's images and the app's working data (`/app/studio_data`, the container's
+writable layer) on one root volume. Each deploy adds a 2.1 GB image and leaves the stopped container of
+the previous task definition, and nothing in ECS reclaims them fast enough: on 2026-11-04 the dev
+premium host filled its 48 GB root with 11 images and 19 containers, every run failed with `ENOSPC`,
+and once at 100 % the SSM agent and cloud-init could not write either, so the host was unreachable.
+
+Two layers keep that from happening again:
+
+- **Host side.** The SSM association `<env>-docker-hygiene` (`deployment.tf`) runs
+  `infrastructure/scripts/docker_hygiene.sh` on every host launched from one of the four launch
+  templates (free, premium, background, public), every 6 hours and once after each deploy
+  (`null_resource.deploy_to_ecs` and `ecr_build_push.sh --deploy` call `start-associations-once`).
+  It prunes stopped containers created more than 10 minutes ago, then, only when the ECS agent
+  reports at least one RUNNING task and none mid-start, every image no container uses. The log is
+  `/var/log/docker_hygiene.log` on the host. A host still over 80 % used after pruning exits 2,
+  which shows as **non-compliant** on the State Manager dashboard; that is a flag to look at, not
+  an alarm (a CloudWatch disk alarm was deliberately left out).
+- **App side.** A run or upload is refused with HTTP 507 when starting it would leave less than
+  `OPTINIST_MIN_FREE_DISK_GIB` (default 8) free on the data disk, after first deleting leftovers
+  no run references (CaImAn memmaps, interrupted atomic writes, orphaned CaImAn temp dirs). CaImAn
+  nodes also check the size of the memmap they are about to write and fail the node, with the sizes
+  in the error, rather than take the host under the reserve. Users are told to delete records they
+  no longer need: deleting a record frees local disk.
+
+To run the hygiene by hand (for example after a rollback that pulled an old image):
+
+```bash
+ASSOC_ID=$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)
+aws ssm start-associations-once --association-ids "$ASSOC_ID" --region ap-northeast-1
+# A few minutes later, one line per host with its exit code
+aws ssm describe-association-executions --association-id "$ASSOC_ID" --region ap-northeast-1 \
+  --max-results 1 --query 'AssociationExecutions[0].[Status,ExecutionId]' --output text
+```
+
+The 10 minutes count from when a container was created, not from when it stopped, so the old
+task's container (created when that task started) and with it the previous image go on the first
+post-deploy run. A second `start-associations-once` helps only when an old task was still draining
+during the first; the 6-hour run catches that anyway.
+
+### Emergency: EC2 Root Volume Full
+
+Symptoms: runs fail with `No space left on device` or `SIGBUS`, records stay "running",
+`DELETE /experiments/{ws}/{uid}` returns 500, and SSM Run Command on the host fails in 0 s with no
+output (Session Manager and ECS Exec say "Plugin with name Standard_Stream not found").
+
+1. If SSM still answers, run the hygiene association (above) or, on the host,
+   `docker container prune -f; docker image prune -af`, then delete records the user no longer
+   needs. Check with `df -h /` and `docker system df`.
+2. If SSM does not answer, the host cannot be repaired in place: growing the volume does not help
+   because cloud-init fails with `ENOSPC` before it reaches `growpart`. Either replace the instance
+   (`terraform apply -replace=aws_instance.premium[0]`, at a time with no premium run active) or
+   rescue the volume: stop the instance, attach its root volume to the free-tier host in the same
+   AZ, `growpart` partition 1, `mount -o nouuid`, `xfs_growfs`, reattach, start, then prune docker.
+3. Afterwards, confirm the association is targeting the host
+   (`aws ssm describe-association-execution-targets`) so it does not happen again.
 
 ### Emergency: RDS Storage Full
 

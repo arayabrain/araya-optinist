@@ -1,5 +1,6 @@
 import json
 import os
+import posixpath
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -33,7 +34,7 @@ from studio.app.common.schemas.dataview import (
     PublishValidationResult,
 )
 from studio.app.common.schemas.workflow import WorkflowConfig
-from studio.app.const import ThumbnailType
+from studio.app.const import ACCEPT_FILE_EXT, ORIGINAL_DATA_EXT, ThumbnailType
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -178,6 +179,8 @@ class DataviewService:
     DATAVIEW_PUBLIC_REQUEST_KEY = "DATAVIEW_PUBLIC_REQUEST"
     OUTPUTS_URL_PREFIX = r"^/api/visualizations/[^/]+/"
     OUTPUTS_IMAGE_URL_PREFIX = r"^/api/visualizations/image/"
+    STRUCTURED_URL_PREFIX = r"^/api/visualizations/structured/"
+    PLOT_META_SUFFIX = ".plot-meta.json"
 
     @classmethod
     def find_dataview_record(
@@ -269,6 +272,110 @@ class DataviewService:
 
         return record
 
+    @staticmethod
+    def canonical_output_path(path: str) -> str:
+        """Output-relative path with `//`, `/./` and `..` collapsed, as the file
+        routes resolve it through join_filepath."""
+        return posixpath.normpath(normalize_output_path(path)).lstrip("/")
+
+    PROCESSING_PACKAGES = ("suite2p/", "caiman/", "lccd/")
+    # Steps whose result researchers rarely show once a later step builds on it
+    INTERMEDIATE_STEPS = {
+        "suite2p/suite2p_file_convert",
+        "suite2p/suite2p_registration",
+        "caiman/caiman_mc",
+    }
+
+    @classmethod
+    def default_hidden_outputs(cls, workspace_id: str, unique_id: str) -> List[str]:
+        """
+        Outputs of intermediate steps (file conversion, motion correction) that
+        feed a later processing step. Cell detection, spike deconvolution and
+        analysis outputs stay public, as does a step that ends its pipeline.
+        """
+        workflow = WorkflowConfigReader.read(workspace_id, unique_id)
+        function = ExptConfigReader.read(workspace_id, unique_id).function
+        algorithm = {
+            node_id: node.data.path
+            for node_id, node in workflow.nodeDict.items()
+            if node.type == NodeType.ALGO
+        }
+        children = {}
+        for edge in workflow.edgeDict.values():
+            children.setdefault(edge.source, set()).add(edge.target)
+
+        def feeds_processing(node_id: str) -> bool:
+            seen, pending = set(), list(children.get(node_id, ()))
+            while pending:
+                child = pending.pop()
+                if child in seen:
+                    continue
+                seen.add(child)
+                if algorithm.get(child, "").startswith(cls.PROCESSING_PACKAGES):
+                    return True
+                pending.extend(children.get(child, ()))
+            return False
+
+        return sorted(
+            cls.canonical_output_path(output.path)
+            for node_id, node_function in function.items()
+            if algorithm.get(node_id) in cls.INTERMEDIATE_STEPS
+            and feeds_processing(node_id)
+            for output in (node_function.outputPaths or {}).values()
+            if output.path
+        )
+
+    @classmethod
+    def effective_hidden_outputs(
+        cls, record: ExperimentRecord, strict: bool = False
+    ) -> List[str]:
+        """
+        The stored list. Unset means the defaults, or all public for a record
+        published before per-output visibility existed. Unreadable defaults
+        fall back to all public, or raise when strict.
+        """
+        if record.hidden_outputs is not None:
+            return record.hidden_outputs
+        if record.publish_status == PublishStatus.on.value:
+            return []
+        try:
+            return cls.default_hidden_outputs(str(record.workspace_id), record.uid)
+        except Exception as e:
+            if strict:
+                raise
+            logger.warning(
+                f"Default hidden outputs unavailable for {record.id}, all public: {e}"
+            )
+            return []
+
+    @classmethod
+    def is_hidden_output(
+        cls, record: ExperimentRecord, path: str, ancestors: bool = False
+    ) -> bool:
+        """
+        Check whether an output path (or a file under it, or with ancestors a
+        directory holding one) is hidden by the owner
+        """
+        if not path:
+            return False
+        # A filter's .orig backup counts as the output it backs up
+        path = "/".join(
+            part.removesuffix(ORIGINAL_DATA_EXT)
+            for part in cls.canonical_output_path(path).split("/")
+        )
+        roots = []
+        for hidden in record.hidden_outputs or []:
+            roots.append(hidden)
+            stem, ext = posixpath.splitext(hidden)
+            if ext in ACCEPT_FILE_EXT.TIFF_EXT.value:
+                roots.append(stem)  # the TIFF's cached previews
+        return any(
+            path == root
+            or path.startswith(root + "/")
+            or (ancestors and root.startswith(path + "/"))
+            for root in roots
+        )
+
     @classmethod
     def is_dataview_public_outputs_request(cls, req: Request) -> bool:
         """
@@ -312,12 +419,25 @@ class DataviewService:
             record = DataviewService.find_dataview_record(
                 db, int(workspace_id), unique_id, published_only=True
             )
-            is_allowed_access = record is not None
+            is_allowed_access = (
+                record is not None
+                and not cls.canonical_output_path(data_file_path).endswith(
+                    cls.PLOT_META_SUFFIX
+                )
+                and not cls.is_hidden_output(
+                    record,
+                    data_file_path,
+                    # structured names an input node; the other routes read the path
+                    ancestors=not re.match(cls.STRUCTURED_URL_PREFIX, request_url_path),
+                )
+            )
 
         # Request case for input data
         else:
             query_params = dict(req.query_params)
             workspace_id = query_params.get("workspace_id")
+            if not (workspace_id or "").isdecimal():
+                return False
 
             # Check whether the data is in a public record
             record = cls.find_published_dataview_record_input(

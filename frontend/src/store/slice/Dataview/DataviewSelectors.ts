@@ -21,6 +21,13 @@ export const selectDataviewPublicData = createSelector(
   (dataview) => dataview.data.public,
 )
 
+export const selectDataviewPrivateRecord =
+  (workspaceId: number | undefined, uid: string | undefined) =>
+  (state: RootState) =>
+    selectDataviewPrivateData(state).items.find(
+      (item) => item.uid === uid && item.workspace?.id === workspaceId,
+    )
+
 export const selectDataviewLoading = createSelector(
   selectDataviewSlice,
   (dataview) => dataview.loading,

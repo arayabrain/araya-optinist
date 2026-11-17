@@ -15,7 +15,7 @@ registration:
   spatial_taper: 3.45     # edge tapering width in pixels; larger for 1P
   do_bidiphase: False     # estimate the bidirectional phase offset
   bidiphase: 0            # bidirectional phase offset in pixels when not estimated
-  reg_tif: False          # write the registered binary as tiffs into the suite2p folder
+  reg_tif: False          # also write the registered frames as tiffs into the suite2p folder
   nonrigid: True          # non-rigid registration
   block_size: [128, 128]  # block size for non-rigid registration
   snr_thresh: 1.2         # block shifts below this SNR are smoothed from their neighbours

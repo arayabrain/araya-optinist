@@ -1,7 +1,7 @@
 name: Weekly Regression
 
 # Everything that is not a per-PR gate, run once a week against the default
-# branch: the Playwright release suite, the two opt-in real-database lanes, the
+# branch: the Playwright release suite, the three opt-in real-database lanes, the
 # heavier_processing backend tests, and a re-run of the per-PR unit lanes so a
 # merge that broke them without opening a PR is still caught.
 # The e2e job runs the LOCAL docker stack in the runner (db + backend via docker
@@ -57,6 +57,17 @@ jobs:
 
       - name: Run the workflow count integration lane
         run: make workflow_count_it
+
+  # The expiration deletion job over real rows, buckets and SES sends (moto).
+  # Per-PR, expiration-it.yml runs it on deletion changes.
+  expiration_it:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the expiration deletion integration lane
+        run: make expiration_it
 
   e2e:
     runs-on: ubuntu-latest

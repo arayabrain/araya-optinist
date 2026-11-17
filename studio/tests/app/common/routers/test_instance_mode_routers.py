@@ -63,6 +63,11 @@ class TestInstanceModePublic:
         paths = _registered_paths("public")
         assert "/log-report/frontend-errors" in paths
 
+    def test_announcement_router_is_registered_on_public(self):
+        # Anonymous fetches without a Bearer token land on the public tier.
+        paths = _registered_paths("public")
+        assert "/announcement" in paths
+
     def test_logs_router_is_not_registered_on_public(self):
         # /logs viewer stays on its owning tier — premium via p100-199
         # routing-id, free via p320 Bearer catch-all. Users should never see

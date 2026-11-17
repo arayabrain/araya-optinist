@@ -703,9 +703,9 @@ test.describe("Public Dataview", () => {
       await ensurePublishedRecord(publisherPage, BASE_RECORD)
 
       // A record whose PNG generation failed falls back to its source TIFF,
-      // which the grid renders through ImagePlotSimpleWithLoading and never
-      // requests a thumbnail for. Without this the ladder below blames the ALB
-      // rule for a bad fixture.
+      // which the grid renders through ImagePlotSimple and never requests a
+      // thumbnail for. Without this the ladder below blames the ALB rule for a
+      // bad fixture.
       const published = await findDataviewRecord(publisherPage, BASE_RECORD)
       expect(
         published?.thumbnails?.image_url ?? "",

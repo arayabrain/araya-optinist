@@ -38,6 +38,9 @@ mysql_password      = "<PLACEHOLDER-generate-with-openssl-rand-base64-24>"
 stripe_secret_key     = "sk_live_<PLACEHOLDER>"
 stripe_webhook_secret = "whsec_<PLACEHOLDER>"
 
+# Verified SES sender for expiration lifecycle emails (empty = disabled)
+notification_from_email = ""
+
 # OptiNiSt configuration
 optinist_secret_key  = "<PLACEHOLDER-generate-with-openssl-rand-hex-32>"
 routing_secret_key   = "<PLACEHOLDER-generate-with-openssl-rand-hex-32>"

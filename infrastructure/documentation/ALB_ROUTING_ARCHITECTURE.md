@@ -95,8 +95,11 @@ sequenceDiagram
 
 Premium routing IDs occupy dynamic rules 100-199 (created by the Premium Manager Lambda). The static rules below, defined in `infrastructure/terraform/public_alb_rules.tf`, split the remaining traffic between the public tier and the free tier. Lower priority numbers win; the listener default action is the final fallback.
 
+Priority 10 is reserved for the maintenance page. While it is on it answers every request ahead of all other rules; see "Planned Downtime: Announcement and Maintenance Page" in `MAINTENANCE_PROCEDURES.md`. A rule below 10 would bypass it.
+
 | Priority | Rule | Target | Match |
 |---|---|---|---|
+| 10 | maintenance page (only while on) | ALB fixed 503 response | `/*` (created and deleted by `infrastructure/scripts/maintenance_mode.sh`, not Terraform) |
 | 100-199 | premium dynamic rules | Premium instance | `X-Routing-ID` + `X-User-Tier` (Lambda-created) |
 | 200 | `sync_experiment_to_public` | Public | `/system-internal/sync-experiment/*` |
 | 210 | `sync_experiments_to_free` | Free | `/system-internal/sync-experiments/*` |

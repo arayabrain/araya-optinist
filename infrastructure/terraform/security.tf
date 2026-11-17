@@ -106,6 +106,34 @@ resource "aws_iam_role_policy" "ecs_task_cloudwatch" {
   })
 }
 
+# Expiration lifecycle notification emails. Created only when a sender is
+# configured; scoped to the sender identity (address and its domain) and
+# further restricted by FromAddress so the role cannot spoof other senders.
+resource "aws_iam_role_policy" "ecs_task_ses" {
+  count = var.notification_from_email == "" ? 0 : 1
+  name  = "${var.environment}-ecs-task-ses-send"
+  role  = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["ses:SendEmail"]
+        Resource = [
+          "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.notification_from_email}",
+          "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${split("@", var.notification_from_email)[1]}"
+        ]
+        Condition = {
+          StringEquals = {
+            "ses:FromAddress" = var.notification_from_email
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "ecs_task_ecr" {
   name = "${var.environment}-ecs-task-ecr-access"
   role = aws_iam_role.ecs_task.id

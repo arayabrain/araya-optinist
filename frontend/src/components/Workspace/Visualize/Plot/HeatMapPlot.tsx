@@ -9,6 +9,7 @@ import {
   filterHeatMapColumns,
   filterHeatMapRows,
   heatMapZRange,
+  manualZRangeIgnored,
 } from "components/Workspace/Visualize/Plot/heatMapRows"
 import { useVisualize } from "components/Workspace/Visualize/VisualizeContext"
 import { getHeatMapData } from "store/slice/DisplayData/DisplayDataActions"
@@ -25,6 +26,9 @@ import {
 import {
   selectHeatMapItemColors,
   selectHeatMapItemRefItemId,
+  selectHeatMapItemZRange,
+  selectHeatMapItemZRangeMode,
+  selectHeatMapItemZRangePercentile,
   selectHeatMapLinkedDrawOrderList,
   selectHeatMapItemShowScale,
   selectVisualizeItemHeight,
@@ -96,8 +100,22 @@ const HeatMapImple = memo(function HeatMapImple() {
         : { z: rows.z, columns },
     [columnsAreRois, rows, columns, selectedRois],
   )
+  const zRangeMode = useSelector(selectHeatMapItemZRangeMode(itemId))
+  const zRangePercentile = useSelector(
+    selectHeatMapItemZRangePercentile(itemId),
+  )
+  const manualZRange = useSelector(selectHeatMapItemZRange(itemId))
   // Colour scale stays that of the whole matrix while rows are filtered.
-  const zRange = useMemo(() => heatMapZRange(heatMapData), [heatMapData])
+  const zRange = useMemo(
+    () =>
+      heatMapZRange(heatMapData, zRangeMode, zRangePercentile, manualZRange),
+    [heatMapData, zRangeMode, zRangePercentile, manualZRange],
+  )
+  const manualIgnored = useMemo(
+    () =>
+      zRangeMode === "manual" && manualZRangeIgnored(heatMapData, manualZRange),
+    [heatMapData, zRangeMode, manualZRange],
+  )
 
   const data = useMemo(
     () =>
@@ -188,7 +206,17 @@ const HeatMapImple = memo(function HeatMapImple() {
     )
   }
 
-  return <PlotlyChart data={data} layout={layout} config={config} />
+  return (
+    <>
+      {manualIgnored && (
+        <Typography variant="caption" color="error" sx={{ px: 1 }}>
+          The manual colour range is empty for this data; showing the data
+          range.
+        </Typography>
+      )}
+      <PlotlyChart data={data} layout={layout} config={config} />
+    </>
+  )
 })
 
 function heatMapDataEqualtyFn(

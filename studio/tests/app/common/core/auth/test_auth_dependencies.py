@@ -2,25 +2,42 @@
 Unit tests for auth dependencies, specifically for public outputs bucket resolution.
 """
 
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from anyio import to_thread
+from fastapi import Depends, FastAPI
+from firebase_admin import auth as firebase_auth
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
+from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.auth_dependencies import (
     _enrich_user_with_subscription_status,
     _get_user_remote_bucket_name,
+    get_current_user,
     get_current_user_for_dataview_outputs,
     get_current_user_with_dataview_outputs_check,
     get_outputs_remote_bucket_name,
 )
+from studio.app.common.core.auth.auth_helper import extract_uid_from_firebase_credential
 from studio.app.common.core.subscription.constants import (
     PlanName,
     SubscriptionPlanIds,
     SubscriptionStatus,
 )
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from studio.app.common.db.database import get_db
+from studio.tests.app.common.db_pool_probe import (
+    AUTH_HEADERS,
+    asgi_client,
+    one_connection_pool,
+    stub_token_and_user_row,
+    wait_until,
+)
 
 
 def create_mock_request(url_path: str, query_params: dict = None):
@@ -616,3 +633,190 @@ class TestEnrichUserWithSubscriptionStatus:
         _enrich_user_with_subscription_status(user, None, None, None)
         assert user.__dict__["subscription_expiration"] is None
         assert user.__dict__["subscription_status"] == SubscriptionStatus.FREE.value
+
+
+_AUTH_MODULE = "studio.app.common.core.auth.auth_dependencies"
+
+
+def _probe_app(engine, released: asyncio.Event = None) -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/me")
+    async def me(user=Depends(get_current_user)):
+        return {"id": user.id, "checked_out": engine.pool.checkedout()}
+
+    @app.get("/hold")
+    async def hold(db=Depends(get_db)):
+        # Keeps its connection until get_db's teardown
+        db.execute(text("SELECT 1"))
+        await released.wait()
+
+    @app.get("/health")
+    async def health():
+        return {}
+
+    @app.get("/sync")
+    def sync():
+        return {}
+
+    return app
+
+
+class TestGetCurrentUserConnectionPool:
+    """get_current_user and get_db on a real one-connection pool.
+
+    Only the token check and the user row are stubbed (db_pool_probe).
+    """
+
+    @pytest.fixture(autouse=True)
+    def stub_auth(self):
+        with stub_token_and_user_row():
+            yield
+
+    @pytest.mark.asyncio
+    async def test_the_route_runs_without_the_auth_connection(self, tmp_path):
+        with one_connection_pool(tmp_path / "pool.db", timeout=1) as engine:
+            async with asgi_client(_probe_app(engine)) as client:
+                response = await client.get("/me", headers=AUTH_HEADERS)
+
+        assert response.status_code == 200
+        assert response.json() == {"id": 1, "checked_out": 0}
+
+    @pytest.mark.asyncio
+    async def test_a_pool_timeout_answers_429_without_the_pool_message(self, tmp_path):
+        with one_connection_pool(tmp_path / "pool.db", timeout=0.5) as engine:
+            with engine.connect():
+                async with asgi_client(_probe_app(engine)) as client:
+                    response = await client.get("/me", headers=AUTH_HEADERS)
+
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "5"
+        assert "QueuePool" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_another_database_failure_answers_503(self, tmp_path):
+        error = OperationalError("SELECT", {}, Exception("database unreachable"))
+        with one_connection_pool(tmp_path / "pool.db", timeout=1) as engine, patch(
+            f"{_AUTH_MODULE}.__get_current_user_record", side_effect=error
+        ):
+            async with asgi_client(_probe_app(engine)) as client:
+                response = await client.get("/me", headers=AUTH_HEADERS)
+
+        assert response.status_code == 503
+        assert "database unreachable" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_other_requests_are_answered_while_auth_waits_for_the_pool(
+        self, tmp_path
+    ):
+        released = asyncio.Event()
+        with one_connection_pool(tmp_path / "pool.db", timeout=3) as engine:
+            async with asgi_client(_probe_app(engine, released)) as client:
+                hold = asyncio.create_task(client.get("/hold"))
+                await wait_until(lambda: engine.pool.checkedout() == 1)
+
+                me = asyncio.create_task(client.get("/me", headers=AUTH_HEADERS))
+                # Long enough for /me to reach the pool wait
+                await asyncio.sleep(0.2)
+                health = await asyncio.wait_for(client.get("/health"), timeout=1)
+                me_was_waiting = not me.done()
+
+                released.set()
+                me_response = await me
+                await hold
+
+        assert health.status_code == 200
+        assert me_was_waiting
+        assert me_response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_auth_waiting_for_the_pool_leaves_sync_routes_their_threads(
+        self, tmp_path
+    ):
+        limiter = to_thread.current_default_thread_limiter()
+        default_tokens = limiter.total_tokens
+        # One thread for this event loop's sync routes and dependencies
+        limiter.total_tokens = 1
+        try:
+            with one_connection_pool(tmp_path / "pool.db", timeout=3) as engine:
+                async with asgi_client(_probe_app(engine)) as client:
+                    with engine.connect():
+                        me = asyncio.create_task(
+                            client.get("/me", headers=AUTH_HEADERS)
+                        )
+                        # Long enough for /me to reach the pool wait
+                        await asyncio.sleep(0.2)
+                        sync = await asyncio.wait_for(client.get("/sync"), timeout=1)
+                        me_was_waiting = not me.done()
+                    me_response = await me
+        finally:
+            limiter.total_tokens = default_tokens
+
+        assert sync.status_code == 200
+        assert me_was_waiting
+        assert me_response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_a_session_used_before_auth_is_left_open(self, tmp_path):
+        with one_connection_pool(tmp_path / "pool.db", timeout=1) as engine:
+            app = FastAPI()
+
+            def query_first(db=Depends(get_db)):
+                db.execute(text("SELECT 1"))
+
+            @app.get("/me")
+            async def me(
+                _=Depends(query_first),
+                user=Depends(get_current_user),
+                db=Depends(get_db),
+            ):
+                return {
+                    "in_transaction": db.in_transaction(),
+                    "checked_out": engine.pool.checkedout(),
+                }
+
+            async with asgi_client(app) as client:
+                response = await client.get("/me", headers=AUTH_HEADERS)
+
+        assert response.status_code == 200
+        assert response.json() == {"in_transaction": True, "checked_out": 1}
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_token_answers_401_without_the_token_error(self, tmp_path):
+        with one_connection_pool(tmp_path / "pool.db", timeout=1) as engine, patch(
+            f"{_AUTH_MODULE}.extract_uid_from_firebase_credential",
+            return_value=(None, "invalid token"),
+        ), patch(
+            f"{_AUTH_MODULE}.extract_uid_from_jwt_token",
+            return_value=(None, "invalid token"),
+        ):
+            async with asgi_client(_probe_app(engine)) as client:
+                response = await client.get("/me", headers=AUTH_HEADERS)
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Could not validate credentials"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error, expected_status",
+        [
+            (firebase_auth.CertificateFetchError("timed out", cause=None), 503),
+            (firebase_auth.InvalidIdTokenError("bad token"), 401),
+        ],
+        ids=["key-fetch-failure", "invalid-token"],
+    )
+    async def test_a_firebase_key_fetch_failure_answers_503(
+        self, tmp_path, error, expected_status
+    ):
+        with one_connection_pool(tmp_path / "pool.db", timeout=1) as engine, patch(
+            f"{_AUTH_MODULE}.extract_uid_from_firebase_credential",
+            extract_uid_from_firebase_credential,
+        ), patch.object(AUTH_CONFIG, "USE_FIREBASE_TOKEN", True), patch(
+            "studio.app.common.core.auth.auth_helper.firebase_auth.verify_id_token",
+            side_effect=error,
+        ):
+            async with asgi_client(_probe_app(engine)) as client:
+                response = await client.get("/me", headers=AUTH_HEADERS)
+
+        assert response.status_code == expected_status
+        assert str(error) not in response.text

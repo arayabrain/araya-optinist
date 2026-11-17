@@ -23,9 +23,13 @@ from studio.app.common.core.instance_mode import (
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.middleware import (
     ClientIdLoggingMiddleware,
+    CompressionMiddleware,
     SecureRoutingMiddleware,
     SPARoutingMiddleware,
     UserActivityMiddleware,
+)
+from studio.app.common.core.middleware.compression_middleware import (
+    PrecompressedStaticFiles,
 )
 from studio.app.common.core.middleware.cors_config import get_cors_origin_options
 from studio.app.common.core.middleware.spa_routing_middleware import (
@@ -39,6 +43,7 @@ from studio.app.common.core.subscription.constants import (
     PremiumExpirationSweep,
     StorageReconciliation,
     SyncStatusConstants,
+    UnverifiedAccountCleanup,
 )
 
 # Background job imports (only used in non-standalone mode)
@@ -55,6 +60,9 @@ if not MODE.IS_STANDALONE:
         StorageReconciliationJob,
     )
     from studio.app.common.core.background.sync_job import PublishedExperimentSyncJob
+    from studio.app.common.core.background.unverified_account_cleanup_job import (
+        UnverifiedAccountCleanupJob,
+    )
 
 from studio.app.common.core.utils.filepath_creater import InvalidPathError
 from studio.app.common.core.workspace.workspace_dependencies import (
@@ -63,6 +71,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
 )
 from studio.app.common.routers import (
     algolist,
+    announcement,
     auth,
     dataview,
     experiment,
@@ -183,6 +192,14 @@ async def lifespan(app: FastAPI):
             job_id=PremiumExpirationSweep.JOB_ID,
         )
 
+        # Sweep never-verified Firebase accounts unused since registration. Dry-run
+        # unless UNVERIFIED_ACCOUNT_CLEANUP_MODE=delete.
+        BackgroundScheduler.add_job(
+            func=UnverifiedAccountCleanupJob.run,
+            interval_minutes=UnverifiedAccountCleanup.JOB_INTERVAL_MINUTES,
+            job_id=UnverifiedAccountCleanup.JOB_ID,
+        )
+
         # Start scheduler
         BackgroundScheduler.start()
         logger.info("Background job scheduler started")
@@ -269,11 +286,12 @@ def _register_public_routers(app: FastAPI) -> None:
     """Routers mounted on every tier so the SPA can bootstrap during a
     free-tier outage: auth (login/refresh), users_me (the GET /users/me +
     premium-assign / heartbeat / beacon set the SPA calls right after login),
-    public dataview, internal, outputs. Public-tier tasks still talk to the
-    same RDS and invoke the same premium-manager Lambda as free, so these
-    routes work identically whichever tier serves them.
+    public dataview, announcement, internal, outputs. Public-tier tasks still
+    talk to the same RDS and invoke the same premium-manager Lambda as free,
+    so these routes work identically whichever tier serves them.
     """
     app.include_router(dataview.public_router)
+    app.include_router(announcement.router)
     app.include_router(internal.router)  # Internal secret auth, not JWT.
     app.include_router(
         outputs.router,
@@ -359,6 +377,9 @@ app.add_middleware(ClientIdLoggingMiddleware)
 
 app.add_middleware(UserActivityMiddleware)
 
+# Added last, so it wraps the others and compresses their responses too
+app.add_middleware(CompressionMiddleware)
+
 
 @app.get("/is_standalone", response_model=bool, tags=["others"])
 async def is_standalone():
@@ -366,9 +387,10 @@ async def is_standalone():
 
 
 os.makedirs(f"{DIRPATH.FRONTEND_DIRS.BUILD}/static", exist_ok=True)
+# The image build writes a gzip copy beside each script and stylesheet
 app.mount(
     "/static",
-    StaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/static"),
+    PrecompressedStaticFiles(directory=f"{DIRPATH.FRONTEND_DIRS.BUILD}/static"),
     name="static",
 )
 

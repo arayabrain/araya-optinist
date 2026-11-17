@@ -6,13 +6,18 @@ import os
 import threading
 import time
 from glob import glob
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import tifffile
+from fastapi import BackgroundTasks
 
+from studio.app.common.core.storage.mock_storage_controller import MockStorageController
 from studio.app.common.core.storage.remote_storage_controller import InputFileLock
+from studio.app.common.core.workflow.workflow_runner import WorkflowRunner
 from studio.app.common.routers import files as files_module
+from studio.app.common.routers import workflow as workflow_module
 from studio.app.common.routers.files import (
     DirTreeGetter,
     _build_tree_from_remote_files,
@@ -55,6 +60,161 @@ def test_upload_tiff_without_user(client, tmp_path, monkeypatch):
 
     assert response.status_code == 200, response.text
     assert (tmp_path / workspace_id / "upload.tif").read_bytes() == tiff.read_bytes()
+
+
+def _disk_full(seen):
+    from studio.app.common.core.storage.local_disk_guard import LocalDiskFullError
+
+    def guard(extra_bytes=0):
+        seen["extra_bytes"] = extra_bytes
+        raise LocalDiskFullError(3 * 1024**3, 8 * 1024**3 + extra_bytes)
+
+    return guard
+
+
+def test_upload_refused_before_anything_is_written_when_the_disk_is_full(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    seen = {}
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", _disk_full(seen))
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 507, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith("Cannot upload file: ")
+    assert "not your storage quota" in detail
+    assert "Delete records you no longer need" in detail
+    # The spool and the copy, from Content-Length, before the body is spooled
+    assert seen["extra_bytes"] == 2 * int(response.request.headers["content-length"])
+    assert seen["extra_bytes"] > 32
+    assert not (tmp_path / workspace_id).exists()
+
+
+def test_upload_checks_the_destination_copy_after_parsing(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("REMOTE_STORAGE_TYPE", "0")
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    checked = []
+    monkeypatch.setattr(
+        files_module, "ensure_local_disk_headroom", lambda n=0: checked.append(n)
+    )
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert checked == [2 * int(response.request.headers["content-length"]), 16]
+
+
+def test_upload_refused_when_only_the_destination_copy_does_not_fit(
+    client, tmp_path, monkeypatch
+):
+    """The body is already read by then, so the 507 is raised without draining"""
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    seen = {}
+    full = _disk_full(seen)
+    monkeypatch.setattr(
+        files_module,
+        "ensure_local_disk_headroom",
+        lambda n=0: full(n) if n == 16 else None,
+    )
+
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+
+    assert response.status_code == 507, response.text
+    assert response.json()["detail"].startswith("Cannot upload file: ")
+    assert seen["extra_bytes"] == 16
+    assert not (tmp_path / workspace_id).exists()
+
+
+def test_a_refused_upload_reads_the_body_out_before_answering():
+    """A response sent while the client is still sending arrives as a reset."""
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    chunks = [b"abc", b"def"]
+    received = []
+
+    async def receive():
+        chunk = chunks.pop(0)
+        received.append(chunk)
+        return {"type": "http.request", "body": chunk, "more_body": bool(chunks)}
+
+    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    with pytest.raises(HTTPException) as info:
+        asyncio.run(files_module._refuse_upload(request, 507, "full"))
+    assert info.value.status_code == 507
+    assert received == [b"abc", b"def"]
+
+
+def test_a_malformed_multipart_body_is_400_not_500(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", lambda n=0: None)
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        content=b"not multipart",
+        headers={"content-type": "multipart/form-data"},
+    )
+    assert response.status_code == 400, response.text
+
+
+def test_a_disk_that_fills_while_receiving_is_507(client, tmp_path, monkeypatch):
+    import errno
+
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", lambda n=0: None)
+
+    async def enospc(self):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(files_module.Request, "form", enospc)
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif",
+        files={"file": ("upload.tif", b"\0" * 16, "image/tiff")},
+    )
+    assert response.status_code == 507, response.text
+    assert "filled while receiving" in response.json()["detail"]
+
+
+def test_upload_without_a_file_field_is_422(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path))
+    response = client.post(
+        f"/files/{workspace_id}/upload/upload.tif", data={"other": "x"}
+    )
+    assert response.status_code == 422
+    assert not (tmp_path / workspace_id).exists()
+
+
+def test_url_download_refused_and_the_response_closed_when_the_disk_is_full(
+    client, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    res = MagicMock(headers={"content-length": "1024"})
+    monkeypatch.setattr(files_module, "open_url", lambda url, public_only: res)
+    seen = {}
+    monkeypatch.setattr(files_module, "ensure_local_disk_headroom", _disk_full(seen))
+
+    response = client.post(
+        f"/files/{workspace_id}/download", json={"url": "https://example.com/a.tif"}
+    )
+
+    assert response.status_code == 507, response.text
+    assert response.json()["detail"].startswith("Cannot download file: ")
+    assert seen["extra_bytes"] == 1024
+    res.close.assert_called_once()
 
 
 def test_DirTreeGetter_tif():
@@ -449,6 +609,66 @@ async def test_cache_write_waits_for_the_input_file_lock(ws):
     writer.join(timeout=5)
     assert not writer.is_alive()
     assert _cache(ws)["a.tif"]["shape"] == [2, 3]
+
+
+CACHE_EDITORS = {
+    "set_shape": lambda name: files_module.set_shape("ws", name),
+    "delete_file": lambda name: files_module.delete_file(
+        "ws", name, BackgroundTasks(), None
+    ),
+    "sample_import": lambda name: workflow_module.import_sample_data(
+        "ws", "tiny", None
+    ),
+    "workflow_runner": lambda name: WorkflowRunner._update_and_upload_metadata(
+        SimpleNamespace(
+            workspace_id="ws", remote_bucket_name=None, logger=files_module.logger
+        ),
+        {(name, files_module._metadata_cache_for(name)[1])},
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entry, name",
+    [("set_shape", "a.tif"), ("delete_file", "a.tif")]
+    + [
+        (entry, name)
+        for entry in ("sample_import", "workflow_runner")
+        for name in ("a.tif", "a.h5", "a.mat")
+    ],
+)
+async def test_cache_editors_wait_for_the_lock_off_the_event_loop(
+    tmp_path, monkeypatch, caplog, entry, name
+):
+    """Waiting on the loop would stall the worker, the lock holder's release
+    with it, until the wait gives up and the edit goes ahead unlocked."""
+    import logging
+
+    monkeypatch.setattr(InputFileLock, "LOCK_WAIT_MAX_SECONDS", 2)
+    monkeypatch.setattr(DIRPATH, "ROOT_DIR", str(tmp_path))
+    monkeypatch.setattr(DIRPATH, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(DIRPATH, "INPUT_DIR", str(tmp_path / "input"))
+    monkeypatch.setattr(MockStorageController, "MOCK_INPUT_DIR", str(tmp_path / "s3"))
+    sample = tmp_path / "sample_data" / "tiny"
+    (sample / "output").mkdir(parents=True)
+    for d in (sample / "input", tmp_path / "input" / "ws"):
+        _tif(d / "a.tif", (2, 3))
+        (d / "a.h5").touch()
+        (d / "a.mat").touch()
+    cache_name = files_module._metadata_cache_for(name)[1]
+    cache = tmp_path / "input" / "ws" / cache_name
+    cache.write_text(json.dumps({name: "stale"}))
+
+    with caplog.at_level(logging.WARNING):
+        async with InputFileLock.acquire("ws", cache_name):
+            route = asyncio.create_task(CACHE_EDITORS[entry](name))
+            await asyncio.sleep(0.3)
+            assert not route.done()
+            assert json.loads(cache.read_text()) == {name: "stale"}
+        await route
+    assert json.loads(cache.read_text()).get(name) != "stale"
+    assert not any("InputFileLock acquire timeout" in r.message for r in caplog.records)
 
 
 def test_cache_write_gives_up_on_a_wedged_lock(ws, monkeypatch, caplog):

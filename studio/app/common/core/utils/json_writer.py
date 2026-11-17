@@ -35,8 +35,9 @@ class JsonWriter:
     def write_as_split(cls, filepath, data):
         cls._ensure_parent_dir_exists(filepath)
         json_str = pd.DataFrame(data).to_json(indent=4, orient="split")
-        with open(filepath, "w") as f:
-            f.write(json_str)
+        # Replaced whole: image items are served unparsed, so a read that met an
+        # in-place rewrite would mix two versions
+        _write_text_atomic(filepath, json_str)
 
     @classmethod
     def write_plot_meta(cls, dir_name, file_name, data: Optional[PlotMetaData]):

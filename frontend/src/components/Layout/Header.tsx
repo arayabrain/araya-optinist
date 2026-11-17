@@ -10,6 +10,7 @@ import { styled } from "@mui/material/styles"
 import Toolbar from "@mui/material/Toolbar"
 import Typography from "@mui/material/Typography"
 
+import AnnouncementNotice from "components/Layout/AnnouncementNotice"
 import Profile from "components/Layout/Profile"
 import Tooltips from "components/Layout/Tooltips"
 import Logo from "components/logo.png"
@@ -60,11 +61,22 @@ const MultiUserHeader: FC<{ handleDrawerOpen: () => void }> = ({
         >
           <MenuIcon />
         </IconButton>
-        <Box display="flex" flexGrow={1} alignItems="center" gap={1.5}>
+        <Box display="flex" alignItems="center" gap={1.5}>
           <HeaderLogoLink to="/public">
             <HeaderLogo src="/static/optinist_logo.png" alt="ARAYA OptiNiSt" />
-            <TitleLogo>ARAYA OptiNiSt</TitleLogo>
+            <TitleLogo sx={{ display: { xs: "none", sm: "block" } }}>
+              ARAYA OptiNiSt
+            </TitleLogo>
           </HeaderLogoLink>
+        </Box>
+        <Box
+          display="flex"
+          flexGrow={1}
+          justifyContent="center"
+          minWidth={0}
+          px={{ xs: 1, md: 2 }}
+        >
+          <AnnouncementNotice />
         </Box>
         {showTabsRegex.test(location.pathname) && <WorkspaceTabs />}
         <Profile />

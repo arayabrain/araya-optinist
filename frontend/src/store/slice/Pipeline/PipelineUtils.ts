@@ -125,8 +125,9 @@ export function handleWorkflowYamlError(
 ): void {
   const detail = (error?.response?.data as { detail?: unknown } | undefined)
     ?.detail
+  // 507: the analysis server's local disk is full; the detail says what to do
   if (
-    error?.response?.status === 422 &&
+    (error?.response?.status === 422 || error?.response?.status === 507) &&
     typeof detail === "string" &&
     !detail.startsWith(WORKFLOW_YAML_ERROR_PREFIX)
   ) {

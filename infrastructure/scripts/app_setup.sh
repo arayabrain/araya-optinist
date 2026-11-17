@@ -7,8 +7,8 @@ set -e
 # This script configures OptiNiSt application on EC2 instances by:
 # - Reading secrets from AWS Secrets Manager
 # - Discovering infrastructure via AWS CLI
-# - Creating configuration files
 # - Initializing the database
+# - Verifying the admin email in Firebase
 #
 # SENSITIVE VALUES ARE FETCHED AT RUNTIME
 # ============================================================================
@@ -20,17 +20,19 @@ set -e
 # Logging
 LOGFILE="/var/log/app-setup.log"
 
-# Application Paths
-APP_CONFIG_BASE="/opt/optinist/optinist-for-cloud/studio/config"
-APP_CONFIG_AUTH_DIR="${APP_CONFIG_BASE}/auth"
-FIREBASE_PRIVATE_KEY_PATH="${APP_CONFIG_AUTH_DIR}/firebase_private.json"
-FIREBASE_CONFIG_PATH="${APP_CONFIG_AUTH_DIR}/firebase_config.json"
-APP_ENV_PATH="${APP_CONFIG_BASE}/.env"
+# Files earlier versions of this script left on the host; nothing reads them.
+# A host removes them on its first run of this version, so this list and its
+# removal can go once every environment has run it.
+LEFTOVER_CONFIG_DIR="/opt/optinist/optinist-for-cloud/studio/config"
+LEFTOVER_FILES=(
+    "${LEFTOVER_CONFIG_DIR}/auth/firebase_config.json"
+    "${LEFTOVER_CONFIG_DIR}/auth/firebase_private.json"
+    "${LEFTOVER_CONFIG_DIR}/.env"
+    "/tmp/init_optinist_db.sql"
+)
 
 # Database Configuration
 MYSQL_PORT=3306
-DB_INIT_SQL_FILE="/tmp/init_optinist_db.sql"
-DB_INIT_FILE_PERMISSIONS=644
 
 # Retry Parameters
 DB_CONNECTION_MAX_ATTEMPTS=30
@@ -130,6 +132,14 @@ get_json_value() {
 }
 
 # ============================================================================
+# REMOVE LEFTOVER FILES
+# ============================================================================
+
+# Before any step that can fail, so a failing step cannot keep them
+echo "$(date): Removing files left by earlier versions"
+rm -f "${LEFTOVER_FILES[@]}"
+
+# ============================================================================
 # WAIT FOR ECS AGENT
 # ============================================================================
 
@@ -142,9 +152,8 @@ retry_command $ECS_AGENT_MAX_ATTEMPTS $ECS_AGENT_RETRY_DELAY "curl -s http://loc
 
 echo "$(date): Fetching secrets from AWS Secrets Manager"
 
-# Firebase Configuration
-echo "$(date): Fetching Firebase configuration..."
-FIREBASE_CONFIG_JSON=$(get_secret "${ENV_PREFIX}-optinist/firebase/config")
+# Firebase service account, for the admin email verification
+echo "$(date): Fetching Firebase service account..."
 FIREBASE_PRIVATE_JSON=$(get_secret "${ENV_PREFIX}-optinist/firebase/private-key")
 
 # Database Configuration
@@ -157,7 +166,6 @@ MYSQL_DATABASE=$(get_json_value "$DB_CONFIG_JSON" "database")
 # Application Configuration
 echo "$(date): Fetching application configuration..."
 APP_CONFIG_JSON=$(get_secret "${ENV_PREFIX}-optinist/app/config")
-OPTINIST_SECRET_KEY=$(get_json_value "$APP_CONFIG_JSON" "secret_key")
 OPTINIST_ORG_NAME=$(get_json_value "$APP_CONFIG_JSON" "org_name")
 OPTINIST_ADMIN_NAME=$(get_json_value "$APP_CONFIG_JSON" "admin_name")
 OPTINIST_ADMIN_EMAIL=$(get_json_value "$APP_CONFIG_JSON" "admin_email")
@@ -213,31 +221,6 @@ echo "$(date): RDS Proxy Endpoint: $RDS_PROXY_ENDPOINT"
 echo "$(date): S3 Bucket: $S3_BUCKET"
 
 # ============================================================================
-# CREATE CONFIGURATION FILES
-# ============================================================================
-
-echo "$(date): Creating configuration files"
-mkdir -p "$APP_CONFIG_AUTH_DIR"
-
-# Create .env file
-cat > "$APP_ENV_PATH" << EOF
-SECRET_KEY='${OPTINIST_SECRET_KEY}'
-USE_FIREBASE_TOKEN=True
-MYSQL_SERVER=${RDS_PROXY_ENDPOINT}
-MYSQL_DATABASE=${MYSQL_DATABASE}
-MYSQL_USER=${MYSQL_USER}
-MYSQL_PASSWORD=${MYSQL_PASSWORD}
-MYSQL_SSL_MODE=REQUIRED
-S3_DEFAULT_BUCKET_NAME=${S3_BUCKET}
-EOF
-
-# Create Firebase config files
-echo "$FIREBASE_CONFIG_JSON" > "$FIREBASE_CONFIG_PATH"
-echo "$FIREBASE_PRIVATE_JSON" > "$FIREBASE_PRIVATE_KEY_PATH"
-
-echo "$(date): Configuration files created successfully"
-
-# ============================================================================
 # DATABASE INITIALIZATION
 # ============================================================================
 
@@ -266,6 +249,9 @@ retry_command $DB_CONNECTION_MAX_ATTEMPTS $DB_CONNECTION_RETRY_DELAY "nc -z $RDS
 
 # Initialize database tables and users
 echo "$(date): Initializing database tables"
+# mktemp creates it owner-only; the trap removes it on any exit, failure included
+DB_INIT_SQL_FILE=$(mktemp /tmp/init_optinist_db.XXXXXX)
+trap 'rm -f "$DB_INIT_SQL_FILE"' EXIT
 cat > "$DB_INIT_SQL_FILE" << 'INIT_SQL'
 -- Ensure user has mysql_native_password authentication for RDS Proxy compatibility
 ALTER USER '${MYSQL_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${MYSQL_PASSWORD}';
@@ -377,14 +363,13 @@ with open(sql_file, 'w') as f:
 print("SQL variable substitution completed successfully")
 PYSUBST
 
-chmod $DB_INIT_FILE_PERMISSIONS "$DB_INIT_SQL_FILE"
-
 # Wait for database to be ready and execute initialization
 max_attempts=$DB_INIT_MAX_ATTEMPTS
 attempt=1
 while [ $attempt -le $max_attempts ]; do
   echo "$(date): Attempting to initialize database (attempt $attempt/$max_attempts)"
-  if mysql -h "$RDS_HOST" -P $MYSQL_PORT -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --ssl "$MYSQL_DATABASE" < "$DB_INIT_SQL_FILE"; then
+  # MYSQL_PWD rather than -p: argv is visible to every user, root's environment is not
+  if MYSQL_PWD="$MYSQL_PASSWORD" mysql -h "$RDS_HOST" -P $MYSQL_PORT -u "$MYSQL_USER" --ssl "$MYSQL_DATABASE" < "$DB_INIT_SQL_FILE"; then
     echo "$(date): Database initialization successful"
     break
   else
@@ -393,6 +378,7 @@ while [ $attempt -le $max_attempts ]; do
     attempt=$((attempt+1))
   fi
 done
+rm -f "$DB_INIT_SQL_FILE"
 
 if [ $attempt -gt $max_attempts ]; then
   echo "$(date): ERROR: Failed to initialize the database after $max_attempts attempts"
@@ -412,14 +398,25 @@ python3 -m pip install firebase-admin || {
     exit 0
 }
 
-# Run verification script
+# Run verification script; the service account reaches it on stdin
 echo "$(date): Running Firebase verification script..."
-python3 -c "
+printf '%s' "$FIREBASE_PRIVATE_JSON" | python3 -c "
 from firebase_admin import auth, credentials, initialize_app
+import json
 import sys
 
 try:
-    initialize_app(credentials.Certificate('$FIREBASE_PRIVATE_KEY_PATH'))
+    info = json.load(sys.stdin)
+    if not isinstance(info, dict):
+        raise ValueError('not a JSON object')
+    cred = credentials.Certificate(info)
+except ValueError as e:
+    # Names only the error type: messages can quote the secret
+    print(f'ERROR: Firebase service account secret is not a valid certificate ({type(e).__name__})', file=sys.stderr)
+    sys.exit(1)
+
+try:
+    initialize_app(cred)
 except ValueError:
     pass  # App already initialized
 
