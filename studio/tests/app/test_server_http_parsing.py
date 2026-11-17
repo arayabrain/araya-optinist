@@ -3,8 +3,8 @@
 uvicorn runs without httptools here, so h11 parses every request. Below 0.16,
 h11 took any two bytes after a chunk's data as its line end (CVE-2025-43859):
 a body that a front proxy reads as one request could carry a second request to
-the app. The server runs as ``studio/server.py`` runs it, with a stand-in app:
-the parser acts before any app code.
+the app. The server runs on h11 with a stand-in app: the parser acts before
+any app code.
 """
 
 import socket
@@ -50,9 +50,12 @@ def serving(app):
     """Runs uvicorn on a loopback port in a thread; yields the port."""
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
-    # the protocol is left to uvicorn, as in production; no logging config,
-    # so the test process's loggers stay as they are
-    server = uvicorn.Server(uvicorn.Config(app, lifespan="off", log_config=None))
+    # h11 is the parser the CVE is about; production's "auto" resolves to it
+    # while httptools is not installed. No logging config, so the test
+    # process's loggers stay as they are
+    server = uvicorn.Server(
+        uvicorn.Config(app, http="h11", lifespan="off", log_config=None)
+    )
     thread = threading.Thread(
         target=server.run, kwargs={"sockets": [sock]}, daemon=True
     )
