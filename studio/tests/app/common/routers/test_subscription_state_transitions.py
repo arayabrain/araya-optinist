@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+import stripe
 from fastapi import HTTPException
 from sqlmodel import Session
 
@@ -550,7 +551,7 @@ class TestTrialEndIsMirroredOntoTheRow:
     stale value shows a later paid subscription as a trial.
     """
 
-    TRIAL_END = 1795000000  # far-future unix timestamp
+    TRIAL_END = 2000000000  # 2033-05-18 UTC
 
     def event(self, trial_end):
         return {
@@ -638,12 +639,17 @@ class TestTrialEndIsMirroredOntoTheRow:
         assert int(trial_end.timestamp()) == self.TRIAL_END
 
     def test_missed_webhook_recovery_passes_the_stripe_trial_end(self):
-        stripe_sub = SimpleNamespace(
-            id="sub_stripe_123",
-            trial_end=self.TRIAL_END,
-            current_period_end=self.TRIAL_END,
-            metadata={"plan_id": str(SubscriptionPlanIds.PREMIUM)},
-            default_payment_method="pm_test",
+        # A real SDK object: recovery reads it both by attribute and by key
+        stripe_sub = stripe.StripeObject.construct_from(
+            {
+                "id": "sub_stripe_123",
+                "status": "trialing",
+                "trial_end": self.TRIAL_END,
+                "current_period_end": self.TRIAL_END,
+                "metadata": {"plan_id": str(SubscriptionPlanIds.PREMIUM)},
+                "default_payment_method": "pm_test",
+            },
+            "sk_test_dummy",
         )
         checkout_module = "studio.app.common.core.subscription.checkout_service"
 
