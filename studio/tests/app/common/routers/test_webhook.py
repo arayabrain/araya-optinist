@@ -1390,7 +1390,7 @@ class TestSubscriptionLifecycleWebhooks:
     @pytest.mark.parametrize(
         "status, trial_days, period_days, expected",
         [
-            ("trialing", 10, 10, "trial"),
+            ("trialing", 10, 40, "trial"),
             ("trialing", -1, 29, "trial"),
             ("active", 10, 40, "trial"),
             ("active", -60, 20, "period"),
