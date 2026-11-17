@@ -42,7 +42,10 @@ const plan = (id: number, name: string, price: number) => ({
 
 const TRIAL_OFFER = "First-time subscribers get 30 days free"
 
-const renderPlans = (userSubscription: Record<string, unknown> | null) =>
+const renderPlans = (
+  userSubscription: Record<string, unknown> | null,
+  userSubscriptionLoading = false,
+) =>
   render(
     <Provider
       store={configureMockStore([])({
@@ -54,7 +57,7 @@ const renderPlans = (userSubscription: Record<string, unknown> | null) =>
           checkoutLoading: false,
           error: null,
           plansLoading: false,
-          userSubscriptionLoading: false,
+          userSubscriptionLoading,
           serverTime: null,
           deletionPriority: null,
           deletionPriorityLoading: false,
@@ -93,6 +96,15 @@ describe("Subscription page trial offer", () => {
       is_trial: false,
       trial_end: null,
     })
+
+    expect(screen.getByTestId("plan-card-Premium")).toBeInTheDocument()
+    expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
+  })
+
+  it("waits for the subscription when the plans arrive first", () => {
+    // The shared `loading` is already false, and `userSubscription` is still
+    // the initial null, so only the pending request tells the cases apart
+    renderPlans(null, true)
 
     expect(screen.getByTestId("plan-card-Premium")).toBeInTheDocument()
     expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
