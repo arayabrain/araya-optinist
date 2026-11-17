@@ -1,4 +1,7 @@
-"""`GET /api/subsc/mgmts` reports a running free trial from the stored trial end."""
+"""
+`GET /api/subsc/mgmts` reports a running free trial from the stored trial end,
+and sends the dates the pages show with their UTC offset.
+"""
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -37,8 +40,11 @@ def client():
     app.dependency_overrides.update(original)
 
 
-def get_subscription(client, expiration, trial_end):
-    row = UserSubscription(
+PLAN = SimpleNamespace(id=SubscriptionPlanIds.PREMIUM, name="Premium", price=5000)
+
+
+def stored_row(expiration, trial_end):
+    return UserSubscription(
         id=5,
         plan_id=SubscriptionPlanIds.PREMIUM,
         user_id=1,
@@ -49,10 +55,19 @@ def get_subscription(client, expiration, trial_end):
         created_at=naive(-1),
         updated_at=naive(-1),
     )
-    plan = SimpleNamespace(id=SubscriptionPlanIds.PREMIUM, name="Premium", price=5000)
-    with patch(f"{SERVICE}.get_user_subscription", return_value=(row, plan)), patch(
+
+
+def get_subscription(client, expiration, trial_end, expired=False):
+    row = stored_row(expiration, trial_end)
+    # An expired row is read by a second query once no active one is found
+    active, lapsed = (None, (row, PLAN, None)) if expired else ((row, PLAN), None)
+    with patch(f"{SERVICE}.get_user_subscription", return_value=active), patch(
+        f"{SERVICE}.get_user_expired_subscription", return_value=lapsed
+    ), patch(
         f"{SERVICE}.get_user_subscription_purchase", return_value=MagicMock()
-    ), patch(f"{SERVICE}.is_subscription_cancelled", return_value=False), patch(
+    ), patch(
+        f"{SERVICE}.is_subscription_cancelled", return_value=False
+    ), patch(
         f"{SERVICE}.get_current_datetime", return_value=NOW
     ):
         response = client.get(URL)
@@ -83,3 +98,20 @@ def test_a_paid_period_is_not_a_trial(client, trial_end):
     body = get_subscription(client, expiration=naive(25), trial_end=trial_end)
 
     assert body["is_trial"] is False
+
+
+@pytest.mark.parametrize(
+    "days, expired",
+    [
+        pytest.param(10, False, id="active"),
+        pytest.param(-3, True, id="expired"),
+    ],
+)
+def test_the_dates_shown_carry_their_utc_offset(client, days, expired):
+    # A naive value is read as the browser's local time: a day off near midnight
+    body = get_subscription(
+        client, expiration=naive(days), trial_end=naive(days), expired=expired
+    )
+
+    assert body["expiration"] == naive(days).isoformat() + "+00:00"
+    assert body["trial_end"] == naive(days).isoformat() + "+00:00"
