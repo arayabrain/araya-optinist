@@ -64,8 +64,9 @@
      cookie is re-issued on every response, so active users stay on the
      instance they started on, and the newest instance holds only sessions
      placed since it launched. It does not look at workload
-   - A terminated instance is released in about 9 minutes: the target group's
-     300 s deregistration delay, then ECS's draining hook, which ECS completes
+   - A terminated instance is released in about 9 minutes on production: the
+     target group's 300 s deregistration delay (60 s on development), then
+     ECS's draining hook, which ECS completes
      a few minutes after the task has stopped. Nothing else holds it: the
      group's former terminate hook, which held every termination for a 300 s
      timeout, is retired (see [Lifecycle Hooks](#lifecycle-hooks))
@@ -782,7 +783,7 @@ its own back-off; the launch hook's 300 s absorbs both, so the target is
 registered close to when the task serves.
 
 Why the floor counts instances that are still terminating: on scale-in the
-ASG waits out the target group's deregistration delay (300 s) *before* ECS's
+ASG waits out the target group's deregistration delay (300 s on production) *before* ECS's
 draining hook, with the container instance still ACTIVE in ECS. Lowering
 while it is in the group would let ECS stop a task chosen by AZ balance —
 possibly the survivor's — leaving no healthy target. Once the instance has
