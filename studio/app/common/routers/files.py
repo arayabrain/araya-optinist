@@ -29,11 +29,8 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_user_remote_bucket_name,
 )
-from studio.app.common.core.cloud.cloud_utils import get_effective_quota_bytes
-from studio.app.common.core.cloud.storage_tracking import (
-    get_current_user_storage_usage,
-    get_user_storage_usage,
-)
+from studio.app.common.core.cloud.cloud_utils import get_quota_usage_percent
+from studio.app.common.core.cloud.storage_tracking import get_current_user_storage_usage
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.storage.local_disk_guard import (
@@ -61,12 +58,7 @@ from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
     is_workspace_owner,
 )
-from studio.app.common.db.database import (
-    get_db,
-    release_request_session,
-    run_db_lookup,
-    session_scope,
-)
+from studio.app.common.db.database import get_db, release_request_session, session_scope
 from studio.app.common.schemas.files import (
     DownloadFileRequest,
     DownloadStatus,
@@ -819,13 +811,8 @@ async def _check_storage_quota(user_id: Optional[int]) -> None:
     """403 once the user's storage is at or over quota (cached usage figure)."""
     if user_id is None:
         return
-    current_usage = await get_current_user_storage_usage(user_id, force_live=False)
-    storage_info = await run_db_lookup(get_user_storage_usage, user_id)
-    quota_limit = await run_db_lookup(get_effective_quota_bytes, user_id, storage_info)
-    if quota_limit <= 0:
-        return
-    storage_usage_percent = (current_usage / quota_limit) * 100
-    if storage_usage_percent >= 100:
+    storage_usage_percent = await get_quota_usage_percent(user_id)
+    if storage_usage_percent is not None and storage_usage_percent >= 100:
         logger.warning(
             f"File upload blocked for user {user_id}: storage quota exceeded "
             f"({storage_usage_percent:.1f}% used)"

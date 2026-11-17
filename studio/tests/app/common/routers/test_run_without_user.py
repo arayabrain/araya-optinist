@@ -13,8 +13,8 @@ def _stubs():
     with patch.object(
         run, "get_current_user_storage_usage", new=AsyncMock()
     ) as usage, patch.object(
-        run, "get_user_storage_usage"
-    ) as storage_info, patch.object(
+        run, "get_quota_usage_percent", new=AsyncMock()
+    ) as quota, patch.object(
         run, "ensure_structure_caches", new=AsyncMock()
     ), patch.object(
         run, "validate_input_edges"
@@ -28,7 +28,7 @@ def _stubs():
         run, "WorkflowResult"
     ):
         runner_cls.create_workflow_unique_id.return_value = "uid"
-        yield runner_cls, usage, storage_info
+        yield runner_cls, usage, quota
 
 
 @pytest.mark.asyncio
@@ -46,10 +46,10 @@ async def test_a_run_without_a_user_starts_with_no_quota_lookup(endpoint):
     if endpoint == "run_id":
         args["uid"] = "uid"
 
-    with _stubs() as (runner_cls, usage, storage_info):
+    with _stubs() as (runner_cls, usage, quota):
         assert await getattr(run, endpoint)(**args) == "uid"
 
     assert runner_cls.call_args.args[-1] is None
     usage.assert_not_called()
-    storage_info.assert_not_called()
+    quota.assert_not_called()
     assert tasks.tasks == []

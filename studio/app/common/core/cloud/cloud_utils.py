@@ -3,7 +3,7 @@ Cloud utilities for user context and subscription management.
 """
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from sqlmodel import select
 
@@ -243,6 +243,33 @@ def get_effective_quota_bytes(
 def _determine_lifecycle(user_id: int) -> Optional[SubscriptionLifecycle]:
     with session_scope() as db:
         return SubscriptionService.determine_lifecycle(db, user_id)
+
+
+def _stored_usage_and_quota(user_id: int) -> Tuple[Optional[Dict[str, Any]], int]:
+    """The stored usage row and the quota to enforce; blocking, for run_db_lookup."""
+    storage_info = get_user_storage_usage(user_id)
+    return storage_info, get_effective_quota_bytes(user_id, storage_info)
+
+
+async def get_quota_usage_percent(user_id: int) -> Optional[float]:
+    """
+    The user's storage usage as a percent of the quota to enforce, for the run
+    and upload gates; None when no quota is enforced.
+
+    One lookup reads the stored usage and the quota; only a stale usage adds
+    the live recalculation.
+    """
+    storage_info, quota_bytes = await run_db_lookup(_stored_usage_and_quota, user_id)
+    if storage_info and _is_storage_data_fresh(
+        storage_info, SubscriptionPeriods.MAX_CACHE_AGE_MINUTES
+    ):
+        usage_bytes = storage_info.get("storage_usage_bytes", 0)
+    else:
+        usage_bytes = await get_current_user_storage_usage(user_id, force_live=True)
+
+    if quota_bytes <= 0:
+        return None
+    return usage_bytes / quota_bytes * 100
 
 
 async def calculate_limit_warning(user_id: int) -> Optional[LimitWarning]:

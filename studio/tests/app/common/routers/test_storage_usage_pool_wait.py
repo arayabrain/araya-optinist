@@ -29,6 +29,7 @@ from studio.app.common.core.subscription.constants import (
     StorageSize,
 )
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
+from studio.app.common.db import database
 from studio.app.common.models import (
     Organization,
     Role,
@@ -262,6 +263,24 @@ async def test_the_quota_check_waits_for_the_pool_off_the_event_loop(engine, rou
     assert slept < 1
     assert was_waiting
     assert on_loop == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("router", [run, files], ids=["run", "upload"])
+async def test_a_fresh_usage_is_checked_against_the_quota_in_one_lookup(engine, router):
+    lookups = []
+    run_in_thread = database.run_in_limited_thread
+
+    async def counted(limiter_var, size, func, *args):
+        lookups.append(func.__name__)
+        return await run_in_thread(limiter_var, size, func, *args)
+
+    with patch.object(database, "run_in_limited_thread", counted):
+        # Under quota: returns without raising
+        await router._check_storage_quota(USER_ID)
+
+    # Each lookup takes a run_db_lookup slot
+    assert len(lookups) == 1, lookups
 
 
 @pytest.mark.asyncio

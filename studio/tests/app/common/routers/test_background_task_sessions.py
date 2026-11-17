@@ -612,8 +612,10 @@ def _call_create_file(db, background_tasks, events, over_quota=False):
         files,
         "get_current_user_storage_usage",
         new=AsyncMock(return_value=2 if over_quota else 0),
-    ), patch.object(files, "get_user_storage_usage"), patch.object(
-        files, "get_effective_quota_bytes", return_value=1 if over_quota else 0
+    ), patch.object(
+        files,
+        "get_quota_usage_percent",
+        new=AsyncMock(return_value=200.0 if over_quota else None),
     ), patch.object(
         files, "create_directory"
     ), patch.object(
