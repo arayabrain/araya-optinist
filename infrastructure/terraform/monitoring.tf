@@ -374,7 +374,8 @@ resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
       tg_arn_suffix = aws_lb_target_group.public.arn_suffix
       service_name  = aws_ecs_service.public.name
       asg_name      = aws_autoscaling_group.public.name
-      # A host replacement waits out two 600 s drains, about 25 min short
+      # A host replacement waits out two 600 s drains on production, about
+      # 25 min short; development's 60 s drains only widen the margin
       periods    = 40
       datapoints = 35
     }
