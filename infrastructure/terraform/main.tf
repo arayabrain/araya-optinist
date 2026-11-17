@@ -494,6 +494,14 @@ locals {
   env_prefix        = "${var.environment}-optinist"
   environment_label = var.environment == local.production_env_prefix ? "Production" : "Development"
 
+  # How long a deregistered free / public target keeps its in-flight requests
+  # before ECS stops the task. One task per host, so every rollout and
+  # scale-in waits this out host by host. Production lets long downloads
+  # finish (public: the listener's idle_timeout); development trades that for
+  # rollouts several times faster
+  free_tg_deregistration_delay   = var.environment == local.production_env_prefix ? 300 : 60
+  public_tg_deregistration_delay = var.environment == local.production_env_prefix ? 600 : 60
+
   # Resolve frontend host/port from ALB DNS when no custom domain is configured
   # - Production: uses custom domain on port 443
   # - Development: uses ALB DNS name on port 8080
