@@ -359,12 +359,17 @@ const SubscriptionPlans = () => {
             <Typography variant="body1">
               Current Plan: <strong>{userSubscription.plan_name}</strong>
             </Typography>
+            {/* A running trial ends in its first charge, not an expiry */}
             <Typography variant="body2" color="text.secondary">
               {isSubscriptionExpired ? (
                 <span style={{ color: "#dc2626" }}>
                   Expired on{" "}
                   {new Date(userSubscription.expiration).toLocaleDateString()}
                 </span>
+              ) : userSubscription.is_trial &&
+                userSubscription.trial_end &&
+                !userSubscription.scheduled_downgrade ? (
+                `Free trial ends on ${new Date(userSubscription.trial_end).toLocaleDateString()}`
               ) : (
                 `Expires on ${new Date(userSubscription.expiration).toLocaleDateString()}`
               )}

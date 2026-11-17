@@ -1,10 +1,14 @@
 /**
- * The free-trial line on the Subscription page's paid plan card.
+ * The free-trial wording on the Subscription page.
  *
- * Shown only once the API has answered that the user has no subscription:
- * anyone who bought before gets no trial, and a pending or failed request says
- * nothing about it. Driven against the real subscription reducer, so the order
- * in which the two requests settle is the one the page sees.
+ * - The paid plan card's trial line is shown only once the API has answered
+ *   that the user has no subscription: anyone who bought before gets no trial,
+ *   and a pending or failed request says nothing about it.
+ * - The Current Plan box names a running trial's end, which is the first
+ *   charge, not an expiry.
+ *
+ * Driven against the real subscription reducer, so the order in which the two
+ * requests settle is the one the page sees.
  */
 
 /* eslint-disable no-undef -- `jest` is the injected global here rather than the
@@ -132,5 +136,73 @@ describe("Subscription page trial offer", () => {
     )
     expect(store.getState().subscription.error).toBeNull()
     expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
+  })
+})
+
+describe("Subscription page Current Plan box", () => {
+  const TRIAL_END = "2026-12-17T10:59:20+00:00"
+  const localDate = (iso: string) => new Date(iso).toLocaleDateString()
+
+  const premium = (overrides: object) => ({
+    id: 1,
+    plan_id: 2,
+    user_id: 1,
+    expiration: TRIAL_END,
+    is_expired: false,
+    scheduled_downgrade: false,
+    status: SubscriptionUserStatus.SUBSCRIBED,
+    plan_name: "Premium",
+    plan_price: 5000,
+    is_trial: true,
+    trial_end: TRIAL_END,
+    ...overrides,
+  })
+
+  beforeEach(() => {
+    mockGetSubscriptionPlansApi.mockReset()
+    mockGetUserSubscriptionApi.mockReset()
+    mockGetSubscriptionPlansApi.mockResolvedValue(PLANS)
+  })
+
+  it("names the trial end while a trial runs", async () => {
+    mockGetUserSubscriptionApi.mockResolvedValue(premium({}))
+
+    renderPlans()
+
+    expect(
+      await screen.findByText(`Free trial ends on ${localDate(TRIAL_END)}`),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Expires on/)).not.toBeInTheDocument()
+  })
+
+  it("keeps Expires on for a trial cancelled before its end", async () => {
+    mockGetUserSubscriptionApi.mockResolvedValue(
+      premium({ scheduled_downgrade: true }),
+    )
+
+    renderPlans()
+
+    expect(
+      await screen.findByText(`Expires on ${localDate(TRIAL_END)}`),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Free trial/)).not.toBeInTheDocument()
+  })
+
+  it("keeps Expires on for a trial that has converted to paid", async () => {
+    const periodEnd = "2026-11-15T00:00:00+00:00"
+    mockGetUserSubscriptionApi.mockResolvedValue(
+      premium({
+        expiration: periodEnd,
+        is_trial: false,
+        trial_end: "2026-10-15T00:00:00+00:00",
+      }),
+    )
+
+    renderPlans()
+
+    expect(
+      await screen.findByText(`Expires on ${localDate(periodEnd)}`),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Free trial/)).not.toBeInTheDocument()
   })
 })
