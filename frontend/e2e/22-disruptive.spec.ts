@@ -1110,7 +1110,10 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
             `${apiUrl()}/users/me/premium/status`,
             { headers, timeout: 60_000 },
           )
-          const held = !res.ok() || !!(await res.json()).assignment
+          // A failed lookup answers 200 with no assignment and an `error`;
+          // that is no proof of a release
+          const body = res.ok() ? await res.json() : undefined
+          const held = !body || !!body.assignment || !!body.error
           if (held && !claimed) {
             await page.request
               .delete(`${apiUrl()}/users/me/premium/assign`, {
