@@ -56,6 +56,7 @@ import {
 import { selectFrameRate } from "store/slice/Experiments/ExperimentsSelectors"
 import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
 import {
+  selectTimeSeriesItemDefaultDrawnPath,
   selectTimeSeriesItemDrawOrderList,
   selectTimeSeriesItemOffset,
   selectTimeSeriesItemShowGrid,
@@ -73,9 +74,14 @@ import {
   selectTimeSeriesShadeSourceItem,
   selectTimeSeriesItemShadeSourceItemId,
 } from "store/slice/VisualizeItem/VisualizeItemSelectors"
-import { setTimeSeriesItemDrawOrder } from "store/slice/VisualizeItem/VisualizeItemSlice"
+import {
+  setTimeSeriesItemDefaultDrawOrder,
+  setTimeSeriesItemDrawOrder,
+} from "store/slice/VisualizeItem/VisualizeItemSlice"
 import { AppDispatch, RootState } from "store/store"
 import { arrayEqualityFn } from "utils/EqualityUtils"
+
+const DEFAULT_DRAWN_ROWS = 5
 
 export const TimeSeriesPlot = memo(function TimeSeriesPlot() {
   const { itemId, filePath: path } = useContext(DisplayDataContext)
@@ -187,6 +193,31 @@ const TimeSeriesPlotImple = memo(function TimeSeriesPlotImple() {
     isExistFilterRoi,
     isOutput,
     roiUniqueList,
+  ])
+
+  // once per file, and never over a selection a link or the filter dialog owns
+  const defaultDrawnPath = useSelector(
+    selectTimeSeriesItemDefaultDrawnPath(itemId),
+  )
+  useEffect(() => {
+    if (defaultDrawnPath === path || dataKeys.length === 0) return
+    const owned = drawOrderList.length > 0 || dialogFilterNodeId || itemIdRoi
+    const keys = owned ? undefined : dataKeys.slice(0, DEFAULT_DRAWN_ROWS)
+    dispatch(
+      setTimeSeriesItemDefaultDrawOrder({ itemId, path, drawOrderList: keys }),
+    )
+    keys?.forEach((index) =>
+      dispatch(getTimeSeriesDataByIdOnce({ path, index })),
+    )
+  }, [
+    dataKeys,
+    defaultDrawnPath,
+    dialogFilterNodeId,
+    dispatch,
+    drawOrderList,
+    itemId,
+    itemIdRoi,
+    path,
   ])
 
   useEffect(() => {
