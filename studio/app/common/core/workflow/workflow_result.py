@@ -56,7 +56,7 @@ from studio.app.common.schemas.workflow import (
     WorkflowPIDFileData,
     WorkflowProcessInfo,
 )
-from studio.app.const import DATE_FORMAT
+from studio.app.const import DATE_FORMAT, OBSERVATION_UPLOAD_PATTERNS
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -327,8 +327,8 @@ class WorkflowResult:
                     self.unique_id,
                 ) as remote_storage_controller:
                     # Upload experiment.yaml and the visualization files
-                    # save_json() wrote during observation, after post_process's
-                    # full upload, so other hosts can view them
+                    # save_json() wrote during observation, which post_process's
+                    # full upload may have missed, so other hosts can view them
                     target_files = [DIRPATH.EXPERIMENT_YML]
 
                     # Find them in function directories
@@ -337,9 +337,9 @@ class WorkflowResult:
                     # - {function_id}/*.html (HTMLData)
                     # - {function_id}/timeseries/*.json (fluorescence traces)
                     # - {function_id}/csv/*.json (CSV data)
-                    for pattern in ("*.json", "*.html"):
+                    for ext in OBSERVATION_UPLOAD_PATTERNS:
                         files = glob(
-                            join_filepath([self.workflow_dirpath, "**", pattern]),
+                            join_filepath([self.workflow_dirpath, "**", f"*{ext}"]),
                             recursive=True,
                         )
                         for file in files:
