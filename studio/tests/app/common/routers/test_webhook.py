@@ -1314,6 +1314,142 @@ class TestSubscriptionLifecycleWebhooks:
         upsert.assert_not_called()
         mock_db.commit.assert_not_called()
 
+    @staticmethod
+    def _converted_trial_times():
+        """A trial end two months back and a period end three weeks ahead."""
+        now = get_current_datetime()
+        return (
+            int((now - timedelta(days=60)).timestamp()),
+            int((now + timedelta(days=20)).timestamp()),
+        )
+
+    def test_cancel_after_trial_keeps_premium_to_period_end(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A converted trial that schedules a cancel stores the period end."""
+        trial_end, period_end = self._converted_trial_times()
+        subscription_event.pop("current_period_end")
+        subscription_event["items"] = {"data": [{"current_period_end": period_end}]}
+        subscription_event["trial_end"] = trial_end
+        subscription_event["cancel_at_period_end"] = True
+
+        mock_subscription = Mock(scheduled_downgrade=False)
+        mock_storage = Mock(storage_quota_bytes=214748364800)
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_subscription))
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_storage)))),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert mock_upsert.call_args[0][3].timestamp() == period_end
+        assert mock_subscription.scheduled_downgrade is True
+        assert result["scheduled_downgrade"] is True
+
+    def test_converted_trial_without_period_end_writes_nothing(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """An ended trial is no expiration; with no period end nothing is written."""
+        trial_end, _ = self._converted_trial_times()
+        subscription_event.pop("current_period_end")
+        subscription_event["trial_end"] = trial_end
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result.get("reason") == "missing_expiration"
+        mock_upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "status, trial_days, period_days, expected",
+        [
+            ("trialing", 10, 10, "trial"),
+            ("trialing", -1, 29, "trial"),
+            ("active", 10, 40, "trial"),
+            ("active", -60, 20, "period"),
+            ("past_due", -60, 20, "period"),
+            ("active", None, 20, "period"),
+            ("active", -60, None, None),
+        ],
+    )
+    def test_subscription_expiration_rule(
+        self, status, trial_days, period_days, expected
+    ):
+        """Trial end only while the trial runs (by status or by time)."""
+        now = get_current_datetime()
+
+        def ts(days):
+            if days is None:
+                return None
+            return int((now + timedelta(days=days)).timestamp())
+
+        trial_end, period_end = ts(trial_days), ts(period_days)
+        want = {"trial": trial_end, "period": period_end}.get(expected)
+        assert (
+            CheckoutService.subscription_expiration(status, trial_end, period_end)
+            == want
+        )
+
+    def test_recovery_after_trial_converts_stores_period_end(self, mock_db):
+        """Missed-webhook recovery of a converted trial stores the period end."""
+        trial_end, period_end = self._converted_trial_times()
+        sub = stripe.Subscription.construct_from(
+            {
+                "id": "sub_converted",
+                "status": "active",
+                "trial_end": trial_end,
+                "metadata": {},
+                "default_payment_method": "pm_test",
+                "items": {
+                    "object": "list",
+                    "data": [{"current_period_end": period_end}],
+                },
+            },
+            "sk_test",
+        )
+        with patch("stripe.Subscription.list", return_value=Mock(data=[sub])), patch(
+            "stripe.Customer.modify"
+        ), patch.object(
+            CheckoutService, "get_or_create_stripe_provider", return_value=1
+        ), patch.object(
+            CheckoutService, "create_or_update_user_account"
+        ), patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert:
+            recovered = CheckoutService.recover_existing_stripe_subscription(
+                mock_db, 42, "cus_test123", SubscriptionPlanIds.PREMIUM
+            )
+
+        assert recovered is True
+        assert mock_upsert.call_args[0][3].timestamp() == period_end
+
     @pytest.mark.asyncio
     async def test_dispatch_created_routes_to_handler(
         self, mock_db, subscription_event

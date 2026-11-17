@@ -20,7 +20,10 @@ from studio.app.common.core.subscription.constants import (
     SyncStatus,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
-from studio.app.common.core.utils.datetime_utils import datetime_from_timestamp
+from studio.app.common.core.utils.datetime_utils import (
+    datetime_from_timestamp,
+    get_current_timestamp,
+)
 from studio.app.common.models.subscription import (
     SubscriptionPlans,
     SubscriptionProvider,
@@ -47,6 +50,21 @@ class CheckoutService:
         items = (subscription.get("items") or {}).get("data") or []
         ends = [i["current_period_end"] for i in items if i.get("current_period_end")]
         return max(ends) if ends else subscription.get("current_period_end")
+
+    @staticmethod
+    def subscription_expiration(
+        status: Optional[str], trial_end: Optional[int], period_end: Optional[int]
+    ) -> Optional[int]:
+        """Trial end while the trial runs, otherwise the period end.
+
+        Stripe may keep ``trial_end`` after the trial converts, so a set value
+        alone does not mean the trial is still running.
+        """
+        trial_running = trial_end and (
+            status == StripeSubscriptionStatus.TRIAL
+            or trial_end > get_current_timestamp()
+        )
+        return trial_end if trial_running else period_end
 
     @staticmethod
     def get_existing_subscription(
@@ -562,11 +580,12 @@ class CheckoutService:
                     current_period_end = CheckoutService.subscription_period_end(
                         stripe_sub
                     )
+                    expiration_end = CheckoutService.subscription_expiration(
+                        status, trial_end, current_period_end
+                    )
 
-                    if trial_end:
-                        expiration_date = datetime_from_timestamp(trial_end)
-                    elif current_period_end:
-                        expiration_date = datetime_from_timestamp(current_period_end)
+                    if expiration_end:
+                        expiration_date = datetime_from_timestamp(expiration_end)
                     else:
                         logger.warning(
                             f"No expiration data in Stripe subscription "
