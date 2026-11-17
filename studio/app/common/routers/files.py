@@ -1104,52 +1104,50 @@ async def download_file(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     db: Session = Depends(get_db),
 ):
+    # The quota lookups take connections of their own, and the download runs on
+    # in the background: do not hold the workspace check's connection
+    release_request_session(db)
+    path = PurePath(urlparse(file.url).path)
+    if path.suffix not in ACCEPT_FILE_EXT.ALL_EXT.value:
+        raise HTTPException(status_code=400, detail="Invalid url")
+
+    user_id = current_user.id if current_user else None
+    await _check_storage_quota(user_id)
+
+    create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
+
     try:
-        path = PurePath(urlparse(file.url).path)
-        if path.suffix not in ACCEPT_FILE_EXT.ALL_EXT.value:
-            raise HTTPException(status_code=400, detail="Invalid url")
+        # Standalone: the user owns the server, and may fetch from their LAN
+        res = await asyncio.to_thread(open_url, file.url, public_only=MODE.IS_MULTIUSER)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
-        user_id = current_user.id if current_user else None
-        await _check_storage_quota(user_id)
-
-        create_directory(join_filepath([DIRPATH.INPUT_DIR, workspace_id]))
-
-        try:
-            # Standalone: the user owns the server, and may fetch from their LAN
-            res = await asyncio.to_thread(
-                open_url, file.url, public_only=MODE.IS_MULTIUSER
-            )
-        except Exception as e:
-            raise HTTPException(status_code=422, detail=str(e))
-
-        # The response is open: release it before refusing. No Content-Length
-        # means only the reserve is checked.
-        try:
-            await asyncio.to_thread(ensure_local_disk_headroom, _content_length(res))
-        except LocalDiskFullError as e:
-            res.close()
-            raise HTTPException(
-                status_code=507, detail=f"Cannot download file: {e} {USER_HINT}"
-            )
-
-        upload_id = uuid.uuid4().hex
-        await asyncio.to_thread(
-            _write_download_status,
-            _download_status_path(workspace_id, upload_id),
-            DownloadStatus(total=_content_length(res), upload_id=upload_id),
+    # The response is open: release it before refusing. No Content-Length
+    # means only the reserve is checked.
+    try:
+        await asyncio.to_thread(ensure_local_disk_headroom, _content_length(res))
+    except LocalDiskFullError as e:
+        res.close()
+        raise HTTPException(
+            status_code=507, detail=f"Cannot download file: {e} {USER_HINT}"
         )
-        background_tasks.add_task(
-            download,
-            res,
-            path.name,
-            workspace_id,
-            upload_id,
-            remote_bucket_name,
-            user_id,
-        )
-        return {"file_name": path.name, "upload_id": upload_id}
-    finally:
-        release_request_session(db)
+
+    upload_id = uuid.uuid4().hex
+    await asyncio.to_thread(
+        _write_download_status,
+        _download_status_path(workspace_id, upload_id),
+        DownloadStatus(total=_content_length(res), upload_id=upload_id),
+    )
+    background_tasks.add_task(
+        download,
+        res,
+        path.name,
+        workspace_id,
+        upload_id,
+        remote_bucket_name,
+        user_id,
+    )
+    return {"file_name": path.name, "upload_id": upload_id}
 
 
 URL_UPLOAD_CHUNK_SIZE = 1024 * 1024

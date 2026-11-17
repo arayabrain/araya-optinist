@@ -121,6 +121,9 @@ async def run(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     db: Session = Depends(get_db),
 ):
+    # The quota lookups take connections of their own, and the run outlives the
+    # request: do not hold the workspace check's connection
+    release_request_session(db)
     try:
         user_id = current_user.id if current_user else None
         await _check_storage_quota(user_id)
@@ -192,10 +195,6 @@ async def run(
             detail="Failed to run workflow.",
         )
 
-    finally:
-        # The run outlives the request; do not hold the guards' connection
-        release_request_session(db)
-
 
 @router.post(
     "/{workspace_id}/{uid}",
@@ -211,6 +210,9 @@ async def run_id(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # The quota lookups take connections of their own, and the build and the
+    # run are awaited: do not hold the workspace check's connection
+    release_request_session(db)
     try:
         user_id = current_user.id if current_user else None
         await _check_storage_quota(user_id)
@@ -234,8 +236,6 @@ async def run_id(
                 status_code=status.HTTP_423_LOCKED,
                 detail="The previous run's results are still being saved.",
             )
-        # The build below is awaited; do not hold the guards' connection across it
-        release_request_session(db)
         try:
             # A same-second rerun waits out the second for a new generation
             build = asyncio.ensure_future(
@@ -325,10 +325,6 @@ async def run_id(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to run workflow.",
             )
-
-    finally:
-        # The run outlives the request; do not hold the guards' connection
-        release_request_session(db)
 
 
 @router.post(

@@ -11,18 +11,23 @@ stubbed; the queries run on the real pool.
 
 import asyncio
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
-from sqlalchemy import update
+from fastapi import FastAPI, HTTPException
+from sqlalchemy import delete, update
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
+from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
-from studio.app.common.core.subscription.constants import StorageQuota, StorageSize
+from studio.app.common.core.subscription.constants import (
+    PlanName,
+    StorageQuota,
+    StorageSize,
+)
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.models import (
     Organization,
@@ -141,15 +146,19 @@ def _stored_usage(engine) -> int:
         return session.exec(select(UserStorageUsage.storage_usage_bytes)).one()
 
 
-def _app(released: asyncio.Event) -> FastAPI:
-    app = FastAPI()
-    app.include_router(storage_limit_alerts.router)
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+def _user():
+    return SimpleNamespace(
         id=USER_ID,
         name="User",
         email="user@example.com",
         remote_bucket_name="user-bucket",
     )
+
+
+def _app(released: asyncio.Event) -> FastAPI:
+    app = FastAPI()
+    app.include_router(storage_limit_alerts.router)
+    app.dependency_overrides[get_current_user] = _user
     add_hold_and_health_routes(app, released)
     return app
 
@@ -253,3 +262,68 @@ async def test_the_quota_check_waits_for_the_pool_off_the_event_loop(engine, rou
     assert slept < 1
     assert was_waiting
     assert on_loop == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "router, path, body",
+    [
+        (run, f"/run/{WORKSPACE_ID}", {"forceRunList": []}),
+        (run, f"/run/{WORKSPACE_ID}/rerun-uid", {"forceRunList": []}),
+        (
+            files,
+            f"/files/{WORKSPACE_ID}/download",
+            {"url": "https://example.com/a.tif"},
+        ),
+    ],
+    ids=["run", "rerun", "url-download"],
+)
+async def test_the_quota_check_starts_with_the_workspace_checks_connection_returned(
+    engine, router, path, body
+):
+    connections_held = []
+
+    async def refuse(user_id):
+        connections_held.append(engine.pool.checkedout())
+        raise HTTPException(status_code=403, detail="Storage quota exceeded")
+
+    app = FastAPI()
+    app.include_router(router.router)
+    app.dependency_overrides[get_current_user] = _user
+    with patch.object(
+        router, "_check_storage_quota", new=AsyncMock(side_effect=refuse)
+    ):
+        async with asgi_client(app) as client:
+            response = await client.post(path, json=body)
+
+    assert response.status_code == 403
+    # Held, its lookups would each take a second connection
+    assert connections_held == [0]
+
+
+def test_a_missing_storage_row_falls_back_on_one_connection_at_a_time(engine):
+    with Session(engine) as session:
+        session.execute(delete(UserStorageUsage))
+        session.add(
+            SubscriptionPlans(
+                id=2,
+                name=PlanName.PREMIUM,
+                price=1,
+                billing_cycle=1,
+                features={},
+                status=True,
+                currency=1,
+            )
+        )
+        session.add(
+            UserSubscription(
+                plan_id=2, user_id=USER_ID, expiration=datetime(2099, 1, 1)
+            )
+        )
+        session.commit()
+
+    storage_info = get_user_storage_usage(USER_ID)
+
+    # Taken while the row lookup holds the pool's one connection, the plan
+    # lookup times out and the free quota applies
+    assert storage_info["storage_quota_bytes"] == StorageQuota.PREMIUM * StorageSize.GB

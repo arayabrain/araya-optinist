@@ -439,9 +439,8 @@ def test_run_releases_the_request_session_before_the_run(endpoint):
     background_tasks = BackgroundTasks()
 
     def queue_run(tasks):
-        # run holds the session until the run is queued; run_id releases it
-        # before it awaits the runner's build
-        assert db.close.called == (endpoint is run.run_id)
+        # Both release it before the quota check, long before the run is queued
+        assert db.close.called
         tasks.add_task(Mock())
 
     with _run_stubs() as runner:

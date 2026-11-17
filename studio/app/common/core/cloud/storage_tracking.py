@@ -163,20 +163,21 @@ def get_user_storage_usage(
                         f"No storage usage data found for "
                         f"user {user_id}, using defaults"
                     )
-                    return _get_fallback_storage_quota(user_id)
 
             except Exception as orm_error:
                 logger.warning(
                     f"UserStorageUsage table not accessible:"
                     f" {orm_error}, using default quota"
                 )
-                return _get_fallback_storage_quota(user_id)
 
     except Exception as e:
         logger.warning(
             f"Failed to get storage usage for user " f"{user_id}: {e}, using defaults"
         )
-        return _get_fallback_storage_quota(user_id)
+
+    # Once the session above has closed: the fallback opens its own, and taking
+    # a second connection while holding one can wait out an exhausted pool
+    return _get_fallback_storage_quota(user_id)
 
 
 def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
