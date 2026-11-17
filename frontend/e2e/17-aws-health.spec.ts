@@ -82,6 +82,7 @@ const EXPECTED_ALARMS = [
   `${ENV}-optinist-high-iowait`,
   `${ENV}-optinist-load-average-high`,
   `${ENV}-optinist-memory-high`,
+  `${ENV}-optinist-public-dataview-serving-below-desired`,
   `${ENV}-optinist-public-dataview-tg-response-time-high`,
   `${ENV}-optinist-public-dataview-tg-unhealthy-hosts`,
   `${ENV}-optinist-public-serving-below-desired`,

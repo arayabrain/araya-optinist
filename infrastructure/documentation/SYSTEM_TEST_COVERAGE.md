@@ -868,7 +868,7 @@ terminate hook can only be removed by hand, and Terraform never shows it, so thi
 read is what notices an environment where the removal was skipped. The
 procedure is in `FREE_MANAGER_ARCHITECTURE.md`, *Lifecycle Hooks*.
 
-**`free-` / `public-serving-below-desired` have no row either.** They fire when
+**`free-` / `public-` / `public-dataview-serving-below-desired` have no row either.** They fire when
 a tier serves fewer healthy targets than its ASG wants hosts, the case where ECS
 deregistered a target and the ASG's ELB check sees the host as unused, not
 unhealthy, outside an ECS deployment. `test_public_instance_config.py::TestServingBelowDesiredAlarm`

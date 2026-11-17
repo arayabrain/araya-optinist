@@ -360,6 +360,14 @@ resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
       periods    = 40
       datapoints = 35
     }
+    "public-dataview" = {
+      tg_arn_suffix = aws_lb_target_group.public_dataview.arn_suffix
+      service_name  = aws_ecs_service.public_dataview.name
+      asg_name      = aws_autoscaling_group.public_dataview.name
+      # The public tier's host shape and production drain
+      periods    = 40
+      datapoints = 35
+    }
   }
 
   alarm_name          = "${local.env_prefix}-${each.key}-serving-below-desired"

@@ -243,7 +243,7 @@ aws elbv2 describe-target-health \
 
 ### Health Checks
 
-The public and free ASGs both use `health_check_type = "ELB"`. Two layers judge health from the same target group:
+The public, public DataView and free ASGs all use `health_check_type = "ELB"`. Two layers judge health from the same target group:
 
 | Layer | Judges | Grace counts from | Remedy |
 |---|---|---|---|
@@ -254,14 +254,14 @@ The ASG acts only on the target state `unhealthy`; `initial`, `draining` and `un
 
 **Why `ELB`, not `EC2`:** the target group is the only signal that replaces a host ECS cannot fix. A new instance that never gets a task, and a wedged host ECS keeps re-placing tasks onto (the only eligible one under the static port 8000 and the tier constraint), both stay forever under `EC2`.
 
-**The cost:** past the ASG's 900 s grace, a task that restarts and does not serve within the target group window (public about 90 s, free about 300 s) gets its whole instance replaced, whatever the ECS grace says. On public the other host serves meanwhile; on free a task restart already loses every running workflow.
+**The cost:** past the ASG's 900 s grace, a task that restarts and does not serve within the target group window (public about 90 s, free about 300 s) gets its whole instance replaced, whatever the ECS grace says. On public the other host serves meanwhile; on the public DataView tier's default single host, public DataView is down meanwhile; on free a task restart already loses every running workflow.
 
 **Rejected:**
 - `EC2`, with or without automated `set-instance-health`: an earlier attempt fought ASG scaling and was rolled back.
 - `EC2` on public only: one host for an unbounded time, to save a half-capacity window of about 25 min per host replacement.
 - A target group window wider than 900 s: the ALB would route users to a dead target for 15 min.
 
-**What neither catches:** an agent lost after ECS deregistered the target leaves the host `unused`, not `unhealthy`. `<env>-optinist-{free,public}-serving-below-desired` covers it:
+**What neither catches:** an agent lost after ECS deregistered the target leaves the host `unused`, not `unhealthy`. `<env>-optinist-{free,public,public-dataview}-serving-below-desired` covers it:
 
 | Input | Metric | Why |
 |---|---|---|
@@ -269,7 +269,7 @@ The ASG acts only on the target state `unhealthy`; `initial`, `draining` and `un
 | healthy | `AWS/ApplicationELB` `HealthyHostCount` (`Minimum`, `FILL` 0) | A wedged host keeps `RunningTaskCount` at desired; a deregistered target leaves a data gap, read as 0 |
 | deploys | `ECS/ContainerInsights` `DeploymentCount` (`Maximum`) | A public rollout replaces its two tasks one at a time and is short a target for about 28 of 30 min, so the alarm is off while it exceeds 1 |
 
-It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 35 of 40 on public, which outlasts each tier's longest normal gap outside a deployment. On free that is a single-instance refresh or a slow morning start, about 17 min. On public it is a host replacement, about 25 min on dev: the task waits out its 600 s drain, then the terminating instance's own 600 s drain, before it runs on the new host. A deployment that never finishes silences it; `tg-unhealthy-hosts` still fires if that deployment's target is unhealthy. Runbook: `MAINTENANCE_PROCEDURES.md`, *ALB Alarms*.
+It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 35 of 40 on public and public DataView (the same host shape and production drain), which outlasts each tier's longest normal gap outside a deployment. On free that is a single-instance refresh or a slow morning start, about 17 min. On public it is a host replacement, about 25 min on dev: the task waits out its 600 s drain, then the terminating instance's own 600 s drain, before it runs on the new host. A deployment that never finishes silences it; `tg-unhealthy-hosts` still fires if that deployment's target is unhealthy. Runbook: `MAINTENANCE_PROCEDURES.md`, *ALB Alarms*.
 
 **Revisit the decision for a tier** if warm-host task restart to first healthy target has a p95 above about 60 s on public or about 240 s on free, or a prod instance replacement is traced to a slow restart. Options then: widen that tier's target group window (for example public `unhealthy_threshold` 3 to 5), make the restart faster, or build `EC2` with automated recovery as its own change.
 

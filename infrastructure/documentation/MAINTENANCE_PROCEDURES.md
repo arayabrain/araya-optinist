@@ -516,6 +516,7 @@ There is no scale-down alarm. The free-manager Lambda removes capacity by user c
 | `subscr-optinist-public-dataview-tg-unhealthy-hosts` | UnHealthyHostCount > 0 | Public-dataview reads at risk (sign-in unaffected). Check the public DataView ASG instance. |
 | `subscr-optinist-free-serving-below-desired` | Healthy targets < ASG desired hosts for 25 of 30 min, outside an ECS deployment | A host the ASG does not replace (ECS deregistered its target). Check ASG activity first: a refresh or scale-out in progress is expected. Otherwise find the host with no healthy target and set it unhealthy in the ASG. |
 | `subscr-optinist-public-serving-below-desired` | Healthy targets < ASG desired hosts for 35 of 40 min, outside an ECS deployment | Same check on the public tier. The other public host keeps serving meanwhile. A host replacement is short for about 25 min (two 600 s drains), so the window is longer than free's. |
+| `subscr-optinist-public-dataview-serving-below-desired` | Healthy targets < ASG desired hosts for 35 of 40 min, outside an ECS deployment | Same check and window as the public tier. With the default single host, public DataView reads are down meanwhile (sign-in unaffected). |
 ### Background Service Alarms
 
 | Alarm | Threshold | Action |
@@ -564,7 +565,8 @@ Critical CloudWatch alarms send email notifications to `optinist-support@araya.o
 | `subscr-optinist-public-tg-unhealthy-hosts` | `monitoring.tf` | SPA delivery / sign-in at risk |
 | `subscr-optinist-public-dataview-tg-unhealthy-hosts` | `monitoring.tf` | Public-dataview reads at risk |
 | `subscr-optinist-free-serving-below-desired` | `monitoring.tf` | Free tier down with no automatic replacement |
-| `subscr-optinist-public-serving-below-desired` | `monitoring.tf` | Public tier short of a host with no automatic replacement || `subscr-optinist-ebs-queue-length-high` | `monitoring.tf` | Disk saturation can fail health checks and evict the instance |
+| `subscr-optinist-public-serving-below-desired` | `monitoring.tf` | Public tier short of a host with no automatic replacement |
+| `subscr-optinist-public-dataview-serving-below-desired` | `monitoring.tf` | Public DataView tier short of a host with no automatic replacement || `subscr-optinist-ebs-queue-length-high` | `monitoring.tf` | Disk saturation can fail health checks and evict the instance |
 | `subscr-optinist-load-average-high` | `monitoring.tf` | EC2 hosts saturated, all services degrade |
 | `subscr-monthly-cost-high` | `monitoring.tf` | Unexpected cost spike |
 

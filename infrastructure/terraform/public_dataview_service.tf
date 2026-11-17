@@ -104,7 +104,7 @@ resource "aws_autoscaling_group" "public_dataview" {
   name                      = "${local.env_prefix}-public-dataview-asg"
   vpc_zone_identifier       = [aws_subnet.private1.id, aws_subnet.private2.id]
   target_group_arns         = [aws_lb_target_group.public_dataview.arn]
-  health_check_type         = "ELB"
+  health_check_type         = "ELB" # not EC2: only the TG check replaces a registered host with no task, or a wedged one
   health_check_grace_period = 900
   default_cooldown          = 300
 
@@ -120,6 +120,9 @@ resource "aws_autoscaling_group" "public_dataview" {
   force_delete              = false
   termination_policies      = ["OldestInstance"]
   wait_for_capacity_timeout = "0"
+
+  # The serving-below-desired alarm's desired input
+  enabled_metrics = ["GroupDesiredCapacity"]
 
   tag {
     key                 = "Name"
@@ -158,8 +161,9 @@ resource "aws_ecs_task_definition" "public_dataview" {
       memoryReservation = 1024
       essential         = true
       workingDirectory  = "/app"
-      entryPoint        = ["/bin/sh", "-c"]
-      command           = ["./cloud-startup.sh"]
+      # exec makes the script PID 1, the process ECS sends SIGTERM to on stop.
+      entryPoint = ["/bin/sh", "-c"]
+      command    = ["exec ./cloud-startup.sh"]
 
       portMappings = [
         {

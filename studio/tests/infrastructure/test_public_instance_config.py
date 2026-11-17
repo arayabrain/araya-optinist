@@ -508,6 +508,12 @@ class TestServingBelowDesiredAlarm:
         [
             ("free", "autoscaling", "autoscaling", "main"),
             ("public", "public", "public", "public"),
+            (
+                '"public-dataview"',
+                "public_dataview",
+                "public_dataview",
+                "public_dataview",
+            ),
         ],
     )
     def test_each_tier_compares_its_own_target_group_and_service(
@@ -587,7 +593,12 @@ class TestServingBelowDesiredAlarm:
             assert attribute(query, key) == value
 
     @pytest.mark.parametrize(
-        "tf, asg", [(COMPUTE_TF, "main"), (PUBLIC_SERVICE_TF, "public")]
+        "tf, asg",
+        [
+            (COMPUTE_TF, "main"),
+            (PUBLIC_SERVICE_TF, "public"),
+            (PUBLIC_DATAVIEW_SERVICE_TF, "public_dataview"),
+        ],
     )
     def test_asg_publishes_desired_capacity(self, tf, asg):
         """``desired`` is unfilled: an ASG without group metrics gives the
@@ -620,11 +631,15 @@ class TestServingBelowDesiredAlarm:
         assert attribute(self.alarm, "threshold") == '"0"'
         assert attribute(self.alarm, "comparison_operator") == '"GreaterThanThreshold"'
 
-    @pytest.mark.parametrize("tier, min_datapoints", [("free", 20), ("public", 30)])
+    @pytest.mark.parametrize(
+        "tier, min_datapoints",
+        [("free", 20), ("public", 30), ('"public-dataview"', 30)],
+    )
     def test_window_outlasts_the_tiers_longest_normal_gap(self, tier, min_datapoints):
         """A free refresh or slow morning start is short for up to about 17 min.
         A public host replacement waits out the task's and the instance's 600 s
-        drains and was short for about 25 min on dev."""
+        drains and was short for about 25 min on dev. The public DataView tier
+        has the same host shape and production drain."""
         assert attribute(self.alarm, "evaluation_periods") == "each.value.periods"
         assert attribute(self.alarm, "datapoints_to_alarm") == "each.value.datapoints"
         block = re.search(r"^\s*%s\s*=\s*\{(.*?)^\s*\}" % tier, self.alarm, re.M | re.S)
