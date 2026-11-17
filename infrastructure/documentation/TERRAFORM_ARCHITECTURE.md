@@ -154,6 +154,8 @@ Each workflow tier's instance type, task and container sizes, swap and volumes
 are variables, with today's sizes as defaults in `main.tf`. The plan rejects a
 set that cannot launch or does not fit: a task above its instance type, a root
 volume below the AMI's root snapshot, gp3 IOPS or throughput out of range.
+`terraform test` plans each rule's edges under mocked providers
+(`tests/tier_sizing.tftest.hcl`; how to run it is in its header; no CI lane).
 Applying a new size takes two phases, the host before the task, so that no
 task is sent to an instance too small for it. The prepared next size per tier,
 when to apply it and how to revert it:
