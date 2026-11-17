@@ -179,3 +179,15 @@ async def test_WorkflowResult_uploads_html_output(html_output_run):
     } <= uploaded
     # post_process's full upload carries the pickle and other large files
     assert f"{node_1st}/func1.pkl" not in uploaded
+
+
+@pytest.mark.asyncio
+async def test_WorkflowResult_keeps_sync_status_file_local(html_output_run):
+    unique_id, remote = html_output_run
+
+    await WorkflowResult(workspace_id=workspace_id, unique_id=unique_id).observe(
+        [node_1st]
+    )
+
+    assert (remote / DIRPATH.EXPERIMENT_YML).exists()
+    assert not (remote / RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE).exists()

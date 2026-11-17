@@ -337,6 +337,8 @@ class WorkflowResult:
                     # - {function_id}/*.html (HTMLData)
                     # - {function_id}/timeseries/*.json (fluorescence traces)
                     # - {function_id}/csv/*.json (CSV data)
+                    # The sync status file is local-only, as in the full upload
+                    status_file = RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE
                     for ext in OBSERVATION_UPLOAD_PATTERNS:
                         files = glob(
                             join_filepath([self.workflow_dirpath, "**", f"*{ext}"]),
@@ -345,7 +347,8 @@ class WorkflowResult:
                         for file in files:
                             # Get relative path from experiment directory
                             rel_path = os.path.relpath(file, self.workflow_dirpath)
-                            target_files.append(rel_path)
+                            if rel_path != status_file:
+                                target_files.append(rel_path)
 
                     logger.info(
                         f"Uploading observation files to S3: {len(target_files)} files"
