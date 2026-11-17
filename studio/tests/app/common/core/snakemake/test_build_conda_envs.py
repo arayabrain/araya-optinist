@@ -1,3 +1,4 @@
+import fcntl
 import os
 
 import pytest
@@ -75,3 +76,11 @@ def test_nothing_to_build_exits_zero(conda_dir, monkeypatch):
     monkeypatch.setattr(build_conda_envs, "create_env", pytest.fail)
 
     assert build_conda_envs.main() == 0
+
+
+def test_a_second_pre_build_leaves_it_to_the_first(conda_dir, monkeypatch):
+    monkeypatch.setattr(build_conda_envs, "create_env", pytest.fail)
+
+    with open(conda_dir / build_conda_envs.PREBUILD_LOCK, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert build_conda_envs.main() == 0

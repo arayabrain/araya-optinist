@@ -1,3 +1,5 @@
+import fcntl
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -8,9 +10,13 @@ from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.snakemake.smk import SmkParam
 from studio.app.common.core.snakemake.smk_utils import SmkInternalUtils, SmkUtils
 from studio.app.common.core.snakemake.snakemake_executor import _dag
+from studio.app.common.core.utils.filepath_creater import join_filepath
+from studio.app.dir_path import DIRPATH
 from studio.app.wrappers import wrapper_dict
 
 logger = AppLogger.get_logger()
+
+PREBUILD_LOCK = ".prebuild.lock"
 
 
 def conda_env_files(node=wrapper_dict) -> dict:
@@ -41,6 +47,19 @@ def create_env(env_file: str):
 
 
 def main() -> int:
+    os.makedirs(DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, exist_ok=True)
+    with open(
+        join_filepath([DIRPATH.SNAKEMAKE_CONDA_ENV_DIR, PREBUILD_LOCK]), "a"
+    ) as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info("Conda env pre-build already runs on another task")
+            return 0
+        return build_missing_envs()
+
+
+def build_missing_envs() -> int:
     missing = missing_envs(conda_env_files())
     logger.info(f"Conda envs to build: {sorted(missing) or 'none'}")
     for name, path in missing.items():
