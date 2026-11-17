@@ -33,7 +33,12 @@ from studio.app.common.core.storage.s3_storage_controller import S3StorageContro
 from studio.app.common.core.workspace.workspace_dependencies import (
     is_workspace_available,
 )
-from studio.app.common.db.database import get_db, run_db_lookup
+from studio.app.common.db.database import (
+    get_db,
+    release_request_session,
+    run_db_lookup,
+    session_scope,
+)
 from studio.app.common.routers.workflow import reproduce_experiment
 from studio.app.common.schemas.base import SortDirection, SortOptions
 from studio.app.common.schemas.dataview import (
@@ -249,9 +254,15 @@ async def public_reproduce_experiment(
             published_only=True,
         )
     )
+    # The download below takes seconds, and each later lookup waits for a
+    # run_db_lookup slot: hold no pooled connection across either
+    release_request_session(db)
 
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # Resolved on first need, once per request
+    remote_bucket_name: Optional[str] = None
 
     # Ensure experiment is available on local EBS (download from S3 if needed)
     # Also try to sync if status is pending/error - the local data might be incomplete
@@ -270,16 +281,14 @@ async def public_reproduce_experiment(
         needs_sync = is_unsynced
 
     if needs_sync and RemoteStorageController.is_available():
+        remote_bucket_name = await run_db_lookup(_lookup_workspace_bucket, workspace_id)
         download_error = await _ensure_experiment_downloaded(
-            db, workspace_id, unique_id
+            workspace_id, unique_id, remote_bucket_name
         )
         if download_error is not None:
             return download_error
 
         # Download input files (TIFF/CSV) needed for viewing
-        remote_bucket_name = await run_db_lookup(
-            _resolve_workspace_remote_bucket_name, db, workspace_id
-        )
         await RemoteStorageDownloadUtils.sync_experiment_input_files(
             workspace_id, unique_id, remote_bucket_name
         )
@@ -299,21 +308,22 @@ async def public_reproduce_experiment(
             and hasattr(record, "local_sync_status")
             and record.local_sync_status == LocalSyncStatus.synced.value
         ):
-            bucket = await run_db_lookup(
-                _resolve_workspace_remote_bucket_name, db, workspace_id
-            )
+            if remote_bucket_name is None:
+                remote_bucket_name = await run_db_lookup(
+                    _lookup_workspace_bucket, workspace_id
+                )
             exists = None
             s3_error = None
-            if bucket:
+            if remote_bucket_name:
                 exists, s3_error = await _validate_experiment_exists_in_s3(
-                    workspace_id, unique_id, bucket
+                    workspace_id, unique_id, remote_bucket_name
                 )
             if exists is False:
                 logger.error(
                     f"Experiment {workspace_id}/{unique_id} marked synced but not "
                     f"present in S3 ({s3_error}); demoting to error"
                 )
-                await run_db_lookup(_demote_synced_record, db, record.id)
+                await run_db_lookup(_demote_synced_record, record.id)
         # Data is not available locally - check if we should return pending or error
         if hasattr(record, "local_sync_status"):
             if record.local_sync_status == LocalSyncStatus.pending.value:
@@ -354,7 +364,9 @@ async def public_reproduce_experiment(
                 f"Experiment {workspace_id}/{unique_id} data is available, "
                 f"updating sync status from '{record.local_sync_status}' to 'synced'"
             )
-            rowcount = await run_db_lookup(_mark_record_synced, db, record)
+            rowcount = await run_db_lookup(
+                _mark_record_synced, record.id, record.version
+            )
             if rowcount == 0:
                 logger.info(
                     f"Experiment {workspace_id}/{unique_id} sync status "
@@ -390,33 +402,44 @@ def _resolve_workspace_remote_bucket_name(db: Session, workspace_id: str) -> str
     return owner_bucket or os.environ.get("S3_DEFAULT_BUCKET_NAME")
 
 
-def _demote_synced_record(db: Session, record_id: int) -> None:
+# The reproduce helpers below each open their own session: the request's
+# session is released before them, so no connection is held between lookups
+
+
+def _lookup_workspace_bucket(workspace_id: str) -> str:
+    """The workspace owner's bucket; blocking, for run_db_lookup."""
+    with session_scope() as db:
+        return _resolve_workspace_remote_bucket_name(db, workspace_id)
+
+
+def _demote_synced_record(record_id: int) -> None:
     """Set a published 'synced' record back to 'error' for the sync job."""
-    db.execute(
-        update(models.ExperimentRecord)
-        .where(models.ExperimentRecord.id == record_id)
-        .where(models.ExperimentRecord.publish_status == PublishStatus.on.value)
-        .where(
-            models.ExperimentRecord.local_sync_status == LocalSyncStatus.synced.value
+    with session_scope() as db:
+        db.execute(
+            update(models.ExperimentRecord)
+            .where(models.ExperimentRecord.id == record_id)
+            .where(models.ExperimentRecord.publish_status == PublishStatus.on.value)
+            .where(
+                models.ExperimentRecord.local_sync_status
+                == LocalSyncStatus.synced.value
+            )
+            .values(local_sync_status=LocalSyncStatus.error.value)
         )
-        .values(local_sync_status=LocalSyncStatus.error.value)
-    )
-    db.commit()
 
 
-def _mark_record_synced(db: Session, record: models.ExperimentRecord) -> int:
+def _mark_record_synced(record_id: int, version: int) -> int:
     """Set the record 'synced' unless its version moved; returns the rowcount."""
-    result = db.execute(
-        update(models.ExperimentRecord)
-        .where(models.ExperimentRecord.id == record.id)
-        .where(models.ExperimentRecord.version == record.version)
-        .values(
-            local_sync_status=LocalSyncStatus.synced.value,
-            version=models.ExperimentRecord.version + 1,
+    with session_scope() as db:
+        result = db.execute(
+            update(models.ExperimentRecord)
+            .where(models.ExperimentRecord.id == record_id)
+            .where(models.ExperimentRecord.version == version)
+            .values(
+                local_sync_status=LocalSyncStatus.synced.value,
+                version=models.ExperimentRecord.version + 1,
+            )
         )
-    )
-    db.commit()
-    return result.rowcount
+        return result.rowcount
 
 
 def _local_config_can_publish(workspace_id: str, unique_id: str) -> bool:
@@ -497,11 +520,11 @@ async def _sync_experiment_config_for_publish(
 
 
 async def _ensure_experiment_downloaded(
-    db: Session, workspace_id: str, unique_id: str
+    workspace_id: str, unique_id: str, remote_bucket_name: str
 ) -> Optional[JSONResponse]:
     """
-    Download experiment data from remote storage (S3) to local EBS if needed.
-    Resolves the owner's bucket from the workspace record.
+    Download experiment data from remote storage (S3) to local EBS if needed,
+    from the workspace owner's bucket (_lookup_workspace_bucket).
 
     Raises:
         HTTPException(404): If experiment not found in remote storage
@@ -510,10 +533,6 @@ async def _ensure_experiment_downloaded(
     Returns JSONResponse(503) via raise-like return if download fails,
     so callers must check the return value.
     """
-    remote_bucket_name = await run_db_lookup(
-        _resolve_workspace_remote_bucket_name, db, workspace_id
-    )
-
     try:
         async with RemoteStorageReader(
             remote_bucket_name, workspace_id, unique_id
@@ -590,6 +609,9 @@ async def private_reproduce_experiment(
 ):
     # Check target record accessibility
     record = DataviewService.find_dataview_record(db, int(workspace_id), unique_id)
+    # The workspace check's connection: not held across the bucket lookup's
+    # wait for a run_db_lookup slot, nor across the download
+    release_request_session(db)
 
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -602,8 +624,9 @@ async def private_reproduce_experiment(
     needs_sync = is_unsynced
 
     if needs_sync and RemoteStorageController.is_available():
+        remote_bucket_name = await run_db_lookup(_lookup_workspace_bucket, workspace_id)
         download_error = await _ensure_experiment_downloaded(
-            db, workspace_id, unique_id
+            workspace_id, unique_id, remote_bucket_name
         )
         if download_error is not None:
             return download_error

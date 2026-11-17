@@ -4,28 +4,33 @@ An anonymous visitor's requests (the record list, a published record's
 reproduce, and the output dependencies' public check and bucket lookup) wait
 for a pooled connection in a worker thread, so another request is answered
 meanwhile (db_pool_probe). Reproduce's later lookups and status updates, when
-it downloads a record or demotes one, run no statement on the event loop. The
-queries run on the real pool; the record's local files, S3 and the workflow
-read are stubbed.
+it downloads a record or demotes one, run no statement on the event loop, and
+reproduce holds no pooled connection across the download or while a lookup
+waits for a slot. The queries run on the real pool; the record's local files,
+S3 and the workflow read are stubbed.
 """
 
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from anyio import to_thread
+from anyio import CapacityLimiter, to_thread
 from fastapi import Depends, FastAPI
 from fastapi_pagination import add_pagination
 from sqlalchemy import update
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_dependencies import (
+    get_current_user,
     get_current_user_with_dataview_outputs_check,
     get_outputs_remote_bucket_name,
 )
 from studio.app.common.core.dataview.dataview_services import DataviewService
-from studio.app.common.models import Organization, User, Workspace
+from studio.app.common.db import database
+from studio.app.common.models import Organization, User, Workspace, WorkspacesShareUser
 from studio.app.common.models.experiment import ExperimentRecord
 from studio.app.common.routers import dataview
 from studio.app.common.schemas.dataview import LocalSyncStatus, PublishStatus
@@ -45,6 +50,7 @@ UNIQUE_ID = "abcd1234"
 OWNER_BUCKET = "owner-bucket"
 OUTPUT_PATH = f"{WORKSPACE_ID}/{UNIQUE_ID}/node/a.png"
 REPRODUCE_URL = f"/api/public/dataview/workflow/reproduce/{WORKSPACE_ID}/{UNIQUE_ID}"
+PRIVATE_REPRODUCE_URL = f"/api/dataview/workflow/reproduce/{WORKSPACE_ID}/{UNIQUE_ID}"
 PUBLIC_HEADERS = {DataviewService.DATAVIEW_PUBLIC_REQUEST_KEY: "1"}
 
 
@@ -54,6 +60,8 @@ def engine(tmp_path):
         Organization.__table__,
         User.__table__,
         Workspace.__table__,
+        # The private reproduce's workspace check joins it
+        WorkspacesShareUser.__table__,
         ExperimentRecord.__table__,
     ]
     with one_connection_pool(tmp_path / "pool.db", timeout=3) as engine, sqlite_tables(
@@ -248,21 +256,21 @@ def _stored_record(engine):
         ).one()
 
 
-@pytest.mark.asyncio
-async def test_a_pending_record_is_downloaded_and_marked_synced_off_the_loop(engine):
-    _set_sync_status(engine, LocalSyncStatus.pending.value)
-    _RemoteReader.buckets = []
-    sync_inputs = AsyncMock()
+@contextmanager
+def _download_path(reader, sync_inputs=None, unsynced=False):
+    """Reproduce downloads the record, which then displays."""
     with patch.object(
         dataview.RemoteSyncStatusFileUtil,
         "check_sync_status_unsynced",
-        return_value=False,
+        return_value=unsynced,
     ), patch.object(
         dataview.RemoteStorageController, "is_available", return_value=True
     ), patch.object(
-        dataview, "RemoteStorageReader", _RemoteReader
+        dataview, "RemoteStorageReader", reader
     ), patch.object(
-        dataview.RemoteStorageDownloadUtils, "sync_experiment_input_files", sync_inputs
+        dataview.RemoteStorageDownloadUtils,
+        "sync_experiment_input_files",
+        sync_inputs or AsyncMock(),
     ), patch.object(
         dataview.PublishValidator,
         "validate_for_display",
@@ -272,6 +280,15 @@ async def test_a_pending_record_is_downloaded_and_marked_synced_off_the_loop(eng
         "reproduce_experiment",
         new=AsyncMock(return_value=_reproduce_result()),
     ):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_a_pending_record_is_downloaded_and_marked_synced_off_the_loop(engine):
+    _set_sync_status(engine, LocalSyncStatus.pending.value)
+    _RemoteReader.buckets = []
+    sync_inputs = AsyncMock()
+    with _download_path(_RemoteReader, sync_inputs):
         async with asgi_client(_app(asyncio.Event())) as client:
             with statements_on_the_loop(engine) as on_loop:
                 response = await client.get(REPRODUCE_URL)
@@ -282,6 +299,62 @@ async def test_a_pending_record_is_downloaded_and_marked_synced_off_the_loop(eng
     assert _RemoteReader.buckets == [OWNER_BUCKET]
     assert sync_inputs.await_args.args[2] == OWNER_BUCKET
     assert _stored_record(engine) == (LocalSyncStatus.synced.value, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_downloading_reproduce_leaves_the_connection_to_waiting_lookups(
+    engine,
+):
+    """One connection and one lookup slot. While reproduce downloads, a list
+    request takes the slot and waits for the connection; both finish."""
+    _set_sync_status(engine, LocalSyncStatus.pending.value)
+    downloading = asyncio.Event()
+    download_done = asyncio.Event()
+
+    class _SlowReader(_RemoteReader):
+        async def download_experiment(self, workspace_id, unique_id):
+            downloading.set()
+            await download_done.wait()
+            return True
+
+    # The lookup limiter is per event loop: one slot, as the pool has one
+    database._db_lookup_limiter.set(CapacityLimiter(1))
+    with _download_path(_SlowReader):
+        async with asgi_client(_app(asyncio.Event())) as client:
+            reproduce = asyncio.create_task(client.get(REPRODUCE_URL))
+            await asyncio.wait_for(downloading.wait(), timeout=2)
+            listing = asyncio.create_task(client.get("/api/public/dataview"))
+            # Long enough for the list to take the slot
+            await asyncio.sleep(0.2)
+            download_done.set()
+            # Under the pool's 3 s timeout: no lookup waited it out
+            responses = await asyncio.wait_for(
+                asyncio.gather(reproduce, listing), timeout=2.5
+            )
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert _stored_record(engine) == (LocalSyncStatus.synced.value, 1)
+
+
+@pytest.mark.asyncio
+async def test_the_private_reproduce_holds_no_connection_across_the_download(engine):
+    connections_held = []
+
+    class _CountingReader(_RemoteReader):
+        async def download_experiment(self, workspace_id, unique_id):
+            connections_held.append(engine.pool.checkedout())
+            return True
+
+    app = FastAPI()
+    app.include_router(dataview.router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    with _download_path(_CountingReader, unsynced=True):
+        async with asgi_client(app) as client:
+            response = await client.get(PRIVATE_REPRODUCE_URL)
+
+    assert response.status_code == 200
+    # The workspace check's connection was returned before the download
+    assert connections_held == [0]
 
 
 @pytest.mark.asyncio
