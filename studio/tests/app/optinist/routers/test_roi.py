@@ -150,7 +150,9 @@ async def test_a_second_roi_edit_waits_for_the_first(monkeypatch, local_storage)
     second_url = roi_url(1, "add_roi", 1).replace(first_node, "suite2p_roi_y")
     body = dict(ROI_ACTIONS)["add_roi"]
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         first = asyncio.create_task(http.post(roi_url(1, "add_roi", 1), json=body))
         await wait_until(hold.started)
         second = asyncio.create_task(http.post(second_url, json=body))
@@ -217,7 +219,9 @@ async def test_a_commit_takes_the_lock_after_the_edit_under_way(
     )
     body = dict(ROI_ACTIONS)["add_roi"]
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         edit = asyncio.create_task(http.post(roi_url(1, "add_roi", 1), json=body))
         await wait_until(hold.started)
         commit = asyncio.create_task(http.post(roi_url(1, "commit_edit", 1)))
@@ -248,7 +252,9 @@ async def test_an_edit_queued_behind_a_commit_is_refused_with_423(
     monkeypatch.setattr(roi, "EditROI", fake_edit_roi(on_open))
     body = dict(ROI_ACTIONS)["add_roi"]
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         first = asyncio.create_task(http.post(roi_url(1, "add_roi", 1), json=body))
         await wait_until(hold.started)
         commit = asyncio.create_task(http.post(roi_url(1, "commit_edit", 1)))
