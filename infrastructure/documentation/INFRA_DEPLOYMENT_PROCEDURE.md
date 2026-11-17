@@ -390,37 +390,50 @@ aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
 
 `terraform apply` (`null_resource.deploy_to_ecs`) and `ecr_build_push.sh --deploy` do both steps
 through `infrastructure/scripts/ecs_rollout.sh`, which the loop above does not replicate. Run it
-directly to cycle the services by hand:
+directly to cycle the services by hand (from the repository root, with the environment's backend
+initialised):
 
 ```bash
 bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
-  --asg <env>-optinist-asg --asg <env>-optinist-public-asg
+  --asg <env>-optinist-asg --asg <env>-optinist-public-asg \
+  --hygiene-association "$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)"
 ```
 
 Free and public run one task per host, so each host stops its old task, waits out the target
-group's deregistration delay, then starts the new one (the public service alone took about 30 to
-40 minutes on development). The script keeps that from growing further:
+group's deregistration delay, then starts the new one. A rollout therefore pays that delay plus the
+image pull and start once for free (all its tasks at once) and once per half of the public hosts
+(public keeps at least half of them serving). The script keeps it from growing further:
 
 - **A rollout already in progress finishes first** (up to 30 minutes, then the force goes ahead
-  with a warning). `terraform apply` rolls a service whose task definition changed before it
+  with a warning). A service counts as rolling while it has more than one deployment or its
+  deployment has not reached steady state: once the old tasks stop, a starting rollout shows only
+  its new deployment. `terraform apply` rolls a service whose task definition changed before it
   builds the image; forcing on top of that rollout restarts it.
 - **The groups' `HealthCheck` process is suspended until the restarted targets are healthy**, and
   resumed whichever way the script exits. A restarted task is past its host's grace period, so a
-  target failing a few checks would otherwise get the whole host replaced mid-rollout. The services
-  count as settled before their last tasks have started serving (every free task restarts at once,
-  and public's last host after the rest), so after they settle the script waits up to 15 minutes
-  (the services' health check grace) for every target to pass; past that it resumes the checks
-  with a warning naming the target group, leaving a host still failing to the group. If a target
-  group then has no healthy target at all, that tier is not serving the new image, and the script
-  exits 1 naming it, as for a service that never settles. A group already suspended beforehand is
-  left as found.
+  target failing a few checks would otherwise get the whole host replaced mid-rollout.
+- **One rollout at a time holds the suspension.** Nothing else suspends `HealthCheck`, so a group
+  found suspended is held by another rollout, still running or killed. The script waits for it to
+  be lifted, within the same 30 minutes, then suspends it for its own rollout; past that it takes
+  the suspension over with a warning and resumes it at the end. So two deploys to one environment
+  run one after the other, and a deploy also resumes a `HealthCheck` suspended by hand.
+- **The targets are waited for after the services settle.** The services count as settled before
+  their last tasks serve (every free task restarts at once, and public replaces half its hosts at
+  a time), so the script waits up to 15 minutes (the services' health check grace) for every
+  target to pass, then resumes the checks; a host still failing then is left to its group. A target
+  group with no healthy target at all is a tier not serving the new image: the script exits 1
+  naming it, as for a service that never settles.
 - **It waits up to about an hour** for every service to settle and exits 1, naming each unsettled
-  service, if one does not. For `terraform apply` that fails the apply and taints the resource, so
-  the next apply forces a new deployment on every service again. Docker hygiene runs only after a
+  service, if one does not. A wait that fails at once (access denied, expired credentials) is not
+  repeated: the script exits 1. A `HealthCheck` it could not resume also exits 1, with the command
+  to resume it. For `terraform apply` a failure fails the apply and taints the resource, so the
+  next apply forces a new deployment on every service again. Docker hygiene runs only after a
   settled rollout, once the health checks are back on.
 
-A run killed outright (closed terminal, `kill -9`, the laptop sleeping) cannot resume the health
-checks. Check both groups and resume any it left suspended:
+Ctrl-C, `kill` and closing the terminal still resume the health checks. A run killed with
+`kill -9`, or one whose credentials expired (the laptop sleeping), cannot; the next deploy takes
+its suspension over after 30 minutes. To clear it at once, check both groups and resume any it left
+suspended:
 
 ```bash
 for ASG in <env>-optinist-asg <env>-optinist-public-asg; do

@@ -26,13 +26,16 @@ FREE_TG = TARGET_GROUP_ARN.format("free-tg")
 PUBLIC_TG = TARGET_GROUP_ARN.format("public-tg")
 
 # Every call is logged. The clock moves only on sleep and on `ecs wait`, which
-# takes its full 10 minutes. describe-services answers the pre-force check
-# with a rolling service for the first ROLLING_POLLS calls, and the target
-# group lookup with two groups. describe-target-health fails its first
-# FAIL_TARGET_CALLS calls and names a target not yet healthy up to call
+# takes its full 10 minutes (no time at all with FAIL_WAIT_AT_ONCE; with
+# INT_ON_WAIT it sends Ctrl-C to the whole group and exits 130, as the AWS CLI
+# does). describe-services fails the pre-force check FAIL_DESCRIBE_CALLS times,
+# then answers it with a rolling service for ROLLING_POLLS calls, and answers
+# the target group lookup with two groups. describe-target-health fails its
+# first FAIL_TARGET_CALLS calls and names a target not yet healthy up to call
 # UNHEALTHY_TARGET_CALLS. Its healthy / not-ready count query answers one of
 # each, no healthy target for the group named in NO_HEALTHY_TG, and no
-# target at all for the one in NO_TARGET_TG.
+# target at all for the one in NO_TARGET_TG. ALREADY_SUSPENDED_ASG reads as
+# suspended for its first SUSPENDED_READS reads (default: always).
 AWS_STUB = """#!/bin/bash
 echo "$*" >> "$STUB_DIR/aws.log"
 count() {
@@ -49,7 +52,11 @@ case "$1 $2" in
       *targetGroupArn*)
         [ -z "${FAIL_TG_LOOKUP:-}" ] || exit 255
         printf '%s\\t%s\\n' "$FREE_TG" "$PUBLIC_TG" ;;
-      *) [ "$(count describes)" -gt "${ROLLING_POLLS:-0}" ] || echo "svc-a" ;;
+      *)
+        n=$(count describes)
+        failing=${FAIL_DESCRIBE_CALLS:-0}
+        [ "$n" -gt "$failing" ] || exit 255
+        [ "$n" -gt $(( failing + ${ROLLING_POLLS:-0} )) ] || echo "svc-a" ;;
     esac ;;
   "elbv2 describe-target-health")
     case "$*" in
@@ -68,13 +75,19 @@ case "$1 $2" in
   "ecs update-service") [ -z "${FAIL_UPDATE:-}" ] || exit 255 ;;
   "ecs wait")
     n=$(count waits)
+    [ -z "${FAIL_WAIT_AT_ONCE:-}" ] || exit 255
+    if [ -n "${INT_ON_WAIT:-}" ]; then
+      trap 'exit 130' INT
+      kill -INT 0
+    fi
     echo $(( $(cat "$STUB_DIR/now") + 600 )) > "$STUB_DIR/now"
     [ -z "${TERM_ON_WAIT:-}" ] || kill -TERM "$PPID"
     [ "$n" -ge "$STABLE_ON_WAIT" ] || exit 255 ;;
   "autoscaling describe-auto-scaling-groups")
     case "$*" in
       *"${UNREADABLE_ASG:-unset}"*) exit 255 ;;
-      *"${ALREADY_SUSPENDED_ASG:-unset}"*) echo 1 ;;
+      *"${ALREADY_SUSPENDED_ASG:-unset}"*)
+        [ "$(count asg_reads)" -gt "${SUSPENDED_READS:-999999}" ] && echo 0 || echo 1 ;;
       *) echo 0 ;;
     esac ;;
   "autoscaling resume-processes") [ -z "${FAIL_RESUME:-}" ] || exit 255 ;;
@@ -114,11 +127,15 @@ def _rollout(tmp_path: Path, *args: str, stable_on_wait: int = 1, **extra_env):
             **extra_env,
         }
     )
+    # Its own session, so a stub's Ctrl-C reaches the script's group only; the
+    # timeout turns a hang into a failure
     result = subprocess.run(
         ["bash", str(ROLLOUT), "--cluster", "c", "--region", "r", *args],
         env=env,
         capture_output=True,
         text=True,
+        start_new_session=True,
+        timeout=60,
     )
     calls = (tmp_path / "aws.log").read_text().splitlines()
     now = int((tmp_path / "now").read_text())
@@ -127,6 +144,22 @@ def _rollout(tmp_path: Path, *args: str, stable_on_wait: int = 1, **extra_env):
 
 def _indexes(calls: list, fragment: str) -> list:
     return [i for i, call in enumerate(calls) if fragment in call]
+
+
+# The pre-force check's query; the target group lookup is a describe-services too
+ROLLING_CHECK = "rolloutState"
+
+
+class TestArguments:
+    @pytest.mark.parametrize(
+        "args",
+        [["--asg"], ["--region"], ["--hygiene-association"], ["--asg", ""]],
+    )
+    def test_an_option_without_a_value_fails_at_once(self, tmp_path, args):
+        result, calls, _ = _rollout(tmp_path, *args)
+        assert result.returncode == 1
+        assert f"ERROR: {args[0]} needs a value" in result.stdout
+        assert not calls
 
 
 class TestStableWait:
@@ -166,17 +199,76 @@ class TestStableWait:
         assert "force-new-deployment failed on svc-a" in result.stdout
         assert not _indexes(calls, "ecs wait")
 
+    def test_a_wait_that_fails_at_once_is_not_retried(self, tmp_path):
+        # Access denied or expired credentials: no 10-minute timeout to wait out
+        result, calls, now = _rollout(
+            tmp_path, *GROUPS, *HYGIENE, FAIL_WAIT_AT_ONCE="1"
+        )
+        assert result.returncode == 1
+        assert "the wait for the services failed at once" in result.stdout
+        assert len(_indexes(calls, "ecs wait")) == 1
+        assert now == 0
+        for asg in ("free-asg", "public-asg"):
+            _assert_off_then_on(calls, asg)
+        assert not _indexes(calls, "ssm start-associations-once")
+
+
+def _rolling_query() -> str:
+    match = re.search(r"^ROLLING_QUERY='(.*)'$", ROLLOUT.read_text(), re.MULTILINE)
+    assert match, "ROLLING_QUERY not found"
+    return match.group(1)
+
 
 class TestRolloutInProgress:
+    @pytest.mark.parametrize(
+        "deployments, rolling",
+        [
+            # Old tasks stopped, the new one still starting: only the PRIMARY left
+            ([("PRIMARY", "IN_PROGRESS")], True),
+            ([("PRIMARY", "IN_PROGRESS"), ("ACTIVE", "COMPLETED")], True),
+            ([("PRIMARY", "COMPLETED"), ("ACTIVE", "COMPLETED")], True),
+            ([("PRIMARY", "COMPLETED")], False),
+        ],
+    )
+    # The backtick string form, which every query in the script uses and the
+    # AWS CLI accepts
+    @pytest.mark.filterwarnings("ignore:deprecated string literal syntax")
+    def test_rolling_means_two_deployments_or_one_not_yet_steady(
+        self, deployments, rolling
+    ):
+        jmespath = pytest.importorskip("jmespath")
+        services = {
+            "services": [
+                {
+                    "serviceName": "svc-a",
+                    "deployments": [
+                        {"status": status, "rolloutState": state}
+                        for status, state in deployments
+                    ],
+                }
+            ]
+        }
+        expected = ["svc-a"] if rolling else []
+        assert jmespath.search(_rolling_query(), services) == expected
+
     def test_is_left_to_finish_before_the_force(self, tmp_path):
         result, calls, now = _rollout(tmp_path, ROLLING_POLLS="3")
         assert result.returncode == 0, result.stdout + result.stderr
         assert "A rollout is in progress on: svc-a" in result.stdout
-        checks = _indexes(calls, "ecs describe-services")
+        checks = _indexes(calls, ROLLING_CHECK)
         assert len(checks) == 4
         assert _indexes(calls, "ecs update-service")[0] > checks[-1]
         # Three 30 s polls, then the one 10-minute wait
         assert now == 3 * 30 + 600
+
+    def test_a_failed_read_is_retried(self, tmp_path):
+        result, calls, now = _rollout(tmp_path, FAIL_DESCRIBE_CALLS="2")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout.count("Could not read the services' deployments") == 2
+        checks = _indexes(calls, ROLLING_CHECK)
+        assert len(checks) == 3
+        assert _indexes(calls, "ecs update-service")[0] > checks[-1]
+        assert now == 2 * 30 + 600
 
     def test_one_that_never_settles_is_forced_after_the_bound(self, tmp_path):
         result, calls, now = _rollout(tmp_path, ROLLING_POLLS="999")
@@ -189,7 +281,7 @@ class TestRolloutInProgress:
     def test_no_rollout_in_progress_forces_at_once(self, tmp_path):
         result, calls, _ = _rollout(tmp_path)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert len(_indexes(calls, "ecs describe-services")) == 1
+        assert len(_indexes(calls, ROLLING_CHECK)) == 1
         assert "in progress" not in result.stdout
 
 
@@ -243,20 +335,48 @@ class TestHostHealthChecks:
         for asg in ("free-asg", "public-asg"):
             self._assert_off_then_on(calls, asg)
 
+    def test_back_on_when_ctrl_c_stops_the_wait(self, tmp_path):
+        result, calls, _ = _rollout(
+            tmp_path, *GROUPS, stable_on_wait=99, INT_ON_WAIT="1"
+        )
+        assert result.returncode == 130, result.stdout + result.stderr
+        assert len(_indexes(calls, "ecs wait")) == 1
+        for asg in ("free-asg", "public-asg"):
+            self._assert_off_then_on(calls, asg)
+
     def test_back_on_when_the_force_fails(self, tmp_path):
         result, calls, _ = _rollout(tmp_path, *GROUPS, FAIL_UPDATE="1")
         assert result.returncode == 1
         for asg in ("free-asg", "public-asg"):
             self._assert_off_then_on(calls, asg)
 
-    def test_a_group_suspended_beforehand_is_left_as_found(self, tmp_path):
-        result, calls, _ = _rollout(
+    def test_a_group_another_rollout_holds_is_waited_for(self, tmp_path):
+        # Suspended at the first read and the next two polls, lifted at the third
+        result, calls, now = _rollout(
+            tmp_path, *GROUPS, ALREADY_SUSPENDED_ASG="public-asg", SUSPENDED_READS="3"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "public-asg: HealthCheck already suspended" in result.stdout
+        assert "public-asg: HealthCheck lifted by the other rollout" in result.stdout
+        for asg in ("free-asg", "public-asg"):
+            self._assert_off_then_on(calls, asg)
+        # Two 30 s polls, then the one 10-minute wait
+        assert now == 2 * 30 + 600
+
+    def test_a_suspension_never_lifted_is_taken_over_after_the_bound(self, tmp_path):
+        # Left by a killed run: the next rollout resumes it
+        result, calls, now = _rollout(
             tmp_path, *GROUPS, ALREADY_SUSPENDED_ASG="public-asg"
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "public-asg: HealthCheck was already suspended" in result.stdout
-        self._assert_off_then_on(calls, "free-asg")
-        assert not _indexes(calls, "processes --auto-scaling-group-name public-asg")
+        assert (
+            "public-asg: HealthCheck still suspended after 30 minutes; taking it over"
+            in result.stdout
+        )
+        assert "forcing the new deployment anyway" not in result.stdout
+        for asg in ("free-asg", "public-asg"):
+            self._assert_off_then_on(calls, asg)
+        assert now == 1800 + 600
 
     def test_an_unreadable_group_is_skipped_with_a_warning(self, tmp_path):
         result, calls, _ = _rollout(tmp_path, *GROUPS, UNREADABLE_ASG="public-asg")
@@ -265,19 +385,23 @@ class TestHostHealthChecks:
         self._assert_off_then_on(calls, "free-asg")
         assert not _indexes(calls, "processes --auto-scaling-group-name public-asg")
 
-    def test_a_failed_resume_prints_the_command_to_run(self, tmp_path):
-        result, _, _ = _rollout(tmp_path, *GROUPS, FAIL_RESUME="1")
-        assert result.returncode == 0
+    def test_a_failed_resume_fails_the_rollout(self, tmp_path):
+        result, calls, _ = _rollout(tmp_path, *GROUPS, *HYGIENE, FAIL_RESUME="1")
+        assert result.returncode == 1
         assert (
             "aws autoscaling resume-processes --auto-scaling-group-name free-asg "
             "--scaling-processes HealthCheck --region r"
         ) in result.stdout
+        assert (
+            "ERROR: HealthCheck is still suspended on free-asg public-asg;"
+            in result.stdout
+        )
+        assert not _indexes(calls, "ssm start-associations-once")
 
     def test_no_groups_means_no_group_calls(self, tmp_path):
         result, calls, _ = _rollout(tmp_path)
         assert result.returncode == 0, result.stdout + result.stderr
         assert not _indexes(calls, "autoscaling")
-        assert not _indexes(calls, "elbv2")
 
 
 class TestTargetHealthWait:
@@ -374,12 +498,13 @@ class TestTargetHealthWait:
         for asg in ("free-asg", "public-asg"):
             _assert_off_then_on(calls, asg)
 
-    def test_no_wait_when_no_group_was_suspended_here(self, tmp_path):
+    def test_the_wait_and_the_tier_check_run_without_groups(self, tmp_path):
         result, calls, _ = _rollout(
-            tmp_path, "--asg", "public-asg", ALREADY_SUSPENDED_ASG="public-asg"
+            tmp_path, UNHEALTHY_TARGET_CALLS="999", NO_HEALTHY_TG="free-tg"
         )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert not _indexes(calls, "elbv2")
+        assert result.returncode == 1
+        assert "ERROR: no healthy target in free-tg" in result.stdout
+        assert not _indexes(calls, "autoscaling")
 
 
 # The callers run with ecs_rollout.sh replaced by a stub that logs its
@@ -416,6 +541,17 @@ class TestTerraformDeploy:
             capture_output=True,
             text=True,
         )
+
+    def test_runs_after_every_ecs_service(self):
+        # A task definition change's own rollout has started by then
+        sources = "\n".join(read(path) for path in sorted(TERRAFORM_DIR.glob("*.tf")))
+        services = re.findall(
+            r'^resource "aws_ecs_service" "(\w+)"', sources, re.MULTILINE
+        )
+        depends_on = re.search(r"depends_on\s*=\s*\[([^\]]*)\]", self._block())
+        assert services and depends_on
+        for service in services:
+            assert f"aws_ecs_service.{service}" in depends_on.group(1), service
 
     def test_passes_both_tier_groups_and_the_hygiene_association(self):
         block = self._block()

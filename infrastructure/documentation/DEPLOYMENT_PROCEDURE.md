@@ -67,7 +67,9 @@ To turn analytics off again, delete the parameter (and any `.env.deploy` entry) 
 The deploying user needs the following AWS permissions:
 
 - **ECR**: Push images (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:PutImage`, etc.)
-- **ECS**: List and update services (`ecs:ListClusters`, `ecs:ListServices`, `ecs:UpdateService`, etc.)
+- **ECS**: List, read and update services (`ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `ecs:UpdateService`, etc.)
+- **Auto Scaling**: Hold the free and public groups' host health checks during a rollout (`autoscaling:DescribeAutoScalingGroups`, `autoscaling:SuspendProcesses`, `autoscaling:ResumeProcesses`)
+- **Elastic Load Balancing**: Wait for the restarted targets (`elasticloadbalancing:DescribeTargetHealth`)
 - **SSM**: Trigger the docker hygiene run after a deploy (`ssm:StartAssociationsOnce`)
 - **Secrets Manager**: Read secrets (granted automatically to the deployment role)
 - **SSM**: `ssm:GetParameter` on `arn:aws:ssm:ap-northeast-1:<account-id>:parameter/<environment>/optinist/gtm-id` (the analytics container ID; not managed by Terraform)
@@ -159,7 +161,7 @@ OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team 
 | Frontend + Infrastructure    | `terraform apply` (builds, pushes and rolls out itself) |
 | Everything                   | `terraform apply` (builds, pushes and rolls out itself) |
 
-> **Important:** One deploy, one rollout. On a new commit `terraform apply` runs `ecr_build_push.sh` itself (`null_resource.build_and_deploy`) and then rolls out every service (`null_resource.deploy_to_ecs`), so do not follow it with `ecr_build_push.sh --deploy` or a manual force: on free and public each extra rollout adds 10 to 30 minutes, and one issued while another is in progress restarts it. What a rollout does: [INFRA_DEPLOYMENT_PROCEDURE.md — Cycling All Services](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services).
+> **Important:** One deploy, one rollout. On a new commit `terraform apply` runs `ecr_build_push.sh` itself (`null_resource.build_and_deploy`) and then rolls out every service (`null_resource.deploy_to_ecs`), so do not follow it with `ecr_build_push.sh --deploy` or a manual force: on free and public each extra rollout waits out every host's target deregistration delay again, and one issued while another is in progress restarts it. What a rollout does: [INFRA_DEPLOYMENT_PROCEDURE.md — Cycling All Services](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services).
 
 ### Step 1: Apply Infrastructure Changes (if needed)
 

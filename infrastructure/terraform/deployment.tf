@@ -198,7 +198,15 @@ output "docker_hygiene_association_id" {
 
 
 resource "null_resource" "deploy_to_ecs" {
-  depends_on = [null_resource.build_and_deploy]
+  # Every service, so a task definition change's own rollout has started before
+  # the script checks for a rollout in progress
+  depends_on = [
+    null_resource.build_and_deploy,
+    aws_ecs_service.autoscaling,
+    aws_ecs_service.premium,
+    aws_ecs_service.public,
+    aws_ecs_service.background,
+  ]
 
   triggers = {
     git_branch = var.git_branch
