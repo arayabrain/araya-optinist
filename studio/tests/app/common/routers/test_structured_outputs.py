@@ -1,12 +1,17 @@
+import asyncio
 import os
 import shutil
+import threading
 
 import h5py
+import httpx
 import numpy as np
 import pytest
 import scipy.io
 import yaml
 
+from studio.__main_unit__ import app
+from studio.app.common.routers import outputs
 from studio.app.dir_path import DIRPATH
 
 WORKSPACE_ID = "test_structured"
@@ -465,3 +470,154 @@ async def test_structured_missing_input_resyncs_via_download_layer():
         "6", "wiped_input.h5"
     )
     assert exc.value.status_code == 404
+
+
+def _hdf5_2d_values():
+    path = os.path.join(DIRPATH.INPUT_DIR, WORKSPACE_ID, "data_2d.h5")
+    with h5py.File(path, "r") as f:
+        return f["recording/traces"][:]
+
+
+def test_structured_2d_within_budget_is_unchanged(client):
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_2d_node"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert np.array_equal(np.array(data["data"]), _hdf5_2d_values())
+    assert data["index"] == [str(i) for i in range(100)]
+    assert data["columns"] == [str(c) for c in range(5)]
+    assert data["shape"] == [100, 5]
+
+
+def test_structured_2d_over_budget_is_reduced(client, monkeypatch):
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_VALUES", 60)
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_COLUMNS", 3)
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_2d_node"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert len(data["columns"]) == 3
+    assert len(data["data"]) * len(data["data"][0]) <= 60
+    assert data["index"] == [str(i) for i in range(20)]
+    assert data["columns"] == ["0", "1", "2"]
+    assert data["shape"] == [100, 5]
+    assert np.array_equal(np.array(data["data"]), _hdf5_2d_values()[:20, :3])
+
+
+def test_structured_mat_2d_over_budget_is_reduced(client, monkeypatch):
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_VALUES", 50)
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_COLUMNS", 3)
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/mat_node"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["shape"] == [80, 4]
+    assert data["columns"] == ["0", "1", "2"]
+    assert len(data["data"]) * len(data["data"][0]) <= 50
+    assert data["index"] == [str(i) for i in range(16)]
+
+
+@pytest.mark.parametrize(
+    "params, frames",
+    [
+        ({}, 3),
+        ({"start_index": 0, "end_index": 1_000_000}, 3),
+        ({"start_index": 8, "end_index": 1_000_000}, 2),
+        ({"start_index": 2, "end_index": 4}, 2),
+    ],
+)
+def test_structured_3d_frames_are_capped(client, monkeypatch, params, frames):
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_FRAMES", 3)
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        params=params,
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert len(data["data"]) == frames
+    assert data["total_frames"] == 10
+
+
+@pytest.mark.parametrize(
+    "budget, status, frames",
+    [(64 * 64 * 4, 200, 4), (64 * 64 * 20, 200, 10), (64 * 64 - 1, 422, None)],
+)
+def test_structured_3d_frames_fit_the_value_budget(
+    client, monkeypatch, budget, status, frames
+):
+    monkeypatch.setattr(
+        "studio.app.common.routers.outputs.STRUCTURED_MAX_3D_VALUES", budget
+    )
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        params={"start_index": 0, "end_index": 1_000_000},
+    )
+
+    assert response.status_code == status
+    if frames is not None:
+        assert len(response.json()["data"]) == frames
+
+
+@pytest.mark.parametrize("node_id", ["hdf5_1d_node", "hdf5_table_col_node"])
+def test_structured_1d_over_budget_is_reduced(client, monkeypatch, node_id):
+    monkeypatch.setattr("studio.app.common.routers.outputs.STRUCTURED_MAX_VALUES", 20)
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/{node_id}"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert len(data["data"]) == 20
+    assert data["index"] == list(range(20))
+    assert data["shape"] == [50]
+
+
+@pytest.mark.parametrize(
+    "params", [{"end_index": -1}, {"start_index": -1}, {"start_index": "x"}]
+)
+def test_structured_rejects_negative_indices(client, params):
+    response = client.get(
+        f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/hdf5_3d_node",
+        params=params,
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_structured_read_not_started_in_time_is_refused(monkeypatch):
+    monkeypatch.setattr(outputs, "STRUCTURED_READ_WAIT_SECONDS", 0.3)
+    reading, released = threading.Event(), threading.Event()
+    read = []
+    structured_body = outputs._structured_body
+
+    def held_structured_body(full_path, *args):
+        read.append(os.path.basename(full_path))
+        reading.set()
+        released.wait(5)
+        return structured_body(full_path, *args)
+
+    monkeypatch.setattr(outputs, "_structured_body", held_structured_body)
+    url = f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}"
+
+    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+        held = asyncio.create_task(http.get(f"{url}/hdf5_3d_node"))
+        for _ in range(500):
+            if reading.is_set():
+                break
+            await asyncio.sleep(0.01)
+        refused = await http.get(f"{url}/hdf5_1d_node")
+        released.set()
+        held = await held
+
+    assert refused.status_code == 429, refused.text
+    assert refused.headers["Retry-After"] == "5"
+    assert held.status_code == 200, held.text
+    assert read == ["data_3d.h5"]

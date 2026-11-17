@@ -28,6 +28,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionPlanIds,
     SyncStatus,
 )
+from studio.app.common.core.subscription.stripe_service import owns_stored_email
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.utils.datetime_utils import (
     datetime_from_timestamp,
@@ -646,6 +647,8 @@ class WebhookService:
                     )
                     .first()
                 )
+                if user and not owns_stored_email(user):
+                    user = None
 
             if not user:
                 raise HTTPException(
