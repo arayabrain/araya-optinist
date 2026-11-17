@@ -29,7 +29,8 @@ import {
 // beforeEach's own budget; a test that also runs a workflow adds it on top
 const SETUP_TIMEOUT_MS = 240_000
 
-// A shipped input file's shape, as `pd.read_csv(header=None)` reads it
+// A shipped input file's shape, as `pd.read_csv(header=None)` reads it.
+// A plain comma split: for files without quoted fields, as the shipped ones are.
 function shippedCsvShape(name: string) {
   const lines = fs
     .readFileSync(
