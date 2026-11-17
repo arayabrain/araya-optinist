@@ -36,9 +36,10 @@ The **ALB stays running** at all times (cannot be stopped; fixed cost ~$16-22/mo
 
 ### The stop waits for ECS tasks before stopping NAT
 
-The stop sets the ECS services to 0 and then waits — up to 8 minutes, typically 6-7 — for their
-tasks to stop, before it terminates the free tier ASG and stops NAT. The free task stops only after
-its target group's 300 s deregistration delay, and the ECS agent can report it stopped only through
+The stop sets the ECS services to 0 and then waits — up to 8 minutes; typically 6-7 when the free
+target group drained for 300 s, less at development's 60 s — for their tasks to stop, before it
+terminates the free tier ASG and stops NAT. The free task stops only after its target group's
+deregistration delay, and the ECS agent can report it stopped only through
 NAT (there are no ECS VPC endpoints). Stopping NAT first leaves the task `RUNNING` as far as ECS
 knows, and ECS managed draining then holds the free instance in `Terminating:Wait` until NAT is back
 the next morning. A wait that times out is logged in the stop results (`ecs_tasks_stopped`) and the
