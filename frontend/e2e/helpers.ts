@@ -1137,6 +1137,41 @@ export function otherActiveUsers(): string[] {
     : []
 }
 
+// Free users signed in and active within the last minutes, the suite's own
+// included: the Free Manager sizes the free tier from this count
+export function activeFreeUsers(minutes: number): string[] {
+  const rows = runSql(
+    `SELECT u.email FROM free_user_assignments f JOIN users u ON u.id = f.user_id
+       WHERE f.logged_out_at IS NULL
+         AND f.last_activity > UTC_TIMESTAMP() - INTERVAL ${Math.floor(minutes)} MINUTE;`,
+  )
+  return rows
+    ? rows
+        .split("\n")
+        .map((r) => r.trim())
+        .filter(Boolean)
+    : []
+}
+
+// The scheduler runs development 23:00 -> 13:00 UTC on weekdays: it starts at
+// cron(0 23 ? * SUN-THU) and stops at cron(0 13 ? * MON-FRI)
+export function devIsUp(now: Date): boolean {
+  const day = now.getUTCDay()
+  const hour = now.getUTCHours()
+  return (hour >= 23 && day <= 4) || (hour < 13 && day >= 1 && day <= 5)
+}
+
+// The next scheduled stop after a moment: 13:00 UTC on a weekday. Saturday
+// and Sunday carry none.
+export function nextScheduledStop(now: Date): Date {
+  const stop = new Date(now)
+  stop.setUTCHours(13, 0, 0, 0)
+  while (stop <= now || stop.getUTCDay() === 0 || stop.getUTCDay() === 6) {
+    stop.setUTCDate(stop.getUTCDate() + 1)
+  }
+  return stop
+}
+
 // Returns the reason a @disruptive spec must not run right now, or "" if the
 // environment is idle enough to disturb.
 export function disruptiveSkipReason(): string {
@@ -1729,6 +1764,14 @@ export async function dataviewRecord(
   return { id: record.id, uid: record.uid }
 }
 
+// Publish syncs and validates against S3 in-request on a deployed env, which
+// outlasts the default request timeout
+export const PUBLISH_TIMEOUT_MS = 120_000
+
+export function publishPath(id: number, on: boolean): string {
+  return `/api/dataview/publish/${id}/${on ? "on" : "off"}`
+}
+
 export async function setPublished(page: Page, name: string, on: boolean) {
   const record = await findDataviewRecord(page, name)
   if (!record) {
@@ -1736,11 +1779,9 @@ export async function setPublished(page: Page, name: string, on: boolean) {
     throw new Error(`no dataview record named ${name} to publish`)
   }
   const headers = await apiHeaders(page)
-  // Publish syncs and validates against S3 in-request on a deployed env, which
-  // outlasts the default request timeout
   const res = await page.request.post(
-    `${apiUrl()}/api/dataview/publish/${record.id}/${on ? "on" : "off"}`,
-    { headers, timeout: 120_000 },
+    `${apiUrl()}${publishPath(record.id, on)}`,
+    { headers, timeout: PUBLISH_TIMEOUT_MS },
   )
   if (!res.ok()) {
     throw new Error(

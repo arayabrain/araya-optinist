@@ -30,6 +30,11 @@ export const createCheckoutSessionApi = async (planId: number) => {
   return response.data
 }
 
+export const createPortalSessionApi = async (): Promise<string> => {
+  const response = await axios.post("/api/subsc/mgmts/portal-session")
+  return response.data.url
+}
+
 export const reactivateSubscriptionApi = async (user_id: number) => {
   const response = await axios.post(`/api/subsc/mgmts/reactivate/${user_id}`)
   return response.data

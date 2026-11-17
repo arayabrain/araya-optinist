@@ -354,6 +354,22 @@ nodeDict:
               type: child
               value: 10
               path: ETA/post_event
+            baseline_window:
+              type: child
+              value: 0
+              path: ETA/baseline_window
+            smooth_sigma_frames:
+              type: child
+              value: 0.0
+              path: ETA/smooth_sigma_frames
+            mean_trace_band:
+              type: child
+              value: sem
+              path: ETA/mean_trace_band
+            sort_by_peak:
+              type: child
+              value: false
+              path: ETA/sort_by_peak
       path: optinist/basic_neural_analysis/eta
       type: algorithm
       fileType: null
