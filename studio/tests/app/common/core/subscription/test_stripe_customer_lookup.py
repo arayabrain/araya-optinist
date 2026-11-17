@@ -16,8 +16,9 @@ CHECKOUT_MODULE = "studio.app.common.core.subscription.checkout_service"
 
 
 def _set_locked_query_result(mock_db, value):
-    """Set the return value for the FOR UPDATE query chain."""
+    """Set the binding both the unlocked and the FOR UPDATE reads return."""
     chain = mock_db.query.return_value.filter.return_value
+    chain.first.return_value = value
     chain.with_for_update.return_value.first.return_value = value
 
 
@@ -33,6 +34,7 @@ def mock_db():
 def mock_user():
     user = MagicMock()
     user.id = 1
+    user.uid = "uid-1"
     user.email = "test@example.com"
     user.name = "Test User"
     return user
@@ -54,6 +56,11 @@ def mock_stripe_customer():
 
 class TestGetOrCreateStripeCustomer:
     """Tests for the unified write-path customer lookup."""
+
+    @pytest.fixture(autouse=True)
+    def _owns_email(self):
+        with patch(f"{STRIPE_MODULE}.owns_stored_email", return_value=True):
+            yield
 
     @pytest.mark.asyncio
     async def test_path1_db_record_exists_stripe_retrieve_succeeds(
@@ -245,6 +252,124 @@ class TestGetStripeCustomer:
 
             assert result is None
             mock_stripe.Customer.create.assert_not_called()
+
+
+class TestOwnsStoredEmail:
+    """The email fallback trusts the stored email only when Firebase holds it
+    verified."""
+
+    @staticmethod
+    def _owns(mock_user, fb_email, fb_verified):
+        from studio.app.common.core.subscription.stripe_service import owns_stored_email
+
+        if isinstance(fb_email, Exception):
+            get_user = {"side_effect": fb_email}
+        else:
+            record = MagicMock(email=fb_email, email_verified=fb_verified)
+            get_user = {"return_value": record}
+        with patch(f"{STRIPE_MODULE}.firebase_auth.get_user", **get_user) as fb_get:
+            result = owns_stored_email(mock_user)
+        fb_get.assert_called_once_with(mock_user.uid)
+        return result
+
+    def test_verified_email_other_than_stored(self, mock_user):
+        assert not self._owns(mock_user, "attacker@example.com", True)
+
+    def test_unverified_stored_email(self, mock_user):
+        assert not self._owns(mock_user, "test@example.com", False)
+
+    def test_firebase_error(self, mock_user):
+        assert not self._owns(mock_user, RuntimeError("x"), None)
+
+    def test_verified_stored_email_any_case(self, mock_user):
+        assert self._owns(mock_user, "Test@Example.com", True)
+
+
+class TestEmailFallbackNeedsOwnership:
+    """Both lookups skip the Stripe email search for an email the user does not
+    own, and the write path checks ownership before it takes the row lock."""
+
+    @pytest.mark.asyncio
+    async def test_read_path_skips_email_lookup(self, mock_db, mock_user):
+        from studio.app.common.core.subscription.stripe_service import (
+            get_stripe_customer,
+        )
+
+        with (
+            patch(
+                f"{CHECKOUT_MODULE}.CheckoutService.get_subscription_account",
+                return_value=None,
+            ),
+            patch(f"{STRIPE_MODULE}.owns_stored_email", return_value=False),
+            patch(f"{STRIPE_MODULE}._get_stripe_customer_by_email") as lookup,
+        ):
+            assert await get_stripe_customer(mock_db, mock_user) is None
+        lookup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_write_path_creates_instead_of_binding(self, mock_db, mock_user):
+        from studio.app.common.core.subscription.stripe_service import (
+            get_or_create_stripe_customer,
+        )
+
+        _set_locked_query_result(mock_db, None)
+        with (
+            patch(f"{STRIPE_MODULE}.owns_stored_email", return_value=False),
+            patch(f"{STRIPE_MODULE}._get_stripe_customer_by_email") as lookup,
+            patch(f"{STRIPE_MODULE}.stripe") as mock_stripe,
+            patch(f"{CHECKOUT_MODULE}.CheckoutService.get_or_create_stripe_provider"),
+            patch(f"{CHECKOUT_MODULE}.CheckoutService.create_or_update_user_account"),
+        ):
+            mock_stripe.Customer.create.return_value = MagicMock(id="cus_new")
+            result = await get_or_create_stripe_customer(mock_db, mock_user)
+        assert result.id == "cus_new"
+        lookup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_write_path_checks_ownership_before_the_row_lock(
+        self, mock_db, mock_user
+    ):
+        from studio.app.common.core.subscription.stripe_service import (
+            get_or_create_stripe_customer,
+        )
+
+        calls = []
+        _set_locked_query_result(mock_db, None)
+        chain = mock_db.query.return_value.filter.return_value
+        chain.with_for_update.side_effect = lambda: calls.append("lock") or MagicMock(
+            first=MagicMock(return_value=None)
+        )
+        with (
+            patch(
+                f"{STRIPE_MODULE}.owns_stored_email",
+                side_effect=lambda _: calls.append("owns") or False,
+            ),
+            patch(f"{STRIPE_MODULE}.stripe"),
+            patch(f"{CHECKOUT_MODULE}.CheckoutService.get_or_create_stripe_provider"),
+            patch(f"{CHECKOUT_MODULE}.CheckoutService.create_or_update_user_account"),
+        ):
+            await get_or_create_stripe_customer(mock_db, mock_user)
+        assert calls == ["owns", "lock"]
+
+    @pytest.mark.asyncio
+    async def test_write_path_bound_customer_skips_check_and_lock(
+        self, mock_db, mock_user, mock_stripe_customer
+    ):
+        from studio.app.common.core.subscription.stripe_service import (
+            get_or_create_stripe_customer,
+        )
+
+        _set_locked_query_result(mock_db, MagicMock(provider_customer_id="cus_1"))
+        with (
+            patch(f"{STRIPE_MODULE}.owns_stored_email") as owns,
+            patch(f"{STRIPE_MODULE}.stripe") as mock_stripe,
+        ):
+            mock_stripe.Customer.retrieve.return_value = mock_stripe_customer
+            result = await get_or_create_stripe_customer(mock_db, mock_user)
+        assert result == mock_stripe_customer
+        owns.assert_not_called()
+        chain = mock_db.query.return_value.filter.return_value
+        chain.with_for_update.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

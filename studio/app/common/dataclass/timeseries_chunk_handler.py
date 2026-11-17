@@ -272,25 +272,43 @@ class TimeSeriesChunkHandler:
         Raises:
             ValueError: If record_id not found in index map
         """
+        return next(cls.iter_records_data(dirpath, [record_id]))[1]
+
+    @classmethod
+    def iter_records_data(cls, dirpath: str, record_ids: List[str]):
+        """
+        (record_id, split format) for each of record_ids in the chunk of the
+        first, read once; ids in other chunks are skipped.
+
+        Raises:
+            ValueError: If the first record_id is not found
+        """
         index_map = cls.load_index_map(dirpath)
-        chunk_id = index_map.get(record_id)
+        chunk_id = index_map.get(record_ids[0])
 
         if chunk_id is None:
-            raise ValueError(f"Record ID '{record_id}' not found in index map")
+            raise ValueError(f"Record ID '{record_ids[0]}' not found in index map")
 
         chunk_data = cls.load_chunk_file(dirpath, chunk_id)
 
         # Optimized format: {"index": ..., "columns": ..., "records": {...}}
-        if record_id not in chunk_data["records"]:
-            raise ValueError(f"Record ID '{record_id}' not found in chunk {chunk_id}")
+        if record_ids[0] not in chunk_data["records"]:
+            raise ValueError(
+                f"Record ID '{record_ids[0]}' not found in chunk {chunk_id}"
+            )
 
         # Reconstruct split format for compatibility with existing code
-        # Convert from column-wise lists back to row-wise lists
         columns = chunk_data["columns"]
-        record_info = chunk_data["records"][record_id]
-        data_rows = cls._convert_columns_to_rows(columns, record_info)
-
-        return {"index": chunk_data["index"], "columns": columns, "data": data_rows}
+        for record_id in record_ids:
+            record_info = chunk_data["records"].get(record_id)
+            if record_info is None:
+                continue
+            data_rows = cls._convert_columns_to_rows(columns, record_info)
+            yield record_id, {
+                "index": chunk_data["index"],
+                "columns": columns,
+                "data": data_rows,
+            }
 
     @classmethod
     def get_all_record_ids(cls, dirpath: str) -> List[str]:

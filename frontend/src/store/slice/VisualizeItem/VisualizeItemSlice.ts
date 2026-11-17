@@ -708,6 +708,21 @@ export const visualaizeItemSlice = createSlice({
         targetItem.drawOrderList = drawOrderList
       }
     },
+    setTimeSeriesItemDefaultDrawOrder: (
+      state,
+      action: PayloadAction<{
+        itemId: number
+        path: string
+        drawOrderList?: string[]
+      }>,
+    ) => {
+      const { itemId, path, drawOrderList } = action.payload
+      const targetItem = state.items[itemId]
+      if (isTimeSeriesItem(targetItem)) {
+        targetItem.defaultDrawnPath = path
+        if (drawOrderList) targetItem.drawOrderList = drawOrderList
+      }
+    },
     setTimeSeriesItemDrawOrder: (
       state,
       action: PayloadAction<{
@@ -1160,6 +1175,7 @@ export const {
   setTimeSeriesItemXrangeLeft,
   setTimeSeriesItemXrangeRight,
   setTimeSeriesItemDrawOrderList,
+  setTimeSeriesItemDefaultDrawOrder,
   setTimeSeriesItemDrawOrder,
   setTimeSeriesItemMaxIndex,
   setTimeSeriesRefImageItemId,
