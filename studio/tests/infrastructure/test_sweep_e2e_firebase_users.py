@@ -78,7 +78,10 @@ def test_mixed_list_selects_only_the_throwaways():
 # Interpolations other than the timestamp, with a value they are known to take.
 # Anything else fails the test: check what the expression can produce before
 # adding it here, because the matcher admits only [a-z_] in the prefix.
-KNOWN_INTERPOLATIONS = {"${role.toLowerCase()}": "operator"}
+KNOWN_INTERPOLATIONS = {
+    "${role.toLowerCase()}": "operator",
+    "${tag}": "renewal_fail",
+}
 
 
 def rendered_spec_addresses():
