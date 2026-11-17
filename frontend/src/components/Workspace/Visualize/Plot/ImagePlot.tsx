@@ -167,13 +167,8 @@ export const ImagePlot = memo(function ImagePlot() {
     }
   }, [dispatch, isWorkflowDialog, itemId, path, workspaceId, uniqueId])
   useEffect(() => {
-    if (workspaceId) {
-      if (!isWorkflowDialog && !isInitialized) {
-        dispatch(getImageItemData({ itemId, path, workspaceId, uniqueId }))
-      }
-      if (roiFilePath != null) {
-        dispatch(getRoiData({ path: roiFilePath, workspaceId }))
-      }
+    if (workspaceId && !isWorkflowDialog && !isInitialized) {
+      dispatch(getImageItemData({ itemId, path, workspaceId, uniqueId }))
     }
   }, [
     dispatch,
@@ -183,6 +178,20 @@ export const ImagePlot = memo(function ImagePlot() {
     path,
     workspaceId,
     uniqueId,
+  ])
+  // Refetched along with the image it overlays. The ROI path names its record,
+  // so a new current pipeline alone is no reason to fetch it again
+  useEffect(() => {
+    if (workspaceId && roiFilePath != null) {
+      dispatch(getRoiData({ path: roiFilePath, workspaceId }))
+    }
+  }, [
+    dispatch,
+    isInitialized,
+    isWorkflowDialog,
+    itemId,
+    path,
+    workspaceId,
     roiFilePath,
   ])
   if (isPending) {
