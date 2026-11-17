@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
+from studio.app.common.core.cloud.storage_tracking import StorageScanFailed
 from studio.app.common.core.subscription.constants import (
     PlanName,
     StorageQuota,
@@ -361,17 +362,18 @@ async def test_get_user_s3_storage_size_no_workspaces():
 
 @pytest.mark.asyncio
 async def test_get_user_s3_storage_size_database_error():
-    """Test handling when database query fails"""
+    """A failed workspace lookup raises: it is not a measurement of 0 bytes"""
     user_id = 1
+    lookup_error = Exception("Database connection failed")
 
     with patch(WORKSPACE_IDS_SESSION_SCOPE) as mock_scope:
-        mock_scope.side_effect = Exception("Database connection failed")
+        mock_scope.side_effect = lookup_error
 
         monitor = S3StorageMonitor("test-bucket")
-        result = await monitor.get_user_s3_storage_size(user_id)
+        with pytest.raises(StorageScanFailed) as raised:
+            await monitor.get_user_s3_storage_size(user_id)
 
-        # Should return 0 on error
-        assert result == 0
+    assert raised.value.__cause__ is lookup_error
 
 
 # ============================================================================

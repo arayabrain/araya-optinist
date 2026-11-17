@@ -5,22 +5,28 @@ They read the user's storage row and subscription through session_scope. Those
 lookups wait for a pooled connection in a worker thread, so another request is
 answered meanwhile (db_pool_probe), and none of their statements runs on the
 event loop. The same holds when a stale usage is recalculated and stored, when
-its owner is no longer active, and for the refresh. The user and S3 are
-stubbed; the queries run on the real pool.
+its owner is no longer active, and for the refresh. When a lookup a scan needs
+fails, the stored usage is kept rather than overwritten with 0. The user and S3
+are stubbed; the queries run on the real pool.
 """
 
 import asyncio
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
-from sqlalchemy import delete, update
+from sqlalchemy import delete, event, update
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlmodel import Session, select
 
 from studio.app.common.core.auth.auth_dependencies import get_current_user
+from studio.app.common.core.background.storage_reconciliation_job import (
+    StorageReconciliationJob,
+)
 from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 from studio.app.common.core.storage.remote_storage_controller import RemoteStorageType
 from studio.app.common.core.subscription.constants import (
@@ -41,7 +47,7 @@ from studio.app.common.models import (
     Workspace,
     WorkspacesShareUser,
 )
-from studio.app.common.routers import files, run, storage_limit_alerts
+from studio.app.common.routers import files, run, storage_limit_alerts, workspace
 from studio.tests.app.common.db_pool_probe import (
     add_hold_and_health_routes,
     answered_while_waiting,
@@ -346,3 +352,86 @@ def test_a_missing_storage_row_falls_back_on_one_connection_at_a_time(engine):
     # Taken while the row lookup holds the pool's one connection, the plan
     # lookup times out and the free quota applies
     assert storage_info["storage_quota_bytes"] == StorageQuota.PREMIUM * StorageSize.GB
+
+
+# The workspace-id lookup and the user lookup of the S3 scan
+WORKSPACE_IDS_QUERY = "FROM workspaces"
+USER_QUERY = "FROM users"
+
+
+@contextmanager
+def _failing(engine, query: str):
+    """Statements containing `query` fail as a pool checkout timeout does."""
+
+    def fail(conn, cursor, statement, *args):
+        if query in statement:
+            raise PoolTimeoutError("QueuePool limit reached, connection timed out")
+
+    event.listen(engine, "before_cursor_execute", fail)
+    try:
+        yield
+    finally:
+        event.remove(engine, "before_cursor_execute", fail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "storage_type, query",
+    [
+        (RemoteStorageType.MOCK, WORKSPACE_IDS_QUERY),
+        (RemoteStorageType.S3, WORKSPACE_IDS_QUERY),
+        (RemoteStorageType.S3, USER_QUERY),
+    ],
+    ids=["local-workspaces", "s3-workspaces", "s3-user"],
+)
+async def test_a_failed_scan_lookup_keeps_the_stored_usage(
+    stale_engine, s3_listing, storage_type, query
+):
+    with patch.object(
+        RemoteStorageType, "get_activated_type", return_value=storage_type
+    ), _failing(stale_engine, query):
+        async with asgi_client(_app(asyncio.Event())) as client:
+            response = await client.get("/storage-limit-alerts/usage")
+
+    assert response.status_code == 200
+    assert response.json()["storage_usage_bytes"] == USAGE_BYTES
+    assert _stored_usage(stale_engine) == USAGE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_answers_busy_and_keeps_the_usage_on_a_lookup_timeout(
+    engine, s3_listing
+):
+    with _failing(engine, WORKSPACE_IDS_QUERY):
+        async with asgi_client(_app(asyncio.Event())) as client:
+            response = await client.post("/storage-limit-alerts/refresh")
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "5"
+    assert _stored_usage(engine) == USAGE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_the_workspace_refresh_answers_busy_on_a_workspace_lookup_timeout(
+    engine,
+):
+    app = FastAPI()
+    app.include_router(workspace.router)
+    app.dependency_overrides[get_current_user] = _user
+    with _failing(engine, WORKSPACE_IDS_QUERY):
+        async with asgi_client(app) as client:
+            response = await client.post("/workspaces/refresh-storage")
+
+    assert response.status_code == 429
+    assert _stored_usage(engine) == USAGE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_the_reconciliation_keeps_the_usage_on_a_failed_lookup(stale_engine):
+    with patch.object(
+        RemoteStorageType, "get_activated_type", return_value=RemoteStorageType.MOCK
+    ), _failing(stale_engine, WORKSPACE_IDS_QUERY):
+        reconciled = await StorageReconciliationJob.reconcile_user_storage(USER_ID)
+
+    assert reconciled is False
+    assert _stored_usage(stale_engine) == USAGE_BYTES

@@ -43,6 +43,18 @@ class StorageOwnerInactive(Exception):
         self.user_id = user_id
 
 
+class StorageScanFailed(Exception):
+    """A database lookup that a storage scan needs failed; the cause is chained.
+
+    Raised rather than returned as 0: a failed lookup is not "no workspaces",
+    and a stored 0 would let every quota check pass until the next good scan.
+    """
+
+    def __init__(self, user_id: int):
+        super().__init__(f"storage scan lookup failed for user {user_id}")
+        self.user_id = user_id
+
+
 def _get_fallback_storage_quota(user_id: int) -> Dict[str, Any]:
     """
     Get fallback storage quota when storage usage table doesn't exist.
@@ -468,6 +480,11 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
         logger.info(f"Skipped live storage usage for inactive user {user_id}")
         storage_info = await run_db_lookup(get_user_storage_usage, user_id)
         return storage_info.get("storage_usage_bytes", 0) if storage_info else 0
+    except StorageScanFailed as e:
+        # The stored usage stands until a scan can measure it
+        logger.warning(f"Kept the stored usage for user {user_id}: {e.__cause__!r}")
+        storage_info = await run_db_lookup(get_user_storage_usage, user_id)
+        return storage_info.get("storage_usage_bytes", 0) if storage_info else 0
     except Exception as e:
         logger.error(f"Failed to get current storage usage for " f"user {user_id}: {e}")
         storage_info = await run_db_lookup(get_user_storage_usage, user_id)
@@ -547,7 +564,7 @@ async def _calculate_live_storage_usage(
         else:
             return await _calculate_local_user_storage(user_id)
 
-    except StorageOwnerInactive:
+    except (StorageOwnerInactive, StorageScanFailed):
         raise
     except Exception as e:
         # Use repr(e) so the exception type is visible even when str(e) is empty.
@@ -567,14 +584,18 @@ def _get_active_user(user_id: int):
             return get_user_with_context_sync(db, user_id)
         except HTTPException as lookup_error:
             if lookup_error.status_code != 404:
-                raise
+                # The lookup reports a database error as a 400
+                raise StorageScanFailed(user_id) from lookup_error
             # Deleting an account leaves its storage row behind, so the
             # reconciliation job still selects it. Routine, not a fault.
             raise StorageOwnerInactive(user_id) from None
 
 
 def get_accessible_workspace_ids(user_id: int) -> List[int]:
-    """Ids of the workspaces the user owns or shares; blocking, for run_db_lookup."""
+    """
+    Ids of the workspaces the user owns or shares; blocking, for run_db_lookup.
+    A database error raises.
+    """
     from studio.app.common.core.workspace.workspace_services import WorkspaceService
 
     with session_scope() as db:
@@ -603,7 +624,10 @@ async def _calculate_local_user_storage(
 
     try:
         workspace_ids = await run_db_lookup(get_accessible_workspace_ids, user_id)
+    except Exception as lookup_error:
+        raise StorageScanFailed(user_id) from lookup_error
 
+    try:
         total_usage = 0
         import os
 

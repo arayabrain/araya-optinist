@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
 from studio.app.common.core.cloud.storage_tracking import (
+    StorageScanFailed,
     get_accessible_workspace_ids,
     get_user_storage_usage,
     update_user_storage_usage,
@@ -70,7 +71,10 @@ class S3StorageMonitor:
 
         try:
             workspace_ids = await run_db_lookup(get_accessible_workspace_ids, user_id)
+        except Exception as lookup_error:
+            raise StorageScanFailed(user_id) from lookup_error
 
+        try:
             logger.info(f"Checking S3 storage for user {user_id} across all workspaces")
 
             # Create sync S3 client for boto3 operations
@@ -189,7 +193,10 @@ class S3StorageMonitor:
 
         try:
             workspace_ids = await run_db_lookup(get_accessible_workspace_ids, user_id)
+        except Exception as lookup_error:
+            raise StorageScanFailed(user_id) from lookup_error
 
+        try:
             logger.info(
                 f"[Streaming] Checking S3 storage for user {user_id} "
                 f"across {len(workspace_ids)} workspaces"
