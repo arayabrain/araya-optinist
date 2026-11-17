@@ -10,11 +10,8 @@ from studio.app.common.core.auth.auth_dependencies import (
     get_current_user,
     get_user_remote_bucket_name,
 )
-from studio.app.common.core.cloud.cloud_utils import get_effective_quota_bytes
-from studio.app.common.core.cloud.storage_tracking import (
-    get_current_user_storage_usage,
-    get_user_storage_usage,
-)
+from studio.app.common.core.cloud.cloud_utils import get_quota_usage_percent
+from studio.app.common.core.cloud.storage_tracking import get_current_user_storage_usage
 from studio.app.common.core.experiment.experiment import ExptConfig
 from studio.app.common.core.experiment.experiment_reader import ExptConfigReader
 from studio.app.common.core.experiment.experiment_record_services import (
@@ -92,20 +89,15 @@ async def _check_storage_quota(user_id: Optional[int]) -> None:
     """Raise 403 if user has exceeded their storage quota."""
     if user_id is None:
         return
-    current_usage = await get_current_user_storage_usage(user_id, force_live=False)
-    storage_info = get_user_storage_usage(user_id)
-    quota_limit = get_effective_quota_bytes(user_id, storage_info=storage_info)
+    usage_percent = await get_quota_usage_percent(user_id)
 
-    if quota_limit > 0:
-        usage_percent = (current_usage / quota_limit) * 100
-
-        if usage_percent >= 100:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Cannot run job: Storage quota exceeded "
-                f"({usage_percent:.1f}% used). "
-                f"Please free up space before running jobs.",
-            )
+    if usage_percent is not None and usage_percent >= 100:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cannot run job: Storage quota exceeded "
+            f"({usage_percent:.1f}% used). "
+            f"Please free up space before running jobs.",
+        )
 
 
 @router.post(
@@ -121,6 +113,9 @@ async def run(
     remote_bucket_name: str = Depends(get_user_remote_bucket_name),
     db: Session = Depends(get_db),
 ):
+    # The quota lookups take connections of their own, and the run outlives the
+    # request: do not hold the workspace check's connection
+    release_request_session(db)
     try:
         user_id = current_user.id if current_user else None
         await _check_storage_quota(user_id)
@@ -192,10 +187,6 @@ async def run(
             detail="Failed to run workflow.",
         )
 
-    finally:
-        # The run outlives the request; do not hold the guards' connection
-        release_request_session(db)
-
 
 @router.post(
     "/{workspace_id}/{uid}",
@@ -211,6 +202,9 @@ async def run_id(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # The quota lookups take connections of their own, and the build and the
+    # run are awaited: do not hold the workspace check's connection
+    release_request_session(db)
     try:
         user_id = current_user.id if current_user else None
         await _check_storage_quota(user_id)
@@ -234,8 +228,6 @@ async def run_id(
                 status_code=status.HTTP_423_LOCKED,
                 detail="The previous run's results are still being saved.",
             )
-        # The build below is awaited; do not hold the guards' connection across it
-        release_request_session(db)
         try:
             # A same-second rerun waits out the second for a new generation
             build = asyncio.ensure_future(
@@ -325,10 +317,6 @@ async def run_id(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to run workflow.",
             )
-
-    finally:
-        # The run outlives the request; do not hold the guards' connection
-        release_request_session(db)
 
 
 @router.post(
