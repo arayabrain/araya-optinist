@@ -437,6 +437,7 @@ The dashboard contains the following widget groups. Here is what to look for in 
 | Autoscaling Triggers | CPU & memory vs. scale thresholds | Oscillating near thresholds (thrashing) |
 | Background Jobs | Background service CPU/memory, user manager | Background CPU/memory sustained high |
 | Lambda Operations | Duration and errors for all Lambda functions | Rising error counts, increasing duration |
+| Public Tiers | Public and public DataView ECS CPU / memory; ASG desired vs. healthy targets | Healthy targets below desired outside a deployment; public CPU rising with public DataView load |
 | Alarm Status Overview | All 19 alarms at a glance | Any alarm in red (ALARM state) |
 
 ---

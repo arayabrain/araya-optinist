@@ -830,11 +830,65 @@ resource "aws_cloudwatch_dashboard" "main" {
           }
         }
       },
-      # Row 7: Alarm Status - All Alarms at a Glance
+      # Row 7: Public tiers - sign-in / SPA and public DataView side by side
+      {
+        type   = "metric"
+        x      = 0
+        y      = 36
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.public.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Public ECS CPU", "stat" : "Average" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.public.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Public ECS Memory", "stat" : "Average" }],
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.public_dataview.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Public DataView ECS CPU", "stat" : "Average" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.public_dataview.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Public DataView ECS Memory", "stat" : "Average" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Public Tiers: ECS CPU & Memory"
+          period  = 300
+          yAxis = {
+            left = {
+              min = 0
+              max = 100
+            }
+          }
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 36
+        width  = 12
+        height = 6
+        properties = {
+          # The ASGs publish only GroupDesiredCapacity; healthy targets stand for
+          # the hosts serving, as in the serving-below-desired alarm
+          metrics = [
+            ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.public.name, { "label" : "Public Desired" }],
+            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", aws_lb_target_group.public.arn_suffix, "LoadBalancer", aws_lb.autoscaling.arn_suffix, { "label" : "Public Healthy Targets", "stat" : "Minimum" }],
+            ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.public_dataview.name, { "label" : "Public DataView Desired" }],
+            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", aws_lb_target_group.public_dataview.arn_suffix, "LoadBalancer", aws_lb.autoscaling.arn_suffix, { "label" : "Public DataView Healthy Targets", "stat" : "Minimum" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Public Tiers: Hosts"
+          period  = 300
+          yAxis = {
+            left = {
+              min = 0
+            }
+          }
+        }
+      },
+      # Row 8: Alarm Status - All Alarms at a Glance
       {
         type   = "alarm"
         x      = 0
-        y      = 36
+        y      = 42
         width  = 24
         height = 4
         properties = {

@@ -1121,6 +1121,28 @@ class TestPublicDataviewAlarms:
         assert match.group(1) == "public_dataview"
 
 
+class TestPublicTiersOnTheDashboard:
+    """The dashboard shows the public and public DataView tiers side by side,
+    so a visitor burst can be read on the tier that takes it."""
+
+    @pytest.mark.parametrize(
+        "reference",
+        [
+            "aws_ecs_service.public.name",
+            "aws_ecs_service.public_dataview.name",
+            "aws_autoscaling_group.public.name",
+            "aws_autoscaling_group.public_dataview.name",
+            "aws_lb_target_group.public.arn_suffix",
+            "aws_lb_target_group.public_dataview.arn_suffix",
+        ],
+    )
+    def test_a_metric_widget_reads_the_tier(self, reference):
+        dashboard = resource_block(
+            read(MONITORING_TF), "aws_cloudwatch_dashboard", "main"
+        )
+        assert reference in dashboard
+
+
 def _fake_elbv2_rules(describe_rules_response):
     """Patch the boto3 client premium_manager builds, returning fixed rules."""
     from unittest.mock import MagicMock, patch
