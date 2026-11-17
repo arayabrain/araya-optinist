@@ -240,7 +240,11 @@ class ThorlabsReader(MicroscopeDataReaderBase):
         return None
 
     def _release_resources(self) -> None:
-        self.__cleanup_raw_extracted_path()
+        (handle_tiff,) = self.resource_handles
+        try:
+            handle_tiff.close()
+        finally:
+            self.__cleanup_raw_extracted_path()
 
     def _get_image_stacks(self) -> list:
         handle_tiff = None

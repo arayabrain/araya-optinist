@@ -86,7 +86,7 @@ async def test_streaming_with_large_dataset():
     )
 
     with patch(
-        "studio.app.common.core.cloud.s3_storage_monitor.boto3.client"
+        "studio.app.common.core.cloud.s3_storage_monitor.get_s3_client"
     ) as mock_boto:
         with patch("studio.app.common.db.database.session_scope") as mock_session:
             from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
@@ -130,8 +130,8 @@ async def test_streaming_with_large_dataset():
             # Verify total size is correct
             assert total_size == expected_total
 
-            # Verify S3 client was closed
-            mock_s3_client.close.assert_called_once()
+            # The process's shared client stays open for the other scans
+            mock_s3_client.close.assert_not_called()
 
             # Note: Memory usage verification would require actual profiling
             # This test verifies the streaming logic works correctly

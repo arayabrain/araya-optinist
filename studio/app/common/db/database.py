@@ -81,6 +81,21 @@ def get_db():
         db.close()
 
 
+async def run_in_limited_thread(
+    limiter_var: RunVar[CapacityLimiter], size: int, func: Callable[..., _T], *args
+) -> _T:
+    """
+    Run func(*args) in a worker thread, under the limiter that limiter_var
+    holds for the running event loop; created with `size` slots on first use.
+    """
+    try:
+        limiter = limiter_var.get()
+    except LookupError:
+        limiter = CapacityLimiter(size)
+        limiter_var.set(limiter)
+    return await to_thread.run_sync(func, *args, limiter=limiter)
+
+
 async def run_db_lookup(func: Callable[..., _T], *args) -> _T:
     """
     Run a short blocking database lookup from async request code in a thread.
@@ -91,14 +106,12 @@ async def run_db_lookup(func: Callable[..., _T], *args) -> _T:
       connection do not take the threadpool slots that sync routes and
       dependencies run in.
     """
-    try:
-        limiter = _db_lookup_limiter.get()
-    except LookupError:
-        limiter = CapacityLimiter(
-            DATABASE_CONFIG.POOL_SIZE + DATABASE_CONFIG.MAX_OVERFLOW
-        )
-        _db_lookup_limiter.set(limiter)
-    return await to_thread.run_sync(func, *args, limiter=limiter)
+    return await run_in_limited_thread(
+        _db_lookup_limiter,
+        DATABASE_CONFIG.POOL_SIZE + DATABASE_CONFIG.MAX_OVERFLOW,
+        func,
+        *args,
+    )
 
 
 def release_request_session(db: Session) -> None:

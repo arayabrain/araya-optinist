@@ -125,7 +125,7 @@ class OMEDataModel:
 
     @staticmethod
     def get_depth_from_pixel_type(type_label: str):
-        if type_label == "unit8":
+        if type_label == "uint8":
             return 8
         elif type_label == "uint16":
             return 16
@@ -142,14 +142,14 @@ class MicroscopeDataReaderBase(metaclass=ABCMeta):
         """
         Initialization
         """
-        self._init_library()
-
-        # init members
+        # init members first so __del__ is safe if _init_library() raises
         self.__data_file_path = None
         self.__resource_handles = None
         self.__original_metadata = None
         self.__ome_metadata = None
         self.__lab_specific_metadata = None
+
+        self._init_library()
 
     def __del__(self):
         """

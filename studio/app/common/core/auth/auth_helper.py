@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, TypeVar
 
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
@@ -17,9 +17,24 @@ from firebase_admin import auth as firebase_auth
 
 from studio.app.common.core.auth.auth_config import AUTH_CONFIG
 from studio.app.common.core.auth.security import validate_access_token
+from studio.app.common.core.utils.executor_utils import run_in_executor_with_context
 
 # Thread pool for running synchronous Firebase calls asynchronously
 _thread_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="firebase_auth")
+
+# Firebase requests made through pyrebase (the token refresh), in a pool of their
+# own: they have no timeout, and a stalled one must not hold up the token checks
+_call_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="firebase_call")
+
+_T = TypeVar("_T")
+
+
+async def run_firebase_call(func: Callable[..., _T], *args) -> _T:
+    """func(*args) in the Firebase call pool, with the request's context: a
+    Firebase call is an HTTPS request, and on the event loop it would hold every
+    other request."""
+    return await run_in_executor_with_context(_call_pool, func, *args)
+
 
 # Token cache with TTL (Time To Live)
 # Structure: {token_hash: {"uid": str, "expires_at": float}}
@@ -109,6 +124,16 @@ def _cache_uid(token: str, uid: Optional[str]) -> None:
     }
 
 
+def _verify_id_token(token: str) -> dict:
+    """verify_id_token that also refuses an account whose email is unverified."""
+    claims = firebase_auth.verify_id_token(
+        token, clock_skew_seconds=_CLOCK_SKEW_SECONDS
+    )
+    if not claims.get("email_verified"):
+        raise ValueError("Email address is not verified")
+    return claims
+
+
 def _verify_firebase_token_sync(token: str) -> Optional[str]:
     """
     Synchronous Firebase token verification (for use in thread pool)
@@ -120,9 +145,7 @@ def _verify_firebase_token_sync(token: str) -> Optional[str]:
         User ID if verification succeeds, None otherwise
     """
     try:
-        user = firebase_auth.verify_id_token(
-            token, clock_skew_seconds=_CLOCK_SKEW_SECONDS
-        )
+        user = _verify_id_token(token)
         return user.get("uid")
     except Exception:
         return None
@@ -171,9 +194,7 @@ def extract_uid_from_firebase_credential(
             a token failure.
     """
     try:
-        user = firebase_auth.verify_id_token(
-            credential.credentials, clock_skew_seconds=_CLOCK_SKEW_SECONDS
-        )
+        user = _verify_id_token(credential.credentials)
         uid = user.get("uid")
         return uid, None
     except firebase_auth.CertificateFetchError:
@@ -315,9 +336,7 @@ def extract_uid_from_request(request: Request) -> Optional[str]:
 
             # Verify token and cache result
             try:
-                user = firebase_auth.verify_id_token(
-                    token, clock_skew_seconds=_CLOCK_SKEW_SECONDS
-                )
+                user = _verify_id_token(token)
                 uid = user.get("uid")
                 _cache_uid(token, uid)
                 return uid
