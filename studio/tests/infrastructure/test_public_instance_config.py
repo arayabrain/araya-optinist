@@ -20,6 +20,7 @@ from terraform_source import (
     NEXT_TOP_LEVEL_BLOCK,
     TERRAFORM_DIR,
     attribute,
+    per_environment,
     read,
     resource_block,
     resource_blocks,
@@ -508,11 +509,27 @@ class TestPublishedDataSurvivesTaskReplacement:
         assert match, f"no efs_volume_configuration for {PUBLISHED_DATA_VOLUME}"
         assert match.group(1) == "published_data"
 
-    def test_target_group_drains_for_600_seconds(self):
+    def test_target_group_drains_per_environment(self):
+        """Production drains for the listener's 600 s idle timeout, so a
+        streaming response survives deregistration; development drains for
+        60 s, because every rollout waits it out host by host."""
         target_group = resource_block(
             read(PUBLIC_SERVICE_TF), "aws_lb_target_group", "public"
         )
-        assert int(attribute(target_group, "deregistration_delay")) == 600
+        assert (
+            attribute(target_group, "deregistration_delay")
+            == "local.public_tg_deregistration_delay"
+        )
+        delay = per_environment(
+            attribute(read(MAIN_TF), "public_tg_deregistration_delay")
+        )
+        assert delay == {"production": 600, "development": 60}
+        assert delay["production"] == int(
+            attribute(
+                resource_block(read(COMPUTE_TF), "aws_lb", "autoscaling"),
+                "idle_timeout",
+            )
+        )
 
 
 class TestPublicUnhealthyHostsAlarm:
@@ -678,7 +695,8 @@ class TestServingBelowDesiredAlarm:
 
     def test_alarm_measures_the_gap_outside_deployments(self):
         """A public rollout replaces its two tasks one at a time, each held
-        below desired by the 600 s drain, for about 28 of 30 min. Missing
+        below desired by production's 600 s drain, for about 28 of 30 min there
+        (less on development, which drains for 60 s). Missing
         healthy counts as 0 healthy, so a target that has gone cannot hide in
         a data gap. Desired is the ASG's, not ECS's DesiredTaskCount, which
         Container Insights stops publishing once no task runs: the tier's last
