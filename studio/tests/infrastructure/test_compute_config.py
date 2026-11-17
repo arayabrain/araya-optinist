@@ -318,7 +318,8 @@ TIER_SIZING_PRECONDITIONS = [
     "{s}.container_memory_reservation_mib < {s}.container_memory_mib",
     "{s}.container_cpu <= {s}.task_cpu",
     "{s}.container_max_swap_mib <= {s}.swap_volume_gib * 1024",
-    "{s}.task_memory_mib <= data.aws_ec2_instance_type.{t}.memory_size * 15 / 16",
+    "{s}.task_memory_mib"
+    " <= floor(data.aws_ec2_instance_type.{t}.memory_size * 15 / 16)",
     "{s}.task_cpu <= data.aws_ec2_instance_type.{t}.default_vcpus * 1024",
 ]
 
@@ -509,14 +510,38 @@ class TestWorkflowTierGuardInputs:
     def test_the_ami_read_is_the_one_the_templates_boot(self):
         """Stock or custom (from SSM), the lookup is by the ID the templates
         use; the stock image moves with most_recent, the custom one with each
-        pipeline build, so a fixed floor alone can go stale."""
+        pipeline build, so a fixed floor alone can go stale. A deprecated
+        image still launches by ID, so it must still be found."""
         data = data_block(self.tf, "aws_ami", "effective")
         assert string_list(attribute(data, "owners")) == ["self", "amazon"]
+        assert attribute(data, "include_deprecated") == "true"
         assert attribute(data, "name") == '"image-id"'
         assert attribute(data, "values") == "[local.effective_ami_id]"
         for template in WORKFLOW_TIERS.values():
             block = resource_block(self.tf, "aws_launch_template", template[2])
             assert attribute(block, "image_id") == "local.effective_ami_id"
+
+    def test_the_ami_id_is_not_sensitive(self):
+        """The SSM parameter's value is sensitive: a precondition message that
+        names it is replaced by "invalid error message", and every plan warns.
+        The parameter is a String, so insecure_value is the same ID."""
+        assert _values(self.tf, "effective_ami_id") == [
+            "(var.use_custom_ami"
+            " ? data.aws_ssm_parameter.custom_ami_id[0].insecure_value"
+            " : data.aws_ami.ecs_optimized.id)"
+        ]
+        assert "custom_ami_id[0].value" not in self.tf
+
+    def test_an_ami_without_an_ebs_root_fails_at_the_lookup(self):
+        """Without an EBS mapping for the root device the floor is null, and
+        the templates' check would fail with "argument must not be null"."""
+        data = data_block(self.tf, "aws_ami", "effective")
+        assert _values(data, "condition") == [
+            "length([for mapping in self.block_device_mappings :"
+            " mapping if mapping.device_name == self.root_device_name"
+            " && can(tonumber(mapping.ebs.volume_size))]) == 1"
+        ]
+        assert "postcondition" in data
 
     def test_every_premium_instance_launches_as_the_checked_type(self):
         """The premium task is checked against var.premium_instance_type, so

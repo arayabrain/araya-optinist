@@ -134,9 +134,11 @@ data "aws_ssm_parameter" "custom_ami_id" {
 }
 
 locals {
+  # insecure_value: a String parameter, and value is sensitive, which hides
+  # every message that names the AMI
   effective_ami_id = (
     var.use_custom_ami
-    ? data.aws_ssm_parameter.custom_ami_id[0].value
+    ? data.aws_ssm_parameter.custom_ami_id[0].insecure_value
     : data.aws_ami.ecs_optimized.id
   )
 
@@ -166,13 +168,25 @@ locals {
 }
 
 # The image local.effective_ami_id names, stock or custom, for its root
-# snapshot size
+# snapshot size. include_deprecated: the custom-AMI parameter starts on a
+# stock image, which Amazon deprecates while launches by ID still work
 data "aws_ami" "effective" {
-  owners = ["self", "amazon"]
+  owners             = ["self", "amazon"]
+  include_deprecated = true
 
   filter {
     name   = "image-id"
     values = [local.effective_ami_id]
+  }
+
+  lifecycle {
+    postcondition {
+      condition = length([
+        for mapping in self.block_device_mappings :
+        mapping if mapping.device_name == self.root_device_name && can(tonumber(mapping.ebs.volume_size))
+      ]) == 1
+      error_message = "${self.id} has no EBS snapshot for its root device ${self.root_device_name}; the launch templates' root-volume check needs one."
+    }
   }
 }
 
@@ -1011,8 +1025,8 @@ resource "aws_ecs_task_definition" "autoscaling" {
     # less memory than the nominal (t3.large: 7,823 of 8,192 MiB); 15/16 stays
     # below that from 4 GiB up. CPU registers as 1,024 per vCPU
     precondition {
-      condition     = local.free_tier_sizing.task_memory_mib <= data.aws_ec2_instance_type.free.memory_size * 15 / 16
-      error_message = "free_tier_sizing: task_memory_mib must not exceed 15/16 of ${var.free_instance_type}'s memory (${data.aws_ec2_instance_type.free.memory_size * 15 / 16} MiB)."
+      condition     = local.free_tier_sizing.task_memory_mib <= floor(data.aws_ec2_instance_type.free.memory_size * 15 / 16)
+      error_message = "free_tier_sizing: task_memory_mib must not exceed 15/16 of ${var.free_instance_type}'s memory (${floor(data.aws_ec2_instance_type.free.memory_size * 15 / 16)} MiB)."
     }
 
     precondition {
@@ -1305,8 +1319,8 @@ resource "aws_ecs_task_definition" "premium" {
     }
 
     precondition {
-      condition     = local.premium_tier_sizing.task_memory_mib <= data.aws_ec2_instance_type.premium.memory_size * 15 / 16
-      error_message = "premium_tier_sizing: task_memory_mib must not exceed 15/16 of ${var.premium_instance_type}'s memory (${data.aws_ec2_instance_type.premium.memory_size * 15 / 16} MiB)."
+      condition     = local.premium_tier_sizing.task_memory_mib <= floor(data.aws_ec2_instance_type.premium.memory_size * 15 / 16)
+      error_message = "premium_tier_sizing: task_memory_mib must not exceed 15/16 of ${var.premium_instance_type}'s memory (${floor(data.aws_ec2_instance_type.premium.memory_size * 15 / 16)} MiB)."
     }
 
     precondition {
