@@ -1,7 +1,9 @@
+import asyncio
 from typing import Optional
 
 import stripe
 from fastapi import HTTPException, status
+from firebase_admin import auth as firebase_auth
 from sqlmodel import Session
 
 from studio.app.common.core.logger import AppLogger
@@ -30,8 +32,25 @@ from studio.app.common.schemas.users import User
 logger = AppLogger.get_logger()
 
 
+def owns_stored_email(user) -> bool:
+    """Whether Firebase holds the user's stored email, verified: the stored email
+    alone does not prove the user owns it."""
+    try:
+        record = firebase_auth.get_user(user.uid)
+    except Exception as e:
+        logger.warning(f"Could not check the email of user {user.id}: {e}")
+        return False
+    if not record.email_verified or (record.email or "").lower() != user.email.lower():
+        logger.warning(
+            f"User {user.id}: Firebase email is unverified or differs "
+            "from the stored one"
+        )
+        return False
+    return True
+
+
 async def _get_stripe_customer_by_email(email: str) -> Optional[stripe.Customer]:
-    """Get Stripe customer by email"""
+    """Get Stripe customer by email. Callers check owns_stored_email first."""
     try:
         stripe_customers = stripe.Customer.list(email=email, limit=1)
         return stripe_customers.data[0] if stripe_customers.data else None
@@ -100,6 +119,8 @@ async def get_stripe_customer(db: Session, user: User) -> Optional[stripe.Custom
             return customer
 
     # 2. Fall back to Stripe API lookup by email (no create)
+    if not await asyncio.to_thread(owns_stored_email, user):
+        return None
     customer = await _get_stripe_customer_by_email(user.email)
     if customer:
         _persist_customer(db, user, customer)
@@ -120,7 +141,15 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
     Uses SELECT FOR UPDATE to prevent concurrent requests from creating
     duplicate customers for the same user.
     """
+    from studio.app.common.core.subscription.checkout_service import CheckoutService
     from studio.app.common.models.subscription import SubscriptionUserAccount
+
+    account = CheckoutService.get_subscription_account(db, user.id)
+    customer = _retrieve_if_active(account, user.id) if account else None
+    if customer:
+        return customer
+    # The ownership check awaits, so it must finish before the row lock below.
+    owns_email = await asyncio.to_thread(owns_stored_email, user)
 
     # 1. Check database first with row lock to prevent race conditions.
     #    If a row exists, the lock serializes concurrent requests for the
@@ -137,7 +166,7 @@ async def get_or_create_stripe_customer(db: Session, user: User) -> stripe.Custo
             return customer
 
     # 2. Fall back to Stripe API lookup by email
-    customer = await _get_stripe_customer_by_email(user.email)
+    customer = await _get_stripe_customer_by_email(user.email) if owns_email else None
     if customer:
         _persist_customer(db, user, customer)
         return customer
@@ -690,6 +719,9 @@ class StripeService:
     async def handle_cancel_user_subscription(
         db: Session, user: User, *, immediate: bool = False
     ) -> CancelSubscriptionResponse:
+        if immediate:
+            return await StripeService._cancel_for_account_deletion(db, user)
+
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
             db, user.id
@@ -743,36 +775,28 @@ class StripeService:
             except Exception as e:
                 logger.warning(f"Could not cancel schedule: {e}")
 
-        if immediate:
-            # Account deletion: cancel now, no grace period
-            stripe.Subscription.cancel(stripe_subscription.id)
-        else:
-            # User-initiated cancel: keep access until period end
-            stripe.Subscription.modify(
-                stripe_subscription.id,
-                cancel_at_period_end=True,
-                metadata={
-                    **stripe_subscription.metadata,
-                    "cancellation_requested": "true",
-                    "cancellation_requested_at": str(
-                        int(SubscriptionService.get_current_datetime().timestamp())
-                    ),
-                },
-            )
+        stripe.Subscription.modify(
+            stripe_subscription.id,
+            cancel_at_period_end=True,
+            metadata={
+                **stripe_subscription.metadata,
+                "cancellation_requested": "true",
+                "cancellation_requested_at": str(
+                    int(SubscriptionService.get_current_datetime().timestamp())
+                ),
+            },
+        )
 
         SubscriptionService.update_scheduled_downgrade(db, user.id, True)
 
         # Database will be updated via customer.subscription.updated webhook
 
         access_until_date = datetime_from_timestamp(current_period_end)
-        if immediate:
-            message = "Subscription cancelled immediately."
-        else:
-            message = (
-                f"Subscription will be cancelled on "
-                f"{format_date_for_display(access_until_date)}. "
-                f"You will retain access until then."
-            )
+        message = (
+            f"Subscription will be cancelled on "
+            f"{format_date_for_display(access_until_date)}. "
+            f"You will retain access until then."
+        )
 
         logger.info(
             f"Successfully scheduled cancellation for user {user.id} " f"at period end"
@@ -783,4 +807,60 @@ class StripeService:
             message=message,
             cancellation_date=access_until_date.strftime("%Y-%m-%d"),
             access_until=access_until_date.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    @staticmethod
+    async def _cancel_for_account_deletion(
+        db: Session, user: User
+    ) -> CancelSubscriptionResponse:
+        """Cancel every Stripe subscription that can still bill, trusting Stripe
+        over the local row: a past_due subscription has an expired local row."""
+        customer = await get_stripe_customer(db, user)
+        billable, pending_schedules = [], []
+        if customer:
+            billable = [
+                sub
+                for sub in stripe.Subscription.list(
+                    customer=customer.id, status="all", limit=100
+                ).auto_paging_iter()
+                if sub.status
+                not in (
+                    StripeSubscriptionStatus.CANCELED,
+                    StripeSubscriptionStatus.INCOMPLETE_EXPIRED,
+                )
+            ]
+            # A not_started schedule is attached to no subscription yet.
+            pending_schedules = [
+                schedule
+                for schedule in stripe.SubscriptionSchedule.list(
+                    customer=customer.id, scheduled=True, limit=100
+                ).auto_paging_iter()
+                if schedule.status == "not_started"
+            ]
+        if not billable and not pending_schedules:
+            raise HTTPException(
+                status_code=404, detail="No billable Stripe subscription found"
+            )
+
+        for schedule in pending_schedules:
+            stripe.SubscriptionSchedule.cancel(schedule.id)
+            logger.info(f"Cancelled schedule {schedule.id} for user {user.id}")
+
+        for sub in billable:
+            if sub.get("schedule"):
+                try:
+                    stripe.SubscriptionSchedule.release(sub["schedule"])
+                except Exception as e:
+                    logger.warning(f"Could not release schedule: {e}")
+            stripe.Subscription.cancel(sub.id)
+            logger.info(f"Cancelled subscription {sub.id} for user {user.id}")
+
+        SubscriptionService.update_scheduled_downgrade(db, user.id, True)
+
+        cancelled_at = SubscriptionService.get_current_datetime()
+        return CancelSubscriptionResponse(
+            success=True,
+            message="Subscription cancelled immediately.",
+            cancellation_date=cancelled_at.strftime("%Y-%m-%d"),
+            access_until=cancelled_at.strftime("%Y-%m-%d %H:%M:%S"),
         )

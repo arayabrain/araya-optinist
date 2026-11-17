@@ -105,6 +105,7 @@ Priority 10 is reserved for the maintenance page. While it is on it answers ever
 | 210 | `sync_experiments_to_free` | Free | `/system-internal/sync-experiments/*` |
 | 280 | `visualizations_public_header` | Public | `/api/visualizations/*` + `DATAVIEW_PUBLIC_REQUEST: true` |
 | 300 | `public_dataview_api` | Public | `/api/public/dataview`, `/api/public/dataview/*` |
+| 304 | `account_deletion_to_free` | Free | `DELETE` on `/users/me` (account deletion cancels Stripe subscriptions; public has no Stripe key) |
 | 305 | `auth_to_public` | Public | `/auth/*` |
 | 306 | `users_me_to_public` | Public | `/users/me`, `/users/me/*` |
 | 307 | `log_report_to_public` | Public | `/log-report/*` |

@@ -121,5 +121,58 @@ class TestScheduleReleasedActiveFilter:
         _assert_email_and_active_filters(filter_call)
 
 
+class TestScheduleReleasedEmailOwnership:
+    """The email fallback applies the plan only to the email's verified owner."""
+
+    WEBHOOK = "studio.app.common.core.subscription.webhook_service"
+
+    def _run(self, owns):
+        from studio.app.common.core.subscription.webhook_service import WebhookService
+
+        user = Mock(id=7, uid="uid-7", email="repeat@example.com")
+        user_subscription = Mock(plan_id=1)
+        mock_db = Mock()
+        mock_db.query.return_value.filter.return_value.first.side_effect = [
+            None,
+            user,
+            user_subscription,
+            Mock(),
+        ]
+        stripe_subscription = {
+            "metadata": {"plan_id": "2"},
+            "items": {"data": [{"current_period_end": 2000000000}]},
+        }
+        with patch(
+            "studio.app.common.core.subscription.subscription_service."
+            "SubscriptionService._ensure_stripe_initialized"
+        ), patch(
+            f"{self.WEBHOOK}.stripe.Subscription.retrieve",
+            return_value=stripe_subscription,
+        ), patch(
+            f"{self.WEBHOOK}.stripe.Customer.retrieve",
+            return_value={"email": "repeat@example.com"},
+        ), patch(
+            f"{self.WEBHOOK}.owns_stored_email", return_value=owns
+        ) as owns_check, patch(
+            f"{self.WEBHOOK}.invalidate_user_tier_cache"
+        ):
+            WebhookService.handle_subscription_schedule_released(
+                mock_db,
+                {"subscription": "sub_123", "customer": "cus_123"},
+            )
+        owns_check.assert_called_once_with(user)
+        return user_subscription
+
+    def test_unowned_email_match_is_refused(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            self._run(owns=False)
+        assert exc.value.status_code == 404
+
+    def test_owned_email_match_gets_the_plan(self):
+        assert self._run(owns=True).plan_id == 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

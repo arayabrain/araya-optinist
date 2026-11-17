@@ -164,8 +164,9 @@ resource "aws_ecs_task_definition" "public" {
       memoryReservation = 1024
       essential         = true
       workingDirectory  = "/app"
-      entryPoint        = ["/bin/sh", "-c"]
-      command           = ["./cloud-startup.sh"]
+      # exec makes the script PID 1, the process ECS sends SIGTERM to on stop.
+      entryPoint = ["/bin/sh", "-c"]
+      command    = ["exec ./cloud-startup.sh"]
 
       portMappings = [
         {
@@ -225,7 +226,7 @@ resource "aws_ecs_task_definition" "public" {
         { name = "PYTHONUNBUFFERED", value = "1" },
         { name = "OPTINIST_DIR", value = "/app/studio_data" },
 
-        # Stripe vars omitted: subscriptions router is gated out on public.
+        # No Stripe key on public: account deletion is routed to free (public_alb_rules.tf).
         { name = "ROUTING_SECRET_KEY", value = var.routing_secret_key },
 
         { name = "INTERNAL_API_SECRET", value = random_password.internal_api_secret.result },
