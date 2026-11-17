@@ -1466,6 +1466,14 @@ test.describe("load lane: report", () => {
     ).toContain(
       "- The watch after the last step: a service did not settle (probe free)",
     )
+    // A run that ended before its settle does not report the services settled
+    const unwatched = renderReport(null, {
+      ...run,
+      settleRan: false,
+      settleUnhealthy: null,
+    })
+    expect(unwatched).toContain("- The watch after the last step: not run")
+    expect(unwatched).not.toContain("both services answered")
   })
 })
 
@@ -1567,9 +1575,12 @@ test.describe("load lane: safety gates", () => {
     fs.rmSync(results, { recursive: true })
   })
 
-  test("a debt is paid only for the run's own publish, and only once the record reads private", async () => {
-    // The owner's listing and the unpublish, as the API answers them
-    const state = { status: 1, updatedAt: "2026-11-09T03:00:05", takes: true }
+  // The owner's listing and the unpublish of record 42, as the API answers them
+  async function ownerApi(state: {
+    status: number
+    updatedAt: string
+    takes: boolean
+  }) {
     const server = http.createServer((req, res) => {
       if (req.method === "POST" && req.url === "/api/dataview/publish/42/off") {
         if (state.takes) state.status = 0
@@ -1590,54 +1601,94 @@ test.describe("load lane: safety gates", () => {
       )
     })
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
-    const base = new URL(
-      `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-    )
-    const owner = async () => ({
-      accessToken: "a",
-      refreshToken: "r",
-      exToken: null,
-    })
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "load-debt-"))
-    const debt = {
-      workspaceId: 7,
-      uid: "6ab411e3",
-      id: 42,
-      at: "2026-11-09T03:00:00.000Z",
-      updatedAt: "2026-11-09T03:00:05",
+    return {
+      base: new URL(
+        `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      ),
+      close: () => new Promise((resolve) => server.close(resolve)),
     }
+  }
+  const debtOwner = async () => ({
+    accessToken: "a",
+    refreshToken: "r",
+    exToken: null,
+  })
+  const debt42 = {
+    workspaceId: 7,
+    uid: "6ab411e3",
+    id: 42,
+    at: "2026-11-09T03:00:00.000Z",
+    updatedAt: "2026-11-09T03:00:05",
+  }
+
+  test("a debt is paid only for the run's own publish, and only once the record reads private", async () => {
+    const state = { status: 1, updatedAt: "2026-11-09T03:00:05", takes: true }
+    const { base, close } = await ownerApi(state)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "load-debt-"))
     const now = Date.parse("2026-11-09T04:00:00Z")
     try {
-      // The owner changed the record since: left alone, debt kept
-      const file = owe(dir, { ...debt, updatedAt: "2026-11-09T03:00:01" })
-      await expect(payDebt(base, owner, file, now)).rejects.toThrow(
+      // The owner changed the record 20 minutes after the publish: left
+      // alone, debt kept
+      const file = owe(dir, { ...debt42, updatedAt: "2026-11-09T02:40:00" })
+      await expect(payDebt(base, debtOwner, file, { now })).rejects.toThrow(
         /changed after the run published it/,
       )
       expect(state.status).toBe(1)
       expect(fs.existsSync(file)).toBe(true)
       // The unpublish did not take: debt kept
       state.takes = false
-      owe(dir, debt)
-      await expect(payDebt(base, owner, file, now)).rejects.toThrow(
+      owe(dir, debt42)
+      await expect(payDebt(base, debtOwner, file, { now })).rejects.toThrow(
         /still public/,
       )
       expect(fs.existsSync(file)).toBe(true)
       // The run's own publish: unpublished, confirmed, paid
       state.takes = true
-      await payDebt(base, owner, file, now)
+      await payDebt(base, debtOwner, file, { now })
       expect(state.status).toBe(0)
       expect(fs.existsSync(file)).toBe(false)
       // A publish that never answered is paid only while fresh
       state.status = 1
-      owe(dir, { ...debt, updatedAt: null })
+      owe(dir, { ...debt42, updatedAt: null })
       await expect(
-        payDebt(base, owner, file, now + 2 * 24 * 3600_000),
+        payDebt(base, debtOwner, file, { now: now + 2 * 24 * 3600_000 }),
       ).rejects.toThrow(/changed after/)
-      await payDebt(base, owner, file, now)
+      await payDebt(base, debtOwner, file, { now })
       expect(state.status).toBe(0)
     } finally {
       fs.rmSync(dir, { recursive: true })
-      await new Promise((resolve) => server.close(resolve))
+      await close()
+    }
+  })
+
+  test("the publish's own sync does not hold a restore back, and the run that owes it pays at once", async () => {
+    // The sync job marked the record synced 55 s after the publish answered
+    const state = { status: 1, updatedAt: "2026-11-09T03:01:00", takes: true }
+    const { base, close } = await ownerApi(state)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "load-debt-"))
+    const now = Date.parse("2026-11-09T04:00:00Z")
+    try {
+      // A later run pays across the sync's move
+      let file = owe(dir, debt42)
+      await payDebt(base, debtOwner, file, { now })
+      expect(state.status).toBe(0)
+      expect(fs.existsSync(file)).toBe(false)
+      // A move back before the publish is not the sync's: debt kept
+      state.status = 1
+      file = owe(dir, { ...debt42, updatedAt: "2026-11-09T03:05:00" })
+      await expect(payDebt(base, debtOwner, file, { now })).rejects.toThrow(
+        /changed after the run published it/,
+      )
+      expect(state.status).toBe(1)
+      // The run that published it minutes ago pays whatever moved since
+      state.updatedAt = "2026-11-09T03:40:00"
+      file = owe(dir, debt42)
+      await payDebt(base, debtOwner, file, { now, ownRun: true })
+      expect(state.status).toBe(0)
+      expect(fs.existsSync(file)).toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+      await close()
     }
   })
 
