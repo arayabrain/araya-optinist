@@ -28,6 +28,9 @@ export interface UserSubscription {
   status: number
   plan_name: string
   plan_price: number
+  // True while the free trial runs; trial_end is then the first charge date
+  is_trial: boolean
+  trial_end: string | null
 }
 
 export interface SubscriptionState {

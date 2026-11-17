@@ -104,3 +104,38 @@ describe("Invoice page subscription expiration", () => {
     expect(screen.getByRole("button", { name: "Upgrade" })).toBeInTheDocument()
   })
 })
+
+describe("Invoice page during a free trial", () => {
+  const trialEnd = "2027-01-15T00:00:00"
+
+  it("names the end of the trial as the first payment, not a renewal", async () => {
+    renderInvoice({
+      expiration: trialEnd,
+      is_expired: false,
+      is_trial: true,
+      trial_end: trialEnd,
+    })
+
+    expect(
+      await screen.findByText(
+        "Your free trial ends on January 15, 2027, when your first payment will be taken.",
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/will renew on/)).not.toBeInTheDocument()
+  })
+
+  it("says a trial cancelled before its end will expire", async () => {
+    renderInvoice({
+      expiration: trialEnd,
+      is_expired: false,
+      scheduled_downgrade: true,
+      is_trial: true,
+      trial_end: trialEnd,
+    })
+
+    expect(
+      await screen.findByText(/Your subscription will expire on/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/free trial/)).not.toBeInTheDocument()
+  })
+})

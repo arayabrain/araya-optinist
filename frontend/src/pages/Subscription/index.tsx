@@ -18,7 +18,7 @@ import {
   DialogActions,
 } from "@mui/material"
 
-import { PlanName } from "const/Subscription"
+import { PlanName, SubscriptionPeriods } from "const/Subscription"
 import {
   getSubscriptionPlan,
   getUserSubscription,
@@ -393,6 +393,19 @@ const SubscriptionPlans = () => {
                     {!isFree && (
                       <Typography variant="caption" color="text.secondary">
                         + applicable taxes
+                      </Typography>
+                    )}
+                    {/* The API returns no subscription for a user who never
+                        bought one, so this checkout may start a trial. Stripe
+                        history can still rule it out, hence the general
+                        wording. */}
+                    {!isFree && !userSubscription && (
+                      <Typography
+                        variant="body2"
+                        sx={{ color: "#16a34a", fontWeight: 500, mt: 1 }}
+                      >
+                        First-time subscribers get{" "}
+                        {SubscriptionPeriods.TRIAL_PERIOD_DAYS} days free
                       </Typography>
                     )}
                   </PriceContainer>

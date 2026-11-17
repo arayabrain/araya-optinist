@@ -120,6 +120,10 @@ const subscriptionSlice = createSlice({
                 ),
                 plan_name: String(action.payload.plan_name || ""),
                 plan_price: Number(action.payload.plan_price) || 0,
+                is_trial: Boolean(action.payload.is_trial),
+                trial_end: action.payload.trial_end
+                  ? String(action.payload.trial_end)
+                  : null,
               }
             } else {
               state.userSubscription = null
