@@ -117,8 +117,9 @@ resource "aws_ecs_task_definition" "background" {
       memoryReservation = 512
       essential         = true
       workingDirectory  = "/app"
-      entryPoint        = ["/bin/sh", "-c"]
-      command           = ["./cloud-startup.sh"]
+      # exec makes the script PID 1, the process ECS sends SIGTERM to on stop.
+      entryPoint = ["/bin/sh", "-c"]
+      command    = ["exec ./cloud-startup.sh"]
 
       # No port mappings - background service doesn't serve HTTP
 
