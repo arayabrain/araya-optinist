@@ -1284,7 +1284,8 @@ async def _ensure_workflow_config(
     """
     Fetch the record's metadata when this server lacks its workflow.yaml. A
     server that has it touches neither the remote storage nor the record's lock,
-    which a run holds while it executes.
+    which a run holds while it executes. A failed read answers 429; a record
+    without the file falls through to the caller's 404.
     """
     if not RemoteStorageController.is_available():
         return
@@ -1307,10 +1308,13 @@ async def _ensure_workflow_config(
                 logger.warning(e)
                 raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(e))
         except Exception as e:
+            # Not 503: the frontend takes a 503 for an unreachable instance, and
+            # every instance reads the same storage
             logger.error(f"Failed to sync workflow config: {e}")
             raise HTTPException(
-                status_code=503,
-                detail="Failed to sync the record from cloud storage",
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Could not fetch the record from cloud storage. Please retry.",
+                headers={"Retry-After": "5"},
             )
         await asyncio.sleep(STRUCTURED_CONFIG_POLL_SECONDS)
 

@@ -2,7 +2,7 @@ import asyncio
 import os
 import shutil
 import threading
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import h5py
 import httpx
@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import scipy.io
 import yaml
+from botocore.exceptions import ClientError
 
 from studio.__main_unit__ import app
 from studio.app.common.core.storage.remote_storage_controller import (
@@ -18,6 +19,7 @@ from studio.app.common.core.storage.remote_storage_controller import (
     RemoteSyncLockFileUtil,
     RemoteSyncStatusFileUtil,
 )
+from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.routers import outputs
 from studio.app.dir_path import DIRPATH
 
@@ -435,8 +437,10 @@ def test_structured_answers_423_when_the_lock_outlasts_the_wait(client, monkeypa
     assert asked == []
 
 
-def test_structured_answers_503_when_the_config_cannot_be_fetched(client):
-    """503 tells the client to retry; a 404 would read as a missing record."""
+def test_structured_answers_429_when_the_config_cannot_be_fetched(client):
+    """A failed fetch asks the client to retry later. Not 404, which reads as a
+    missing record; not 503, which the frontend takes for an unreachable
+    instance."""
 
     async def unreachable(self, workspace_id, unique_id):
         raise RuntimeError("S3 unreachable")
@@ -449,7 +453,84 @@ def test_structured_answers_503_when_the_config_cannot_be_fetched(client):
     finally:
         _drop_record("run_unreachable")
 
-    assert response.status_code == 503, response.text
+    assert response.status_code == 429, response.text
+    assert response.headers["Retry-After"] == "5"
+
+
+def _client_error(code):
+    return ClientError({"Error": {"Code": code, "Message": code}}, "HeadObject")
+
+
+def _via_s3(head_error=None, download_error=None):
+    """
+    Runs the real S3StorageController under the route, on a mocked client whose
+    bucket holds the module record's workflow.yaml and no other metadata file.
+    The errors, when given, are what S3 answers for workflow.yaml.
+    """
+    source = os.path.join(DIRPATH.OUTPUT_DIR, WORKSPACE_ID, UNIQUE_ID, "workflow.yaml")
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    async def head_object(Bucket, Key):
+        if not Key.endswith("/workflow.yaml"):
+            raise _client_error("404")
+        if head_error:
+            raise head_error
+
+    async def download_file(bucket, key, path):
+        if download_error:
+            # aioboto3 creates its target before the body arrives
+            with open(path, "w") as f:
+                f.write("nodeDict:\n  par")
+            raise download_error
+        shutil.copy(source, path)
+
+    client.head_object.side_effect = head_object
+    client.download_file.side_effect = download_file
+
+    async def download_experiment_meta(self, workspace_id, unique_id):
+        s3 = S3StorageController("bucket")
+        with patch.object(
+            s3, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            return await s3.download_experiment_meta(workspace_id, unique_id)
+
+    return patch.object(
+        RemoteStorageController, "download_experiment_meta", download_experiment_meta
+    )
+
+
+@pytest.mark.parametrize(
+    "head_error, download_error, expected",
+    [
+        (None, None, 200),
+        (_client_error("404"), None, 404),
+        (_client_error("SlowDown"), None, 429),
+        (None, _client_error("InternalError"), 429),
+    ],
+    ids=["fetched", "absent", "throttled", "failed-mid-body"],
+)
+def test_structured_tells_a_failed_s3_read_from_an_absent_config(
+    client, head_error, download_error, expected
+):
+    """A config S3 does not have reads as missing. A read S3 failed asks the
+    client to retry, and leaves no partial config for the retry to trust."""
+    unique_id = "run_via_s3"
+    config_path = os.path.join(
+        DIRPATH.OUTPUT_DIR, WORKSPACE_ID, unique_id, "workflow.yaml"
+    )
+    try:
+        with _via_s3(head_error, download_error):
+            response = client.get(_structured_url(unique_id, "hdf5_1d_node"))
+        config_kept = os.path.exists(config_path)
+    finally:
+        _drop_record(unique_id)
+
+    assert response.status_code == expected, response.text
+    assert config_kept == (expected == 200)
+    if expected == 429:
+        assert response.headers["Retry-After"] == "5"
 
 
 def test_structured_missing_node(client):
