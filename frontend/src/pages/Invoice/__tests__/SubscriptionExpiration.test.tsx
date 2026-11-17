@@ -138,4 +138,20 @@ describe("Invoice page during a free trial", () => {
     ).toBeInTheDocument()
     expect(screen.queryByText(/free trial/)).not.toBeInTheDocument()
   })
+
+  it("renews a trial that has converted to paid", async () => {
+    // Stripe keeps the trial end after the first charge; only is_trial says
+    // whether the trial still runs
+    renderInvoice({
+      expiration: "2027-02-15T00:00:00",
+      is_expired: false,
+      is_trial: false,
+      trial_end: "2026-10-15T00:00:00",
+    })
+
+    expect(
+      await screen.findByText(/Your subscription will renew on/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/free trial/)).not.toBeInTheDocument()
+  })
 })

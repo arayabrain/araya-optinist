@@ -378,6 +378,22 @@ describe("Subscription state on the profile", () => {
     expect(screen.queryByText(/Renew on/)).toBeNull()
   })
 
+  it("renews a trial that has converted to paid", async () => {
+    // Stripe keeps the trial end after the first charge; only is_trial says
+    // whether the trial still runs
+    showAccount({
+      ...TRIAL_SUBSCRIPTION,
+      expiration: "2027-02-15T00:00:00",
+      is_trial: false,
+      trial_end: "2026-10-15T00:00:00",
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText(/Renew on/)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/Free trial/)).toBeNull()
+  })
+
   it("offers a free user Upgrade and no Manage", async () => {
     showAccount(null)
 

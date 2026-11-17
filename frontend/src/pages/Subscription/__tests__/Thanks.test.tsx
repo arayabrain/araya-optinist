@@ -107,6 +107,22 @@ describe("Thanks page after checkout", () => {
     expect(screen.queryByText(/first payment/)).not.toBeInTheDocument()
   })
 
+  it("names no trial for a trial that has converted to paid", async () => {
+    // Stripe keeps the trial end after the first charge; only is_trial says
+    // whether the trial still runs
+    mockGetUserSubscriptionApi.mockResolvedValue(
+      subscriptionResponse({
+        is_trial: false,
+        trial_end: "2026-10-15T00:00:00",
+      }),
+    )
+
+    renderThanks()
+
+    expect(await screen.findByText(PAYMENT_EMAIL)).toBeInTheDocument()
+    expect(screen.queryByText(/free trial/)).not.toBeInTheDocument()
+  })
+
   it("keeps the payment sentence for a paid checkout", async () => {
     mockGetUserSubscriptionApi.mockResolvedValue(subscriptionResponse({}))
 
