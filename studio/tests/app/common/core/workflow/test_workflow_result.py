@@ -1,6 +1,8 @@
 import os
+import pickle
 import shutil
 import time
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +10,7 @@ from studio.app.common.core.auth.auth_dependencies import _get_user_remote_bucke
 from studio.app.common.core.experiment.experiment import ExptFunction
 from studio.app.common.core.mode import MODE
 from studio.app.common.core.rules.runner import Runner
+from studio.app.common.core.storage.mock_storage_controller import MockStorageController
 from studio.app.common.core.storage.remote_storage_controller import (
     RemoteStorageController,
     RemoteSyncAction,
@@ -19,6 +22,8 @@ from studio.app.common.core.workflow.workflow_result import (
     WorkflowMonitor,
     WorkflowResult,
 )
+from studio.app.common.dataclass.html import HTMLData
+from studio.app.common.schemas.outputs import PlotMetaData
 from studio.app.dir_path import DIRPATH
 
 # Set test mode before getting bucket name at module level
@@ -134,3 +139,43 @@ async def test_WorkflowResult_get_error():
 
     assert isinstance(output, dict)
     assert output[node_1st].status == "error"
+
+
+@pytest.fixture()
+def html_output_run():
+    """result_test with func1 about to finish with an HTML output; yields its remote"""
+    unique_id = "result_html_test"
+    local = Path(DIRPATH.OUTPUT_DIR) / workspace_id / unique_id
+    remote = Path(MockStorageController.MOCK_OUTPUT_DIR) / workspace_id / unique_id
+    shutil.rmtree(local, ignore_errors=True)
+    shutil.rmtree(remote, ignore_errors=True)
+    shutil.copytree(workflow_dirpath, local)
+    figure = HTMLData(
+        "<p>figure</p>", file_name="figure", meta=PlotMetaData(title="figure")
+    )
+    with open(local / node_1st / "func1.pkl", "wb") as f:
+        pickle.dump({"figure": figure}, f)
+    RemoteSyncStatusFileUtil.create_sync_status_file_for_success(
+        remote_bucket_name, workspace_id, unique_id, RemoteSyncAction.UPLOAD
+    )
+    yield unique_id, remote
+    shutil.rmtree(local, ignore_errors=True)
+    shutil.rmtree(remote, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_WorkflowResult_uploads_html_output(html_output_run):
+    unique_id, remote = html_output_run
+
+    await WorkflowResult(workspace_id=workspace_id, unique_id=unique_id).observe(
+        [node_1st]
+    )
+
+    uploaded = {p.relative_to(remote).as_posix() for p in remote.rglob("*")}
+    assert {
+        DIRPATH.EXPERIMENT_YML,
+        f"{node_1st}/figure.html",
+        f"{node_1st}/figure.plot-meta.json",
+    } <= uploaded
+    # post_process's full upload carries the pickle and other large files
+    assert f"{node_1st}/func1.pkl" not in uploaded
