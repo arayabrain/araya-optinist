@@ -188,7 +188,7 @@ terraform apply -var-file=environments/<ENV>.tfvars
 - Copies `infrastructure/aws_constants.py` to all Lambda packages via provisioners
 - From a commit other than the last one applied: the Docker image, built and pushed by
   `ecr_build_push.sh` on your machine, and a rollout of every ECS service. A release commit's
-  image is tagged with its version. See [INFRA_DEPLOYMENT_PROCEDURE.md — Builds Run by
+  image is tagged with its version, unless the repository already has that tag. See [INFRA_DEPLOYMENT_PROCEDURE.md — Builds Run by
   `terraform apply`](INFRA_DEPLOYMENT_PROCEDURE.md#builds-run-by-terraform-apply)
 
 > **Traceability:** Each apply stamps the applied `infrastructure/` git revision onto the
@@ -225,7 +225,7 @@ terraform init -backend-config=backends/<ENV>.hcl -reconfigure
 
 ```bash
 cd infrastructure/scripts
-./ecr_build_push.sh --tag {VERSION}  # Omitted: the release tag on HEAD, else YYYYMMDD-HHMMSS-<git-sha>
+./ecr_build_push.sh --tag {VERSION}  # Omitted: the release tag on HEAD unless ECR has it, else YYYYMMDD-HHMMSS-<git-sha>
 ```
 
 The script automatically:

@@ -364,10 +364,16 @@ Every push creates **two tags** on the same image:
 - `:latest` — used by ECS task definitions (always current)
 - a version tag, for history and rollback:
   - `--tag <tag>` when given
-  - otherwise the release tag on HEAD (`v1.2.3` or `1.2.3`, no suffix), so a release build
-    carries its version even from `terraform apply`, which passes no `--tag`
+  - otherwise the release tag on HEAD (`v1.2.3` or `1.2.3`: three numeric parts, no suffix), so
+    a release build carries its version even from `terraform apply`, which passes no `--tag`.
+    If the repository already has that tag, it stays on the image it marks and this build gets
+    the timestamp tag below, with a warning in the output: a rebuild of a release commit (a
+    rollback apply, a retry) is a new image and never takes the released version over. The
+    script checks with `aws ecr describe-images`; if the check fails, it also uses the timestamp
   - otherwise `:YYYYMMDD-HHMMSS-<git-sha>` (e.g., `20260317-143022-a1b2c3d`), for a prerelease
     or untagged commit
+
+Only `--tag` moves a tag that is already in the repository.
 
 ### Builds Run by `terraform apply`
 
@@ -386,7 +392,9 @@ re-applying the same commit with none of them changed does not rebuild.
 - **There is no confirmation prompt.** `--yes` skips it, production included; approving the
   apply is the only check.
 - **No `--tag` is passed**, so the version tag follows the rule above. Create the release tag
-  before the apply: the build reads it when it runs. An image built before the tag existed keeps
+  before the apply: the build reads it from the checkout when it runs. A tag created on GitHub or
+  on another machine is not in your checkout until you fetch it: run `git fetch --tags`, then
+  check that `git tag --points-at HEAD` lists it. An image built before the tag existed keeps
   its timestamp tag; add the version with `aws ecr put-image`, as in [Rollback to a Previous
   Image](#rollback-to-a-previous-image) (it still counts as timestamp-tagged in [Image
   Cleanup](#image-cleanup)).
@@ -394,8 +402,10 @@ re-applying the same commit with none of them changed does not rebuild.
   progress bars or transfer sizes, so each push prints `Pushing <ref>...`, a `<tag>: N/M layers`
   line each time a layer upload ends, and docker's digest line. A layer already in the registry is
   only counted, so the version-tag push prints its digest alone. The count moves by layers, not
-  bytes: it can stand still for minutes on a large layer. The `yarn` and `docker build` output
-  stays in full: a failed build is diagnosed from it.
+  bytes: it can stand still for minutes on a large layer. With Docker's containerd image store
+  (the default on a fresh Docker Desktop install) docker lists no layers before the upload, so the
+  line is `<tag>: N pushed`, with no total, and N also counts the image's config and manifest. The
+  `yarn` and `docker build` output stays in full: a failed build is diagnosed from it.
 
 ### Cycling All Services
 
@@ -486,7 +496,10 @@ A rollback that cycles only one service is the worst case of the digest-pinning 
 
 A rollback of `:latest` lasts until the next build: the next `terraform apply` from a commit other
 than the last one applied rebuilds, pushes `:latest` and rolls every service out again ([Builds Run
-by `terraform apply`](#builds-run-by-terraform-apply)).
+by `terraform apply`](#builds-run-by-terraform-apply)). An apply from an older release commit
+rebuilds that release: the new image gets a timestamp tag, and the release tag stays on the image
+that was released, so `check_ecs_image_drift.py --tag <version>` reports the services as running
+another image. To run the released image itself, retag it as above.
 
 ### Image Cleanup
 
@@ -495,8 +508,8 @@ The ECR lifecycle policy that Terraform creates with the development repository
 predates Terraform ([Repository Isolation](#repository-isolation)), so its policy, if any, is set
 outside it.
 
-- **Untagged images**: removed after 7 days. A version tag pushed again moves to the new image,
-  which can leave the old one untagged
+- **Untagged images**: removed after 7 days. A tag pushed again with `--tag` moves to the new
+  image, which can leave the old one untagged
 - **Timestamp-tagged images** (tags starting with `20`): only the last 10 are kept
 - **Release-tagged images** (a `v1.2.3` tag and no timestamp tag): not selected by either rule, so
   kept until deleted. An image carrying both, such as a timestamp-tagged image given its version
