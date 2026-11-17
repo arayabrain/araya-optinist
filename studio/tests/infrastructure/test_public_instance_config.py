@@ -19,6 +19,7 @@ from terraform_source import (
     NEXT_TOP_LEVEL_BLOCK,
     TERRAFORM_DIR,
     attribute,
+    per_environment,
     read,
     resource_block,
 )
@@ -893,7 +894,21 @@ class TestPublicDataviewMatchesPublic:
         assert _nested_block(ours, "health_check") == _nested_block(
             public, "health_check"
         )
-        assert int(attribute(ours, "deregistration_delay")) == 600
+
+    def test_the_target_group_drains_per_environment(self):
+        """A lone task's deployment waits out the drain before its replacement
+        can start. The tier serves short API reads, no streams: development
+        drains for 60 s; production keeps the public tier's 600 s until its
+        response times have been read."""
+        ours = resource_block(self.tf, "aws_lb_target_group", "public_dataview")
+        assert (
+            attribute(ours, "deregistration_delay")
+            == "local.public_dataview_tg_deregistration_delay"
+        )
+        delay = per_environment(
+            attribute(self.tf, "public_dataview_tg_deregistration_delay")
+        )
+        assert delay == {"production": 600, "development": 60}
 
     def test_the_target_group_name_fits_the_alb_limit(self):
         """ALB target group names cap at 32 characters; a longer one fails the

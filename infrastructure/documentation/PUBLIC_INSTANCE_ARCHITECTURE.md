@@ -214,7 +214,7 @@ The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_im
 - A visitor's first page load still fetches the shell and the static bundle from public. Those requests cannot be told apart from a signed-in user's page load, so they stay there. They are files, not encoded output items; their cost is for compression and caching of the bundle to bound, not for this tier.
 - It defaults to one instance (`public_dataview_asg_*`); sign-in is unaffected by any of the following. Two or more instances keep one serving.
   - A replaced instance leaves public DataView answering 503 for the replacement's cold boot.
-  - A deployment is stop-first with one task: 503 while the old target drains (the target group's deregistration delay), then while the new task starts and passes its health checks.
+  - A deployment is stop-first with one task: 503 while the old target drains (the target group's deregistration delay: 600 s on production, 60 s on development), then while the new task starts and passes two health checks 30 s apart. That is at least 11 minutes on production and 2 on development, plus the task's start. The tier serves only short API reads, so development's drain is short; production keeps the public tier's drain until its response times have been read.
   - On the tier's first apply, the listener rules move to the new target group before its first task is healthy (the ECS service is created after the rules: a target group no rule forwards to is refused), so public DataView answers 503 for that first cold boot.
 - A premium user's requests that carry routing headers match their premium rule (100-199) first and never reach this tier.
 

@@ -4,6 +4,14 @@
 # p306). The page shell and static files stay on the public tier. Mirrors
 # public_service.tf; keep the two in step.
 
+locals {
+  # How long a deregistered target keeps its in-flight reads. A lone task's
+  # deployment waits this out before the new task can start, so it is most of
+  # the deployment's 503 window. Production keeps the public tier's drain until
+  # its response times have been read; development drains for 60 s
+  public_dataview_tg_deregistration_delay = var.environment == local.production_env_prefix ? 600 : 60
+}
+
 resource "aws_lb_target_group" "public_dataview" {
   # Target group names cap at 32 characters
   name        = "${local.env_prefix}-pubdv-tg"
@@ -12,8 +20,7 @@ resource "aws_lb_target_group" "public_dataview" {
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
 
-  # Match the listener idle_timeout so streaming responses survive deregistration.
-  deregistration_delay = 600
+  deregistration_delay = local.public_dataview_tg_deregistration_delay
 
   health_check {
     enabled             = true

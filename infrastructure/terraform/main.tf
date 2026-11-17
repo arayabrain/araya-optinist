@@ -431,13 +431,13 @@ variable "public_dataview_instance_type" {
 }
 
 variable "public_dataview_asg_min_size" {
-  description = "Minimum size of the public DataView ASG. With 1, public DataView is down while its one instance is replaced (a cold boot) and on each deployment (the target group's deregistration delay, then the new task's start); sign-in is unaffected."
+  description = "Minimum size of the public DataView ASG. With 1, public DataView is down while its one instance is replaced (a cold boot) and on each deployment: the old target's drain (local.public_dataview_tg_deregistration_delay, 600 s on production, 60 s on development), then the new task's start and two 30 s health checks, so at least 11 min on production and 2 min on development. Sign-in is unaffected."
   type        = number
   default     = 1
 }
 
 variable "public_dataview_asg_max_size" {
-  description = "Maximum size of the public DataView ASG."
+  description = "Maximum size of the public DataView ASG: the ceiling for raising the tier by hand (the ASG's desired capacity and the service's desired count together). No scaling policy moves it."
   type        = number
   default     = 2
 }
