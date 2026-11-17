@@ -22,12 +22,14 @@ from terraform_source import (
     PROJECT_ROOT,
     TERRAFORM_DIR,
     attribute,
+    identifier_list,
     read,
     resource_block,
 )
 
 MAIN_TF = TERRAFORM_DIR / "main.tf"
 COMPUTE_DOMAIN_TF = TERRAFORM_DIR / "compute_domain.tf"
+DEPLOYMENT_TF = TERRAFORM_DIR / "deployment.tf"
 MAINTENANCE_MODE_SH = (
     PROJECT_ROOT / "infrastructure" / "scripts" / "maintenance_mode.sh"
 )
@@ -147,6 +149,16 @@ class TestApexRedirect:
             inspect.signature(create_alb_rule).parameters["start_priority"].default
         )
         assert int(maintenance.group(1)) < priority < premium_start
+
+    def test_waits_for_the_image_rollout(self):
+        """A page sent to www while an older bundle that calls a fixed API
+        host still serves would call that host cross-origin and lose the
+        session on reload. Without the dependency the apply creates the rule
+        at its start, before the image is built and rolled out."""
+        assert identifier_list(attribute(self.rule, "depends_on")) == [
+            "null_resource.deploy_to_ecs"
+        ]
+        resource_block(read(DEPLOYMENT_TF), "null_resource", "deploy_to_ecs")
 
 
 class TestCanonicalOrigin:

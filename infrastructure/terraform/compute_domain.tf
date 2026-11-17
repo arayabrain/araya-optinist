@@ -91,6 +91,10 @@ resource "aws_lb_listener_rule" "apex_to_www" {
   listener_arn = aws_lb_listener.autoscaling_https.arn
   priority     = 20 # see the priority map in public_alb_rules.tf
 
+  # After the image rollout, so no page load is sent to www while an older
+  # bundle that calls a fixed API host still serves
+  depends_on = [null_resource.deploy_to_ecs]
+
   condition {
     host_header {
       values = [var.frontend_domain]
