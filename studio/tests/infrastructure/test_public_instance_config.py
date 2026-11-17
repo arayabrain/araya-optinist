@@ -912,6 +912,16 @@ class TestPublicCapacityProvider:
         )
         assert not re.search(r"^\s*launch_type\s*=", self.service, re.MULTILINE)
 
+    def test_service_waits_for_the_provider_to_join_the_cluster(self):
+        """The strategy's reference orders the service after the provider
+        exists, not after the cluster has it; on a new environment the
+        service would race the attachment."""
+        depends_on = re.search(
+            r"^\s*depends_on\s*=\s*\[(.*?)\]", self.service, re.DOTALL | re.MULTILINE
+        )
+        assert depends_on, "depends_on not found"
+        assert "aws_ecs_cluster_capacity_providers.main" in depends_on.group(1)
+
     def test_an_apply_leaves_a_raised_count_alone(self):
         lifecycle = _nested_block(self.service, "lifecycle")
         assert "desired_count" in identifier_list(
