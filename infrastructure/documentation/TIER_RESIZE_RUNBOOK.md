@@ -16,9 +16,9 @@ it, how to apply and verify it, and how to revert it. Today's sizes are the defa
   Removing the override returns the tier to its defaults.
 - **The plan rejects a set that cannot work.** A task above its instance type, a root volume below the
   AMI's root snapshot, and gp3 IOPS or throughput out of range fail at plan time, not at the next
-  launch.
+  launch. It does not reject both phases in one apply: that is for the operator to keep apart.
 - **Each phase restarts the tier's work.** A refresh replaces the free instances; a premium type
-  change stops the base premium instance, and the per-user ones are replaced; a task-definition
+  change replaces the base premium instance, and the per-user ones are replaced; a task-definition
   change restarts the tier's tasks. A run in progress on the tier at that moment is lost, so each
   phase goes in an announced window.
 - **Rehearsed on development**: not yet (see Rehearsal).
@@ -166,14 +166,37 @@ naming the field.
 The checks read the configured instance type, not the running instances. That is why phase 2 waits
 until every instance of the tier runs the new type.
 
+**The plan does not catch both phases at once.** A tfvars that changes the type and the task
+together passes every check, because the task fits the configured type; the apply then sends the
+larger task to the old instances, where it is never placed, and the tier stops until every instance
+is replaced. No plan-time check can see the running instances' type, so keep the phases apart by
+reading each plan: a phase 1 plan changes no task definition, and a phase 2 plan changes no launch
+template (each phase's step 1 says what to expect).
+
 **If the custom AMI is gone, every plan fails.** The AMI check looks the image up by the ID the
 templates boot. With `use_custom_ami`, that ID is the SSM parameter, which is updated by hand after
 each pipeline build, while the Image Builder lifecycle deletes the project's images after 90 days.
 A parameter left on a deleted image fails every plan at `data.aws_ami.effective` with "Your query
 returned no results", whatever the plan changes; launches from the templates already fail by then.
 Recover by pointing the parameter at a live image (`CUSTOM_AMI_ARCHITECTURE.md`, Procedure B,
-steps 4 and 5), then plan again. Do not switch `use_custom_ami` off to get past it: that also removes the
-Image Builder pipeline and the parameter.
+steps 4 and 5), from the deployment checkout:
+
+```bash
+aws imagebuilder list-image-pipeline-images --region ap-northeast-1 \
+  --image-pipeline-arn "$(terraform output -raw image_builder_pipeline_arn)" \
+  --query 'reverse(sort_by(imageSummaryList,&dateCreated))[].[dateCreated,outputResources.amis[0].image]' \
+  --output text
+# The newest image first. Take the first whose AMI is still available:
+aws ec2 describe-images --region ap-northeast-1 --image-ids <ami id> \
+  --query 'Images[0].State' --output text
+# Expected: available. An error (deleted) or another state: try the next image
+aws ssm put-parameter --region ap-northeast-1 --name "/<env>/optinist/custom-ami-id" \
+  --value <ami id> --type String --overwrite
+```
+
+Then plan again; the plan also carries that image into every launch template (Procedure B, step 6).
+If no image is live, run the pipeline first (Procedure B, step 3). Do not switch `use_custom_ami`
+off to get past it: that also removes the Image Builder pipeline and the parameter.
 
 ---
 
@@ -195,7 +218,19 @@ Image Builder pipeline and the parameter.
 4. **The deployment checkout**: on the commit being deployed, the environment's tfvars present, and
    the backend initialised for that environment (`INFRA_DEPLOYMENT_PROCEDURE.md`).
 
-Names below use `<env>`, the Terraform `environment` value: `development` or `subscr`.
+Names below use `<env>`, the Terraform `environment` value and the prefix of every resource name:
+`development` or `subscr`. The tfvars file is named after the environment instead, as `<tfvars>`:
+`environments/development.tfvars` or `environments/production.tfvars`.
+
+The free tier's floor is raised and lowered by different commands per environment (phase 1, steps
+3 and 5). Production follows `FREE_TIER_PREPROVISIONING_RUNBOOK.md`, whose commands name
+production's resources only. Development uses `infrastructure/scripts/free_tier_capacity_helpers.sh`,
+whose writing functions refuse any target that is not development:
+
+```bash
+export AWS_PROFILE=<the profile for development's account>
+source infrastructure/scripts/free_tier_capacity_helpers.sh
+```
 
 ---
 
@@ -206,16 +241,30 @@ Names below use `<env>`, the Terraform `environment` value: `development` or `su
 1. Add phase 1's block to the tfvars, then plan.
 
    ```bash
-   terraform plan -var-file=environments/<env>.tfvars
+   terraform plan -var-file=<tfvars>
    # Expected: aws_launch_template.ecs updated in place (instance type, volumes), and
-   # aws_autoscaling_group.main updated in place (its LaunchTemplateVersion tag). Nothing else
+   # aws_autoscaling_group.main updated in place (its LaunchTemplateVersion tag). Nothing else:
+   # no task definition, which is phase 2
    ```
 
+   The volumes' IOPS and throughput appear as set (3,000 and 125): the set writes gp3's baseline
+   explicitly rather than leaving it to the default, so the volumes perform as before.
 2. Apply. Running instances are unchanged: the group uses the template's `$Latest`, and a refresh does
    not start by itself.
-3. Raise the floor by one with `FREE_TIER_PREPROVISIONING_RUNBOOK.md`, steps 1–4 (N = today's instance
-   count + 1), so that the refresh never takes the tier's last instance. The new instance launches as
-   the new type.
+3. Raise the floor by one (N = today's instance count + 1), so that the refresh never takes the tier's
+   last instance. The new instance launches as the new type.
+   - Production: `FREE_TIER_PREPROVISIONING_RUNBOOK.md`, steps 1–4.
+   - Development, with the helpers sourced (Before the Window):
+
+     ```bash
+     aws autoscaling describe-auto-scaling-groups --region ap-northeast-1 \
+       --auto-scaling-group-names development-optinist-asg \
+       --query 'AutoScalingGroups[0].[MinSize,MaxSize,DesiredCapacity]' --output text
+     # Record MinSize and MaxSize as <min0> and <max0>
+     fts_set_bounds <N> <the larger of N and max0>
+     fts_chain
+     # Expected, repeated until it holds: CHAIN OK at <N>
+     ```
 4. Replace every instance, one at a time:
 
    ```bash
@@ -230,17 +279,28 @@ Names below use `<env>`, the Terraform `environment` value: `development` or `su
 
    Terminate-first is the only refresh that completes here (`CUSTOM_AMI_ARCHITECTURE.md`, "Active
    Instance Replacement"); the raised floor keeps one instance serving throughout.
-5. Check that every free instance runs the new type (Verify, step 1), then lower the floor again with
-   the pre-provisioning runbook, steps 6–7.
+5. Check that every free instance runs the new type (Verify, step 1), then lower the floor again.
+   - Production: the pre-provisioning runbook, steps 6–7.
+   - Development: lower the floor with step 3's ceiling kept, wait for the Free Manager to remove the
+     surplus, then restore the ceiling. `fts_set_bounds` refuses a ceiling below the desired
+     capacity, hence the order.
+
+     ```bash
+     fts_set_bounds <min0> <step 3's maximum>
+     fts_chain
+     # Expected, repeated until it holds: CHAIN OK at the user-count target
+     fts_set_bounds <min0> <max0>
+     ```
 
 ### Phase 2 — the task
 
 1. Replace the block with phase 2's, then plan.
 
    ```bash
-   terraform plan -var-file=environments/<env>.tfvars
+   terraform plan -var-file=<tfvars>
    # Expected: aws_ecs_task_definition.autoscaling replaced (a new revision) and
-   # aws_ecs_service.autoscaling updated in place. Nothing else
+   # aws_ecs_service.autoscaling updated in place. Nothing else: no launch template, which is
+   # phase 1
    ```
 
 2. Apply. ECS stops the free tasks and starts the new revision. The service's minimum healthy
@@ -257,27 +317,30 @@ Names below use `<env>`, the Terraform `environment` value: `development` or `su
 1. Add phase 1's block to the tfvars, then plan.
 
    ```bash
-   terraform plan -var-file=environments/<env>.tfvars
-   # Expected: aws_launch_template.premium updated in place; aws_instance.premium[0] at the new
-   # type; aws_lambda_function.premium_manager updated (PREMIUM_INSTANCE_TYPE). If the base
-   # instance is replaced, the Lambdas and the dashboard that name its ID are updated too
+   terraform plan -var-file=<tfvars>
+   # Expected: aws_launch_template.premium updated in place (a new version);
+   # aws_instance.premium[0] replaced (-/+), at the new type: it pins the template's latest
+   # version; aws_lambda_function.premium_manager updated (PREMIUM_INSTANCE_TYPE), and the
+   # Lambdas and the dashboard that name the base instance's ID. No task definition, which is
+   # phase 2
    ```
 
-2. Note the base premium instance's state, apply, and read it again:
+2. Note the base premium instance's ID and state, apply, and read it again:
 
    ```bash
    aws ec2 describe-instances --region ap-northeast-1 \
      --filters "Name=tag:Name,Values=<env>-premium-initial" \
        "Name=instance-state-name,Values=pending,running,stopping,stopped" \
      --query 'Reservations[].Instances[].[InstanceId,InstanceType,State.Name]' --output text
-   # Expected after the apply: the new type, in the state it had before
+   # Expected after the apply: one instance, with a new ID and the new type, stopped
    ```
 
-   The base instance changes to the new type, interrupting a user on it, and the premium manager
-   launches new per-user instances at the new type. If the base instance was stopped and the apply
-   leaves it running, stop it (`aws ec2 stop-instances --instance-ids <id>`). The premium manager's
-   periodic scale-down always keeps the last running instance up, and only a sign-out that leaves
-   no premium user stops every idle instance, so it would stay running until then.
+   The apply creates the new base instance before it destroys the old one, interrupting a user on
+   the old one, and the new one's create step stops it, as at the first deployment. If it is left
+   running, stop it (`aws ec2 stop-instances --instance-ids <id>`): the premium manager's periodic
+   scale-down always keeps the last running instance up, and only a sign-out that leaves no
+   premium user stops every idle instance. The premium manager launches new per-user instances at
+   the new type.
 3. Remove the per-user instances of the old type. The premium manager stops an idle instance and
    starts it again at the next sign-in, so without this they keep the old type. This terminates every
    per-user instance, running or stopped, and clears its records; the base instance stays.
@@ -304,9 +367,10 @@ Names below use `<env>`, the Terraform `environment` value: `development` or `su
 1. Replace the block with phase 2's, then plan.
 
    ```bash
-   terraform plan -var-file=environments/<env>.tfvars
+   terraform plan -var-file=<tfvars>
    # Expected: aws_ecs_task_definition.premium replaced (a new revision) and
-   # aws_ecs_service.premium updated in place. Nothing else
+   # aws_ecs_service.premium updated in place. Nothing else: no launch template or instance,
+   # which are phase 1
    ```
 
 2. Apply. Every running premium task restarts at once: the service does not keep the old task up
@@ -340,8 +404,9 @@ Names below use `<env>`, the Terraform `environment` value: `development` or `su
    # Expected: "Uvicorn workers: 3" (free) or "Uvicorn workers: 2" (premium) for each new task
    ```
 
-3. **`/health` answers**: free, the pre-provisioning runbook's step 4 chain (healthy targets = running
-   tasks); premium, the task's health status is `HEALTHY` in `aws ecs describe-tasks`. In a maintenance
+3. **`/health` answers**: free, the settled chain (healthy targets = running tasks), read only:
+   `fts_prod_chain` in production (the pre-provisioning runbook's step 4), `fts_chain` on
+   development; premium, the task's health status is `HEALTHY` in `aws ecs describe-tasks`. In a maintenance
    window, check `/health` from inside the container (`MAINTENANCE_PROCEDURES.md`, its runbook step 3).
 4. **The load it was sized for completes**: from the Web UI, one suite2p run alone on the
    benchmark's reference input (about 1.45 GB), then two at once for the free tier, three for the
@@ -357,8 +422,9 @@ Delete the tier's lines from the tfvars in two steps, the reverse of the apply:
 1. **Phase 2 back**: restore phase 1's block (the type stays, the sizing keeps only the volumes), plan
    and apply. The default task fits the larger host; the tier's tasks restart.
 2. **Phase 1 back**: delete the block, plan and apply.
-   - Free: the floor, the refresh and the floor again, as in phase 1, steps 3–5.
-   - Premium: the base instance returns to the default type (its state checked as in phase 1,
+   - Free: the floor, the refresh and the floor again, as in phase 1, steps 3–5, with the
+     environment's commands.
+   - Premium: the base instance is replaced again, at the default type (checked as in phase 1,
      step 2); then terminate the per-user instances of the larger type as in phase 1, step 3, so
      that they stop costing the larger size.
 3. Verify, steps 1–3, at the default size.
@@ -369,9 +435,9 @@ Delete the tier's lines from the tfvars in two steps, the reverse of the apply:
 
 Not yet rehearsed. The rehearsal applies both tiers' sets on development, phase by phase, verifies
 them, and reverts them. It also settles what this runbook states without a measurement: the time of
-each phase, whether the raised floor keeps the free tier serving through the refresh, whether the
-base premium instance is replaced or changed in place and the state it is left in, and the
-registered memory of the new types.
+each phase, whether the raised floor keeps the free tier serving through the refresh, the state the
+new base premium instance is left in, and the registered memory of the new types. The registered
+share of each new type then goes into the comment beside the 15/16 rule in `compute.tf`.
 
 The three-run limit (3.75 times one run) assumes one run uses every vCPU, so on the premium tier's
 4-vCPU next size it is a loose bound: one run did not use both vCPUs of today's type. The first
