@@ -12,9 +12,11 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import stripe
 from fastapi import HTTPException
 from firebase_admin.exceptions import FirebaseError
 
+from studio.app.common.core.subscription.subscription_service import SubscriptionService
 from studio.app.common.core.users.crud_users import (
     check_firebase_account_exists,
     delete_user,
@@ -25,6 +27,7 @@ from studio.app.common.core.utils.datetime_utils import get_current_datetime
 from studio.app.common.models.subscription import (
     DeletionStatus,
     DeletionStep,
+    SubscriptionUserAccount,
     UserDeletionRecord,
 )
 
@@ -208,6 +211,7 @@ async def test_delete_user_success(mock_db, mock_user):
         DeletionStep.S3_DELETED.value,
         DeletionStep.WORKSPACES_DELETED.value,
         DeletionStep.COMPLETED.value,
+        DeletionStep.COMPLETED.value,  # free session logout, after completion
     ]
 
 
@@ -487,6 +491,134 @@ async def test_delete_user_stripe_failure_continues(mock_db, mock_user):
 
     assert result is True
     assert mock_user.active is False
+
+
+def _query_by_model(user, stripe_account):
+    def query(model):
+        result = Mock()
+        result.filter.return_value = result
+        result.first.return_value = (
+            stripe_account if model is SubscriptionUserAccount else user
+        )
+        result.all.return_value = []
+        return result
+
+    return query
+
+
+@pytest.fixture
+def fresh_stripe_worker(monkeypatch):
+    """A worker that has not set `stripe.api_key` yet, as on a cold task."""
+    monkeypatch.setattr(SubscriptionService, "_stripe_initialized", False)
+    monkeypatch.setattr(stripe, "api_key", None)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_unit")
+
+
+async def _delete(mock_db):
+    with patch(
+        "studio.app.common.core.users.crud_users.firebase_auth"
+    ) as firebase, patch(
+        "studio.app.common.core.users.crud_users.StripeService"
+    ) as stripe_service, patch(
+        "studio.app.common.core.users.crud_users.RemoteStorageController"
+    ) as storage:
+        stripe_service.handle_cancel_user_subscription = AsyncMock()
+        storage.is_available.return_value = False
+        try:
+            return await delete_user(mock_db, 1, 1), firebase, stripe_service
+        except HTTPException as e:
+            return e, firebase, stripe_service
+
+
+@pytest.mark.asyncio
+async def test_delete_user_refuses_stripe_customer_without_stripe_key(
+    mock_db, mock_user, fresh_stripe_worker, monkeypatch
+):
+    """A tier without a Stripe key must refuse before Firebase is deleted,
+    or the subscription outlives an account nobody can log in to."""
+    monkeypatch.delenv("STRIPE_SECRET_KEY")
+    mock_db.query.side_effect = _query_by_model(mock_user, Mock())
+
+    result, firebase, stripe_service = await _delete(mock_db)
+
+    assert isinstance(result, HTTPException)
+    assert result.status_code == 503
+    firebase.delete_user.assert_not_called()
+    stripe_service.handle_cancel_user_subscription.assert_not_called()
+    mock_db.add.assert_not_called()
+    assert mock_user.active is True
+
+
+@pytest.mark.asyncio
+async def test_delete_user_initialises_stripe_before_checking_it(
+    mock_db, mock_user, fresh_stripe_worker
+):
+    """With the key present, a worker that has served no Stripe call yet must
+    still delete a Stripe customer and cancel their subscription."""
+    mock_db.query.side_effect = _query_by_model(mock_user, Mock())
+
+    result, firebase, stripe_service = await _delete(mock_db)
+
+    assert result is True
+    assert stripe.api_key == "sk_test_unit"
+    firebase.delete_user.assert_called_once_with(mock_user.uid)
+    stripe_service.handle_cancel_user_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_without_stripe_customer_proceeds_without_stripe_key(
+    mock_db, mock_user, fresh_stripe_worker, monkeypatch
+):
+    """A user who never reached Stripe has nothing to cancel, so a tier
+    without a Stripe key can still delete them."""
+    monkeypatch.delenv("STRIPE_SECRET_KEY")
+    mock_db.query.side_effect = _query_by_model(mock_user, None)
+
+    result, firebase, _ = await _delete(mock_db)
+
+    assert result is True
+    firebase.delete_user.assert_called_once_with(mock_user.uid)
+    assert mock_user.active is False
+
+
+@pytest.mark.asyncio
+async def test_delete_user_logs_out_the_free_session(
+    mock_db, mock_user, fresh_stripe_worker
+):
+    """Activity tracking runs after the response and opens a free session for
+    the caller; nobody can log a deleted account out, so deletion does it."""
+    mock_db.query.side_effect = _query_by_model(mock_user, None)
+    active_at_logout = []
+
+    with patch(
+        "studio.app.common.core.users.crud_users.record_free_user_logout",
+        side_effect=lambda db, user_id: active_at_logout.append(mock_user.active),
+    ) as logout, patch(
+        "studio.app.common.core.users.crud_users.invalidate_user_tier_cache"
+    ) as invalidate_tier:
+        result, _, _ = await _delete(mock_db)
+
+    assert result is True
+    logout.assert_called_once_with(mock_db, 1)
+    assert active_at_logout == [False]
+    invalidate_tier.assert_called_once_with(mock_user.uid)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_survives_a_failed_free_logout(
+    mock_db, mock_user, fresh_stripe_worker
+):
+    mock_db.query.side_effect = _query_by_model(mock_user, None)
+
+    with patch(
+        "studio.app.common.core.users.crud_users.record_free_user_logout",
+        side_effect=Exception("db gone"),
+    ):
+        result, _, _ = await _delete(mock_db)
+
+    assert result is True
+    assert mock_user.active is False
+    mock_db.rollback.assert_called_once()
 
 
 @pytest.mark.asyncio
