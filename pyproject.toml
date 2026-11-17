@@ -155,6 +155,10 @@ filterwarnings = [
     "ignore:pkg_resources is deprecated as an API:DeprecationWarning",
     "ignore:Deprecated call to `pkg_resources.declare_namespace:DeprecationWarning",
     "ignore:invalid escape sequence :DeprecationWarning",
+    # NOTE: Starlette 0.27's TestClient passes `app` to `httpx.Client`, which httpx
+    # 0.27 deprecates; goes with a Starlette upgrade. The pattern stops at the sync
+    # client's `WSGITransport`, so `httpx.AsyncClient(app=...)` still warns
+    "ignore:The 'app' shortcut is now deprecated\\. Use the explicit style 'transport=WSGITransport:DeprecationWarning",
 ]
 markers = [
     "lighter_processing",
