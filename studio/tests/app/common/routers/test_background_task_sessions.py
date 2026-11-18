@@ -439,9 +439,8 @@ def test_run_releases_the_request_session_before_the_run(endpoint):
     background_tasks = BackgroundTasks()
 
     def queue_run(tasks):
-        # run holds the session until the run is queued; run_id releases it
-        # before it awaits the runner's build
-        assert db.close.called == (endpoint is run.run_id)
+        # Both release it before the quota check, long before the run is queued
+        assert db.close.called
         tasks.add_task(Mock())
 
     with _run_stubs() as runner:
@@ -613,8 +612,10 @@ def _call_create_file(db, background_tasks, events, over_quota=False):
         files,
         "get_current_user_storage_usage",
         new=AsyncMock(return_value=2 if over_quota else 0),
-    ), patch.object(files, "get_user_storage_usage"), patch.object(
-        files, "get_effective_quota_bytes", return_value=1 if over_quota else 0
+    ), patch.object(
+        files,
+        "get_quota_usage_percent",
+        new=AsyncMock(return_value=200.0 if over_quota else None),
     ), patch.object(
         files, "create_directory"
     ), patch.object(

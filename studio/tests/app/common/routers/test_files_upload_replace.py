@@ -110,8 +110,8 @@ def remote_writer(upload):
 def no_quota_or_usage():
     with patch.object(
         files, "get_current_user_storage_usage", new=AsyncMock(return_value=0)
-    ), patch.object(files, "get_user_storage_usage"), patch.object(
-        files, "get_effective_quota_bytes", return_value=0
+    ), patch.object(
+        files, "get_quota_usage_percent", new=AsyncMock(return_value=None)
     ), patch.object(
         files.WorkspaceDataCapacityService, "is_available", return_value=False
     ):
@@ -308,12 +308,8 @@ def test_a_url_upload_is_limited_to_public_addresses_in_multi_user_mode(
 
 def test_a_url_upload_is_refused_at_quota_before_fetching(input_dir):
     with patch.object(
-        files, "get_current_user_storage_usage", new=AsyncMock(return_value=2)
-    ), patch.object(files, "get_user_storage_usage"), patch.object(
-        files, "get_effective_quota_bytes", return_value=1
-    ), patch.object(
-        files, "open_url"
-    ) as open_url:
+        files, "get_quota_usage_percent", new=AsyncMock(return_value=200.0)
+    ), patch.object(files, "open_url") as open_url:
         with pytest.raises(files.HTTPException) as raised:
             start_url_upload(current_user=Mock(id=1))
     assert raised.value.status_code == 403
@@ -350,9 +346,7 @@ def test_the_upload_routes_fetch_copy_and_parse_off_the_event_loop(input_dir):
     ), patch.object(
         files, "get_current_user_storage_usage", new=AsyncMock(return_value=0)
     ), patch.object(
-        files, "get_user_storage_usage"
-    ), patch.object(
-        files, "get_effective_quota_bytes", return_value=0
+        files, "get_quota_usage_percent", new=AsyncMock(return_value=None)
     ), patch.object(
         files.WorkspaceDataCapacityService, "is_available", return_value=True
     ), patch.object(

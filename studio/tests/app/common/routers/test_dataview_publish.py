@@ -7,6 +7,7 @@ Tests concurrent publish/unpublish operations.
 import errno
 import json
 import os
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,6 +72,23 @@ def _compiled_updates(mock_db):
         compiled = call.args[0].compile(dialect=mysql.dialect())
         out.append((" ".join(str(compiled).split()), compiled.params))
     return out
+
+
+# Reproduce resolves the bucket and updates the record in sessions of its own
+LOOKUP_BUCKET = "studio.app.common.routers.dataview._lookup_workspace_bucket"
+
+
+@contextmanager
+def _status_updates_on(mock_db):
+    """Run reproduce's status updates (their own session_scope) on mock_db."""
+
+    @contextmanager
+    def scope():
+        yield mock_db
+        mock_db.commit()
+
+    with patch("studio.app.common.routers.dataview.session_scope", scope):
+        yield
 
 
 class TestPublishDataviewRecords:
@@ -413,7 +431,7 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.DataviewService."
             "find_dataview_record",
             return_value=mock_record,
-        ):
+        ), patch(LOOKUP_BUCKET, return_value="test-bucket"):
             with patch(
                 "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
                 "check_sync_status_unsynced",
@@ -464,7 +482,7 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.DataviewService."
             "find_dataview_record",
             return_value=mock_record,
-        ):
+        ), patch(LOOKUP_BUCKET, return_value="test-bucket"):
             with patch(
                 "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
                 "check_sync_status_unsynced",
@@ -589,7 +607,7 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.DataviewService."
             "find_dataview_record",
             return_value=mock_record,
-        ):
+        ), patch(LOOKUP_BUCKET, return_value="test-bucket"):
             with patch(
                 "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
                 "check_sync_status_unsynced",
@@ -660,6 +678,10 @@ class TestPublicDataviewReproduceWorkflow:
             return_value=mock_validation,
         ), patch(
             "studio.app.common.routers.dataview.reproduce_experiment"
+        ), patch(
+            LOOKUP_BUCKET, return_value="test-bucket"
+        ), _status_updates_on(
+            mock_db
         ):
             with patch(
                 "studio.app.common.routers.dataview.RemoteSyncStatusFileUtil."
@@ -728,9 +750,7 @@ class TestPublicDataviewReproduceWorkflow:
             "is_available",
             return_value=True,
         ), patch(
-            "studio.app.common.routers.dataview."
-            "_resolve_workspace_remote_bucket_name",
-            return_value="test-bucket",
+            LOOKUP_BUCKET, return_value="test-bucket"
         ), patch(
             "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
             new=AsyncMock(return_value=(False, "No data found in S3")),
@@ -738,6 +758,8 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.PublishValidator."
             "validate_for_display",
             return_value=mock_validation,
+        ), _status_updates_on(
+            mock_db
         ):
             response = await public_reproduce_experiment(
                 workspace_id="1", unique_id="exp123", db=mock_db
@@ -781,9 +803,7 @@ class TestPublicDataviewReproduceWorkflow:
             "is_available",
             return_value=True,
         ), patch(
-            "studio.app.common.routers.dataview."
-            "_resolve_workspace_remote_bucket_name",
-            return_value="test-bucket",
+            LOOKUP_BUCKET, return_value="test-bucket"
         ), patch(
             "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
             new=AsyncMock(return_value=(True, None)),
@@ -791,6 +811,8 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.PublishValidator."
             "validate_for_display",
             return_value=mock_validation,
+        ), _status_updates_on(
+            mock_db
         ):
             response = await public_reproduce_experiment(
                 workspace_id="1", unique_id="exp123", db=mock_db
@@ -876,9 +898,7 @@ class TestPublicDataviewReproduceWorkflow:
             "is_available",
             return_value=True,
         ), patch(
-            "studio.app.common.routers.dataview."
-            "_resolve_workspace_remote_bucket_name",
-            return_value="test-bucket",
+            LOOKUP_BUCKET, return_value="test-bucket"
         ), patch(
             "studio.app.common.routers.dataview._validate_experiment_exists_in_s3",
             new=AsyncMock(return_value=(None, "Could not verify S3 data")),
@@ -886,6 +906,8 @@ class TestPublicDataviewReproduceWorkflow:
             "studio.app.common.routers.dataview.PublishValidator."
             "validate_for_display",
             return_value=mock_validation,
+        ), _status_updates_on(
+            mock_db
         ):
             response = await public_reproduce_experiment(
                 workspace_id="1", unique_id="exp123", db=mock_db
