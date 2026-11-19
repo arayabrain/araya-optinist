@@ -75,6 +75,8 @@ COPY infrastructure/terraform/common_user_manager_package /app/terraform/common_
 COPY main.py alembic.ini ./
 
 ENV OPTINIST_DIR=/app/studio_data
+# Conda env builds on EFS: parallel linking, and pip skips bytecode (imports compile once)
+ENV CONDA_EXECUTE_THREADS=4 PIP_COMPILE=0
 
 # Copy the cloud-startup.sh script
 COPY cloud-startup.sh ./
