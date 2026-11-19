@@ -441,6 +441,23 @@ class TestWaitForTasksStopped:
         )
         assert module.TASK_STOP_WAIT_SECONDS >= delay + 120
 
+    def test_wait_outlasts_the_public_target_groups_development_delay(self, ds):
+        """The stop waits for the public tasks too. Development's delay only:
+        the schedule runs there, and production's 600 s would not fit in the
+        Lambda's 900 s with the rest of the stop."""
+        module, _ = ds
+        tg = resource_block(
+            read(TERRAFORM_DIR / "public_service.tf"), "aws_lb_target_group", "public"
+        )
+        assert (
+            attribute(tg, "deregistration_delay")
+            == "local.public_tg_deregistration_delay"
+        )
+        delay = per_environment(
+            attribute(read(TERRAFORM_DIR / "main.tf"), "public_tg_deregistration_delay")
+        )["development"]
+        assert module.TASK_STOP_WAIT_SECONDS >= delay + 120
+
 
 class TestStopInstance:
     def test_stops_when_running(self, ds):
@@ -1039,7 +1056,11 @@ class TestStopEnvironment:
                 return_value={"ecs_svc-a": "desired_count=0"}
             ),
             "list_service_tasks": MagicMock(
-                return_value={"svc-a": ["arn:task/c/ta"], "svc-b": ["arn:task/c/tb"]}
+                return_value={
+                    "svc-a": ["arn:task/c/ta"],
+                    "svc-b": ["arn:task/c/tb"],
+                    "svc-public": ["arn:task/c/tp1", "arn:task/c/tp2"],
+                }
             ),
             "wait_for_tasks_stopped": MagicMock(return_value="stopped"),
             "scale_asg": MagicMock(return_value="min=0,desired=0"),
@@ -1060,9 +1081,9 @@ class TestStopEnvironment:
         ECS keeps the managed-draining hook renewed until NAT returns."""
         module, _, helpers = patched
         calls = []
+        listed = helpers["list_service_tasks"].return_value
         helpers["list_service_tasks"].side_effect = lambda *a, **k: (
-            calls.append("list_tasks")
-            or {"svc-a": ["arn:task/c/ta"], "svc-b": ["arn:task/c/tb"]}
+            calls.append("list_tasks") or listed
         )
         helpers["update_ecs_services"].side_effect = lambda *a, **k: (
             calls.append("ecs_desired_0") or {"ecs_svc-a": "desired_count=0"}
@@ -1083,8 +1104,37 @@ class TestStopEnvironment:
         assert wait < calls.index("asg:test-asg")
         assert wait < calls.index("stop:i-nat")
         helpers["wait_for_tasks_stopped"].assert_called_once_with(
-            "test-cluster", ["arn:task/c/ta", "arn:task/c/tb"]
+            "test-cluster",
+            ["arn:task/c/ta", "arn:task/c/tb", "arn:task/c/tp1", "arn:task/c/tp2"],
         )
+
+    def test_public_tasks_are_waited_for_before_the_public_asg_goes(self, patched):
+        """The public capacity provider's managed-draining hook holds a public
+        host as the free one holds a free instance, so its tasks too must be
+        reported stopped before NAT goes. Listed before 3b's scale-down, after
+        which they no longer list as RUNNING."""
+        module, _, helpers = patched
+        calls = []
+        listed = helpers["list_service_tasks"].return_value
+        helpers["list_service_tasks"].side_effect = lambda *a, **k: (
+            calls.append(("list_tasks", tuple(a[1]))) or listed
+        )
+        helpers["update_ecs_services"].side_effect = lambda *a, **k: (
+            calls.append(("ecs_desired_0", tuple(a[1]))) or {}
+        )
+        helpers["wait_for_tasks_stopped"].side_effect = lambda *a, **k: (
+            calls.append(("wait", tuple(a[1]))) or "stopped"
+        )
+        helpers["scale_asg"].side_effect = lambda *a, **k: (
+            calls.append(("asg", a[0])) or "min=0,desired=0"
+        )
+        module.stop_environment(stop_mode="stop")
+        listing = next(c for c in calls if c[0] == "list_tasks")
+        wait = next(c for c in calls if c[0] == "wait")
+        assert "svc-public" in listing[1]
+        assert calls.index(listing) < calls.index(("ecs_desired_0", ("svc-public",)))
+        assert {"arn:task/c/tp1", "arn:task/c/tp2"} <= set(wait[1])
+        assert calls.index(wait) < calls.index(("asg", "test-public-asg"))
 
     def test_task_wait_timeout_does_not_fail_the_stop(self, patched):
         module, _, helpers = patched
@@ -1106,6 +1156,7 @@ class TestStopEnvironment:
     def test_task_wait_skipped_without_ecs_services(self, patched, monkeypatch):
         module, _, helpers = patched
         monkeypatch.setenv("ECS_SERVICE_NAMES", "[]")
+        monkeypatch.delenv("PUBLIC_ECS_SERVICE_NAME", raising=False)
         result = module.stop_environment(stop_mode="stop")
         helpers["wait_for_tasks_stopped"].assert_not_called()
         assert "ecs_tasks_stopped" not in result["results"]
@@ -1122,7 +1173,7 @@ class TestStopEnvironment:
         with pytest.raises(RuntimeError):
             module.stop_environment(stop_mode="stop")
         helpers["wait_for_tasks_stopped"].assert_called_once_with(
-            "test-cluster", ["arn:task/c/tb"]
+            "test-cluster", ["arn:task/c/tb", "arn:task/c/tp1", "arn:task/c/tp2"]
         )
 
     def test_service_whose_tasks_could_not_be_listed_is_named(self, patched):
@@ -1130,6 +1181,7 @@ class TestStopEnvironment:
         helpers["list_service_tasks"].return_value = {
             "svc-a": None,
             "svc-b": ["arn:task/c/tb"],
+            "svc-public": [],
         }
         result = module.stop_environment(stop_mode="stop")
         helpers["wait_for_tasks_stopped"].assert_called_once_with(
@@ -1140,7 +1192,11 @@ class TestStopEnvironment:
     def test_no_running_tasks_means_no_wait(self, patched):
         """The verify-stop with NAT still up: the services are already at 0."""
         module, _, helpers = patched
-        helpers["list_service_tasks"].return_value = {"svc-a": [], "svc-b": []}
+        helpers["list_service_tasks"].return_value = {
+            "svc-a": [],
+            "svc-b": [],
+            "svc-public": [],
+        }
         result = module.stop_environment(stop_mode="stop")
         helpers["wait_for_tasks_stopped"].assert_not_called()
         assert result["results"]["ecs_tasks_stopped"] == "no_tasks"

@@ -112,13 +112,14 @@ PROXY_REGISTER_POLL_SECONDS = 90
 PROXY_REGISTER_POLL_INTERVAL = 10
 
 # On stop, wait this long for the scaled-down services' tasks to stop before
-# terminating the free ASG and stopping NAT. The ECS agent reports a stopped
-# task only through NAT (no ECS VPC endpoints); a task still RUNNING to ECS
-# keeps the managed-draining hook renewed until NAT is back next morning.
+# terminating the free and public ASGs and stopping NAT. The ECS agent reports
+# a stopped task only through NAT (no ECS VPC endpoints); a task still RUNNING
+# to ECS keeps the managed-draining hook renewed until NAT is back next morning.
 # How much: ECS stops a load-balanced task only after its target group's
 # deregistration delay (free: local.free_tg_deregistration_delay, 300 s at
-# most), then the container stop (~110 s in #940's Test B), plus slack.
-# Pinned against main.tf by test_dev_scheduler.py.
+# most; public: local.public_tg_deregistration_delay on development, where the
+# schedule runs), then the container stop (~110 s in #940's Test B), plus
+# slack. Pinned against main.tf by test_dev_scheduler.py.
 TASK_STOP_WAIT_SECONDS = 480
 TASK_STOP_POLL_INTERVAL = 10
 
@@ -421,13 +422,17 @@ def stop_environment(stop_mode="destroy"):
     results.update(toggle_event_rules(rules + delayed_rules, enable=False))
 
     # 3. Scale down ECS services (prevents failed placement noise when
-    #    instances are stopped and no capacity is available). Their tasks are
-    #    captured first: once desiredCount is 0 a stopping task no longer
-    #    lists as RUNNING, and step 3c has to follow it to STOPPED.
+    #    instances are stopped and no capacity is available). Their tasks, and
+    #    the public service's (3b), are captured first: once desiredCount is 0
+    #    a stopping task no longer lists as RUNNING, and step 3c has to follow
+    #    it to STOPPED.
     ecs_services = json.loads(os.environ.get("ECS_SERVICE_NAMES", "[]"))
+    public_service = os.environ.get("PUBLIC_ECS_SERVICE_NAME")
+    waited_services = ecs_services + ([public_service] if public_service else [])
     service_tasks = {}
+    if waited_services:
+        service_tasks = list_service_tasks(os.environ["CLUSTER_NAME"], waited_services)
     if ecs_services:
-        service_tasks = list_service_tasks(os.environ["CLUSTER_NAME"], ecs_services)
         results.update(
             update_ecs_services(
                 os.environ["CLUSTER_NAME"], ecs_services, desired_count=0
@@ -435,7 +440,6 @@ def stop_environment(stop_mode="destroy"):
         )
 
     # 3b. Scale down the public service (drain tasks before its ASG terminates).
-    public_service = os.environ.get("PUBLIC_ECS_SERVICE_NAME")
     if public_service:
         results.update(
             update_ecs_services(
@@ -443,11 +447,11 @@ def stop_environment(stop_mode="destroy"):
             )
         )
 
-    # 3c. Wait for the step 3 services' tasks to stop while NAT is still up (see
-    #     TASK_STOP_WAIT_SECONDS). A timeout is logged, not fatal: the stop
-    #     carries on, and the drain then waits for NAT as before.
-    #     - Not the public service: its ASG has no capacity provider, so no
-    #       managed-draining hook holds its instances
+    # 3c. Wait for the step 3 and 3b services' tasks to stop while NAT is still
+    #     up (see TASK_STOP_WAIT_SECONDS). A timeout is logged, not fatal: the
+    #     stop carries on, and the drain then waits for NAT as before.
+    #     - The public service too: its capacity provider's managed-draining
+    #       hook holds its hosts as the free one holds free instances
     #     - Skipped when NAT is known to be down (verify-stop, weekend manual
     #       stop): the agent cannot report, so the tasks would never stop.
     #       Run on "unknown": a wasted wait costs at most TASK_STOP_WAIT_SECONDS,
@@ -456,11 +460,11 @@ def stop_environment(stop_mode="destroy"):
     #       already fails on that error, so it is not waited for
     #     - A service whose tasks could not be listed cannot be waited for;
     #       it is named in the result
-    if ecs_services:
+    if waited_services:
         if nat_state in ("running", "unknown"):
             scaled_down = [
                 s
-                for s in ecs_services
+                for s in waited_services
                 if not str(results.get(f"ecs_{s}", "")).startswith("error")
             ]
             task_arns = [a for s in scaled_down for a in service_tasks.get(s) or []]
@@ -875,7 +879,8 @@ def update_ecs_services(cluster_name, service_names, desired_count):
 
 def list_service_tasks(cluster_name, service_names):
     """Return {service: [running task ARNs]}, or None for a service whose
-    tasks could not be listed. One page: each service runs at most one task."""
+    tasks could not be listed. One page (up to 100 tasks): the public service
+    runs at most its ASG's max_size, the others one task each."""
     tasks = {}
     for service_name in service_names:
         try:

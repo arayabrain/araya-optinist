@@ -407,19 +407,19 @@ variable "public_instance_type" {
 }
 
 variable "public_asg_min_size" {
-  description = "Minimum size of the public ASG. desired=min=2 provides HA on SPA delivery."
+  description = "Floor of the public host count (the public ASG's min_size). 2 keeps SPA delivery in both AZs."
   type        = number
   default     = 2
 }
 
 variable "public_asg_max_size" {
-  description = "Maximum size of the public ASG."
+  description = "Ceiling of the public host count (the public ASG's max_size). A public service count above it leaves tasks in PROVISIONING."
   type        = number
   default     = 4
 }
 
 variable "public_asg_desired_capacity" {
-  description = "Desired capacity of the public ASG (also used for ECS service desired_count)."
+  description = "Public host and task count at creation and at the development morning start. At runtime the service's desired count is changed with update-service; Terraform ignores both."
   type        = number
   default     = 2
 }
