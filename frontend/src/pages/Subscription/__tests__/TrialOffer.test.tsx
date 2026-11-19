@@ -1,9 +1,11 @@
 /**
  * The free-trial wording on the Subscription page.
  *
- * - The paid plan card's trial line is shown only once the API has answered
- *   that the user has no subscription: anyone who bought before gets no trial,
- *   and a pending or failed request says nothing about it.
+ * - The paid plan card leads with the trial (ribbon, headline, button label,
+ *   terms under the button) only once the API has answered that the user has
+ *   no subscription: anyone who bought before gets no trial, and a pending or
+ *   failed request says nothing about it. The price after the trial stays on
+ *   the card.
  * - The Current Plan box names a running trial's end, which is the first
  *   charge, not an expiry.
  *
@@ -47,7 +49,29 @@ const plan = (id: number, name: string, price: number) => ({
 
 const PLANS = [plan(1, "Free", 0), plan(2, "Premium", 5000)]
 
-const TRIAL_OFFER = "First-time subscribers get 30 days free"
+const OFFER = {
+  ribbon: "Free trial for first-time subscribers",
+  headline: "30 days free",
+  button: "Start 30-day free trial",
+  terms:
+    "No charge today. After 30 days, $50/month + applicable taxes unless you cancel.",
+}
+
+// No part of the offer, and the plain price and button
+const expectNoOffer = (card: HTMLElement) => {
+  for (const text of [OFFER.ribbon, OFFER.headline, OFFER.terms]) {
+    expect(within(card).queryByText(text)).not.toBeInTheDocument()
+  }
+  expect(
+    within(card).queryByRole("button", { name: OFFER.button }),
+  ).not.toBeInTheDocument()
+}
+
+const expectPlainPremium = (card: HTMLElement) => {
+  expectNoOffer(card)
+  expect(within(card).getByText("$50/month")).toBeInTheDocument()
+  expect(within(card).getByRole("button", { name: "Upgrade" })).toBeEnabled()
+}
 
 const later = <T,>(ms: number, value: T) =>
   new Promise<T>((resolve) => setTimeout(() => resolve(value), ms))
@@ -82,10 +106,19 @@ describe("Subscription page trial offer", () => {
     renderPlans()
 
     const premium = await screen.findByTestId("plan-card-Premium")
-    expect(await within(premium).findByText(TRIAL_OFFER)).toBeInTheDocument()
+    expect(await within(premium).findByText(OFFER.ribbon)).toBeInTheDocument()
+    expect(within(premium).getByText(OFFER.headline)).toBeInTheDocument()
+    // The price after the trial stays on the card
+    expect(within(premium).getByText("then")).toBeInTheDocument()
+    expect(within(premium).getByText("$50/month")).toBeInTheDocument()
     expect(
-      within(screen.getByTestId("plan-card-Free")).queryByText(TRIAL_OFFER),
+      within(premium).getByRole("button", { name: OFFER.button }),
+    ).toBeEnabled()
+    expect(within(premium).getByText(OFFER.terms)).toBeInTheDocument()
+    expect(
+      within(premium).queryByRole("button", { name: "Upgrade" }),
     ).not.toBeInTheDocument()
+    expectNoOffer(screen.getByTestId("plan-card-Free"))
   })
 
   it("leaves the card unchanged for a user who subscribed before", async () => {
@@ -109,8 +142,7 @@ describe("Subscription page trial offer", () => {
     await waitFor(() =>
       expect(store.getState().subscription.userSubscription).not.toBeNull(),
     )
-    expect(screen.getByTestId("plan-card-Premium")).toBeInTheDocument()
-    expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
+    expectPlainPremium(screen.getByTestId("plan-card-Premium"))
   })
 
   it("waits for the subscription when the plans arrive first", async () => {
@@ -118,8 +150,7 @@ describe("Subscription page trial offer", () => {
 
     renderPlans()
 
-    expect(await screen.findByTestId("plan-card-Premium")).toBeInTheDocument()
-    expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
+    expectPlainPremium(await screen.findByTestId("plan-card-Premium"))
   })
 
   it("offers nothing when the subscription cannot be read", async () => {
@@ -135,7 +166,7 @@ describe("Subscription page trial offer", () => {
       expect(store.getState().subscription.plansLoading).toBe(false),
     )
     expect(store.getState().subscription.error).toBeNull()
-    expect(screen.queryByText(TRIAL_OFFER)).not.toBeInTheDocument()
+    expectPlainPremium(screen.getByTestId("plan-card-Premium"))
   })
 })
 

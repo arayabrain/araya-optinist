@@ -34,6 +34,11 @@ const PREMIUM_ONLY_FEATURES = [
   "Advanced features like extended job history",
 ]
 
+// The paid card's purchase button. An account the API reports as never
+// subscribed is offered the trial under its own label; any other sees Upgrade.
+const TRIAL_BUTTON = /^Start \d+-day free trial$/
+const BUY_BUTTON = /^(Upgrade|Start \d+-day free trial)$/
+
 async function mockPlanCatalogue(page: Page) {
   const plan = (id: number, name: string, price: number, texts: string[]) => ({
     id,
@@ -73,6 +78,12 @@ test.describe("Free plan state", () => {
   test("SUB-01 - Subscription page shows Free as current plan", async ({
     page,
   }) => {
+    // The trial offer follows this answer, so it is read as the page reads it
+    const subscription = page.waitForResponse(
+      (r) =>
+        r.request().method() === "GET" &&
+        new URL(r.url()).pathname.endsWith("/api/subsc/mgmts"),
+    )
     await page.goto("/subscription")
 
     const free = page.getByTestId("plan-card-Free")
@@ -84,11 +95,22 @@ test.describe("Free plan state", () => {
     // the Free card - satisfied this row, and so did an Upgrade button sitting
     // on the wrong plan.
     await expect(free.locator('button:has-text("Current Plan")')).toBeVisible()
-    await expect(free.locator('button:has-text("Upgrade")')).toHaveCount(0)
-    await expect(premium.locator('button:has-text("Upgrade")')).toBeVisible()
+    await expect(free.getByRole("button", { name: BUY_BUTTON })).toHaveCount(0)
+    await expect(
+      premium.getByRole("button", { name: BUY_BUTTON }),
+    ).toBeVisible()
     await expect(
       premium.locator('button:has-text("Current Plan")'),
     ).toHaveCount(0)
+
+    // Never subscribed: the trial label and ribbon. Subscribed before: neither.
+    const neverSubscribed = (await (await subscription).json()) === null
+    await expect(premium.getByRole("button", { name: BUY_BUTTON })).toHaveText(
+      neverSubscribed ? TRIAL_BUTTON : "Upgrade",
+    )
+    await expect(
+      premium.getByText(/^free trial for first-time subscribers$/i),
+    ).toHaveCount(neverSubscribed ? 1 : 0)
 
     // The billing cycle differs by environment (dev bills daily), so the
     // assertion is the amount and its tax caption, not the period word.
@@ -97,7 +119,7 @@ test.describe("Free plan state", () => {
     await expect(free).not.toContainText("+ applicable taxes")
 
     // Row 121: the only action offered to a free user has to be usable.
-    const upgrade = premium.locator('button:has-text("Upgrade")')
+    const upgrade = premium.getByRole("button", { name: BUY_BUTTON })
     await expect(upgrade).toBeEnabled()
     await expect(free.locator('button:has-text("Current Plan")')).toBeDisabled()
   })
@@ -146,9 +168,9 @@ test.describe("Free plan state", () => {
       await expect(page.getByText(text, { exact: true })).toHaveCount(1)
     }
 
-    // The Premium card's action is the only Upgrade on the page and it has to
-    // be usable; the Free card is the signed-in user's current plan
-    const upgrade = page.locator('button:has-text("Upgrade")')
+    // The Premium card's purchase button is the only one on the page and it
+    // has to be usable; the Free card is the signed-in user's current plan
+    const upgrade = page.getByRole("button", { name: BUY_BUTTON })
     await expect(upgrade).toHaveCount(1)
     await expect(upgrade).toBeEnabled()
     await expect(page.locator('button:has-text("Current Plan")')).toBeDisabled()
@@ -443,7 +465,7 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     await expect(page.getByText(/^Current Plan:/).first()).toContainText(
       "Premium",
     )
-    await expect(page.locator('button:has-text("Upgrade")')).toHaveCount(0)
+    await expect(page.getByRole("button", { name: BUY_BUTTON })).toHaveCount(0)
 
     // The route is per-user and refuses an id that is not the caller's, which is
     // asserted server-side; here the point is that we POST to it at all
@@ -477,7 +499,7 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     )
 
     await page.goto("/subscription")
-    const upgrade = page.locator('button:has-text("Upgrade")').first()
+    const upgrade = page.getByRole("button", { name: BUY_BUTTON }).first()
     await expect(upgrade).toBeVisible({ timeout: 30_000 })
 
     const sessionRequest = page.waitForRequest(
@@ -539,7 +561,7 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     )
 
     await page.goto("/subscription")
-    const upgrade = page.locator('button:has-text("Upgrade")').first()
+    const upgrade = page.getByRole("button", { name: BUY_BUTTON }).first()
     await expect(upgrade).toBeVisible({ timeout: 30_000 })
     await upgrade.click()
     await expect(page).toHaveURL(/checkout\.stripe\.com\/c\/pay\/e2e-1/, {
@@ -549,7 +571,7 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     await page.goBack()
     await expect(page).toHaveURL(/\/subscription/, { timeout: 30_000 })
     // Still on the Free plan: the Free card reads Current Plan, the Premium
-    // card still offers Upgrade, and clicking it creates a second session
+    // card still offers the purchase, and clicking it creates a second session
     // and leaves again without an error
     await expect(
       page.locator('button:has-text("Current Plan")').first(),
@@ -582,7 +604,7 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     )
 
     await page.goto("/subscription")
-    const upgrade = page.locator('button:has-text("Upgrade")').first()
+    const upgrade = page.getByRole("button", { name: BUY_BUTTON }).first()
     await expect(upgrade).toBeVisible({ timeout: 30_000 })
     await upgrade.click()
     // The guard itself: the button relabels to Processing and disables for
@@ -595,7 +617,8 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     // race to the redirect). A disabled button swallows these clicks.
     await page.evaluate(() => {
       const target = Array.from(document.querySelectorAll("button")).find(
-        (button) => /Upgrade|Processing/.test(button.textContent ?? ""),
+        (button) =>
+          /Upgrade|free trial|Processing/.test(button.textContent ?? ""),
       )
       for (let i = 0; i < 4; i++) target?.click()
     })
@@ -618,7 +641,7 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
     const tabB = await page.context().newPage()
     await tabB.goto("/subscription")
     await expect(
-      tabB.locator('button:has-text("Upgrade")').first(),
+      tabB.getByRole("button", { name: BUY_BUTTON }).first(),
     ).toBeVisible({ timeout: 30_000 })
 
     await page.route("**/api/subsc/checkout/create-checkout-session", (route) =>
@@ -630,7 +653,7 @@ test.describe("Invoice page and subscription transitions (mocked billing)", () =
       route.fulfill({ contentType: "text/html", body: "<h1>stripe</h1>" }),
     )
     await page.goto("/subscription")
-    const upgrade = page.locator('button:has-text("Upgrade")').first()
+    const upgrade = page.getByRole("button", { name: BUY_BUTTON }).first()
     await expect(upgrade).toBeVisible({ timeout: 30_000 })
     await upgrade.click()
     await expect(page).toHaveURL(/checkout\.stripe\.com/, { timeout: 30_000 })
