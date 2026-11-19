@@ -188,6 +188,10 @@ terraform apply -var-file=environments/<ENV>.tfvars
 - Infrastructure (VPC, ALB, RDS, ECS, Auto Scaling, Route53, ACM)
 - Lambda function code and layers
 - Copies `infrastructure/aws_constants.py` to all Lambda packages via provisioners
+- From a commit other than the last one applied: the Docker image, built and pushed by
+  `ecr_build_push.sh` on your machine, and a rollout of every ECS service. A release commit's
+  image is tagged with its version, unless the repository already has that tag. See [INFRA_DEPLOYMENT_PROCEDURE.md — Builds Run by
+  `terraform apply`](INFRA_DEPLOYMENT_PROCEDURE.md#builds-run-by-terraform-apply)
 
 > **Traceability:** Each apply stamps the applied `infrastructure/` git revision onto the
 > ECS cluster as tags (`TfGitCommit` / `TfGitBranch` / `TfGitTag`), so you can later confirm
@@ -223,7 +227,7 @@ terraform init -backend-config=backends/<ENV>.hcl -reconfigure
 
 ```bash
 cd infrastructure/scripts
-./ecr_build_push.sh --tag {VERSION}  # Tag is automatically generated if omitted
+./ecr_build_push.sh --tag {VERSION}  # Omitted: the release tag on HEAD unless ECR has it, else YYYYMMDD-HHMMSS-<git-sha>
 ```
 
 The script automatically:
@@ -388,6 +392,14 @@ aws logs tail $LOG_GROUP \
 ```
 
 **Tip:** You can also view logs in AWS Console → CloudWatch → Log Groups → `/ecs/subscr-optinist-*`
+
+**Conda env pre-build:** after startup, the first free-tier task to take `.prebuild.lock` on the shared EFS builds, in the background, the conda envs the image needs and the EFS lacks (`PREBUILD_CONDA_ENVS=1`); the other tasks log `Conda env pre-build already runs on another task` and skip it. The deploy does not wait for it. Its result is in that task's log:
+
+- `Conda envs to build: none`: no env yaml changed, done in seconds.
+- `Conda envs to build: [...]`: those yamls changed (any byte), so they get new envs; up to an hour for caiman. Runs that need one of these envs wait until it is built.
+- `Conda envs not built: [...]`: a build failed (`Conda env <name> failed to build` holds the traceback). The first run that needs the env retries the build, or an admin can run the matching `setup_conda_*` maintenance node.
+
+Snakemake's own build output (`Creating conda environment ...`) goes to `logs/studio.log` on the instance, not to CloudWatch.
 
 ### 6. Verify Secrets Manager Access (optional)
 

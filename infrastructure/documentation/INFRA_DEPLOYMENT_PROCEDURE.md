@@ -173,7 +173,9 @@ terraform init -backend-config=backends/production.hcl -reconfigure
 # 3. Preview changes
 terraform plan -var-file=environments/production.tfvars
 
-# 4. Apply changes
+# 4. Apply changes. From a commit other than the last one applied, this also
+#    builds and pushes the image and rolls out every service
+#    (see "Builds Run by terraform apply")
 terraform apply -var-file=environments/production.tfvars
 
 # 5. View outputs (ALB DNS, RDS endpoint, etc.)
@@ -199,7 +201,8 @@ terraform init -backend-config=backends/development.hcl -reconfigure
 # 4. Preview what will be created
 terraform plan -var-file=environments/development.tfvars
 
-# 5. Deploy the development environment
+# 5. Deploy the development environment. From a commit other than the last one
+#    applied, this also builds and pushes the image and rolls out every service
 terraform apply -var-file=environments/development.tfvars
 
 # 6. Get the development site URL:
@@ -274,7 +277,8 @@ cd infrastructure/scripts
 # Ensure the correct AWS profile is active
 export AWS_PROFILE=optinist
 
-# Standard usage — auto-generates version tag, asks for confirmation
+# Standard usage — asks for confirmation. Version tag: the release tag on HEAD
+# (e.g. v1.2.3), else auto-generated YYYYMMDD-HHMMSS-<git-sha>
 ./ecr_build_push.sh
 
 # Custom version tag
@@ -293,7 +297,7 @@ The script will display:
   Environment : development
   ECR Repo    : development-optinist-for-cloud
   ECR URI     : 000000000000.dkr.ecr.ap-northeast-1.amazonaws.com/development-optinist-for-cloud
-  Tags        : latest, 20260317-143022-a1b2c3d
+  Tags        : latest, v1.1.10
   Git commit  : a1b2c3d4e5f6... (a1b2c3d)
   Git branch  : -
   Git tag     : v1.1.10
@@ -355,10 +359,53 @@ docker exec <CONTAINER> cat /app/BUILD_INFO
 - If initialized to **development** → pushes to `development-optinist-for-cloud:latest`
 - If initialized to **production** → pushes to `optinist-for-cloud:latest`
 
-Every push creates **two tags**:
+Every push creates **two tags** on the same image:
 
 - `:latest` — used by ECS task definitions (always current)
-- `:YYYYMMDD-HHMMSS-<git-sha>` — immutable version for history and rollback (e.g., `20260317-143022-a1b2c3d`)
+- a version tag, for history and rollback:
+  - `--tag <tag>` when given
+  - otherwise the release tag on HEAD (`v1.2.3` or `1.2.3`: three numeric parts, no suffix), so
+    a release build carries its version even from `terraform apply`, which passes no `--tag`.
+    If the repository already has that tag, it stays on the image it marks and this build gets
+    the timestamp tag below, with a warning in the output: a rebuild of a release commit (a
+    rollback apply, a retry) is a new image and never takes the released version over. The
+    script checks with `aws ecr describe-images`; if the check fails, it also uses the timestamp
+  - otherwise `:YYYYMMDD-HHMMSS-<git-sha>` (e.g., `20260317-143022-a1b2c3d`), for a prerelease
+    or untagged commit
+
+Only `--tag` moves a tag that is already in the repository.
+
+### Builds Run by `terraform apply`
+
+`null_resource.build_and_deploy` (`deployment.tf`) is keyed on the applied commit, so an apply
+from a commit other than the last one applied (an older one included) runs
+`ecr_build_push.sh --yes` on the operator's machine, and
+`null_resource.deploy_to_ecs` then rolls out every service ([Cycling All
+Services](#cycling-all-services)). A docs-only commit counts as new too
+([TERRAFORM_ARCHITECTURE.md](TERRAFORM_ARCHITECTURE.md#deployment-provenance-apply-traceability)).
+Its other triggers are `var.git_branch`, the load balancer's DNS name and the ECR repository URL;
+re-applying the same commit with none of them changed does not rebuild.
+
+- **It needs what a manual build needs**: Docker running, `yarn`, and a checkout with nothing
+  uncommitted. A dirty checkout fails the build after the rest of the apply has gone through;
+  the build resource is tainted, so the next apply retries it.
+- **There is no confirmation prompt.** `--yes` skips it, production included; approving the
+  apply is the only check.
+- **No `--tag` is passed**, so the version tag follows the rule above. Create the release tag
+  before the apply: the build reads it from the checkout when it runs. A tag created on GitHub or
+  on another machine is not in your checkout until you fetch it: run `git fetch --tags`, then
+  check that `git tag --points-at HEAD` lists it. An image built before the tag existed keeps
+  its timestamp tag; add the version with `aws ecr put-image`, as in [Rollback to a Previous
+  Image](#rollback-to-a-previous-image) (it still counts as timestamp-tagged in [Image
+  Cleanup](#image-cleanup)).
+- **The push shows a layer count, not progress bars.** Without a terminal docker prints no
+  progress bars or transfer sizes, so each push prints `Pushing <ref>...`, a `<tag>: N/M layers`
+  line each time a layer upload ends, and docker's digest line. A layer already in the registry is
+  only counted, so the version-tag push prints its digest alone. The count moves by layers, not
+  bytes: it can stand still for minutes on a large layer. With Docker's containerd image store
+  (the default on a fresh Docker Desktop install) docker lists no layers before the upload, so the
+  line is `<tag>: N pushed`, with no total, and N also counts the image's config and manifest. The
+  `yarn` and `docker build` output stays in full: a failed build is diagnosed from it.
 
 ### Cycling All Services
 
@@ -450,7 +497,9 @@ aws autoscaling resume-processes --auto-scaling-group-name <group> \
 2. Build and push dev image: `cd ../scripts && ./ecr_build_push.sh`
 3. Force ECS redeployment across **every** service, using the loop in [Cycling All Services](#cycling-all-services)
 4. Verify in development
-5. When ready for production: switch backend, rebuild, push, and redeploy
+5. When ready for production: switch backend and `terraform apply` from the release commit. It
+   builds, pushes and rolls out ([Builds Run by `terraform apply`](#builds-run-by-terraform-apply));
+   a separate rebuild and redeploy afterwards only rolls the services a second time
 
 ### Rollback to a Previous Image
 
@@ -496,12 +545,26 @@ done
 
 A rollback that cycles only one service is the worst case of the digest-pinning behaviour described in [Cycling All Services](#cycling-all-services): the image you are rolling back *away from* keeps serving on every service you did not cycle. Confirm all of them settled before declaring the rollback complete.
 
+A rollback of `:latest` lasts until the next build: the next `terraform apply` from a commit other
+than the last one applied rebuilds, pushes `:latest` and rolls every service out again ([Builds Run
+by `terraform apply`](#builds-run-by-terraform-apply)). An apply from an older release commit
+rebuilds that release: the new image gets a timestamp tag, and the release tag stays on the image
+that was released, so `check_ecs_image_drift.py --tag <version>` reports the services as running
+another image. To run the released image itself, retag it as above.
+
 ### Image Cleanup
 
-The ECR lifecycle policy automatically manages storage:
+The ECR lifecycle policy that Terraform creates with the development repository
+(`aws_ecr_lifecycle_policy.app` in `ecr.tf`) manages its storage. The production repository
+predates Terraform ([Repository Isolation](#repository-isolation)), so its policy, if any, is set
+outside it.
 
-- **Untagged images**: removed after 7 days
-- **Versioned images**: only the last 10 are kept
+- **Untagged images**: removed after 7 days. A tag pushed again with `--tag` moves to the new
+  image, which can leave the old one untagged
+- **Timestamp-tagged images** (tags starting with `20`): only the last 10 are kept
+- **Release-tagged images** (a `v1.2.3` tag and no timestamp tag): not selected by either rule, so
+  kept until deleted. An image carrying both, such as a timestamp-tagged image given its version
+  by `put-image`, counts as timestamp-tagged
 - **`:latest`**: always retained
 
 On the hosts themselves, the `<env>-docker-hygiene` SSM association prunes stopped containers and

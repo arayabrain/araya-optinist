@@ -48,6 +48,9 @@ LARGE_FILE_PATTERNS = tuple(
 # Visualization mode: JSON for timeseries data, TIFF for images,
 # YAML for snakemake config, HTML for summary tables
 VISUALIZATION_SYNC_PATTERNS = (".json", ".tif", ".tiff", ".yaml", ".html")
+# Files save_json() writes during observation, uploaded when a run finishes;
+# each must also be in VISUALIZATION_SYNC_PATTERNS
+OBSERVATION_UPLOAD_PATTERNS = (".json", ".html")
 
 
 # Thumbnail type identifiers

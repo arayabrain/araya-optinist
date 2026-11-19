@@ -51,18 +51,18 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def resolve(repo_dir: Path) -> dict:
-    """Source the real script and return the three variables it sets."""
+    """Source the real script and return the four variables it sets."""
     script = (
         f". {shlex.quote(str(GIT_REF_INFO))}\n"
         f"resolve_git_ref_info {shlex.quote(str(repo_dir))}\n"
-        'printf "%s\\n%s\\n%s\\n" '
-        '"$GIT_INFO_COMMIT" "$GIT_INFO_BRANCH" "$GIT_INFO_TAG"\n'
+        'printf "%s\\n%s\\n%s\\n%s\\n" "$GIT_INFO_COMMIT" "$GIT_INFO_BRANCH" '
+        '"$GIT_INFO_TAG" "$GIT_INFO_RELEASE_TAG"\n'
     )
     result = subprocess.run(
         ["bash", "-c", script], capture_output=True, text=True, check=True
     )
-    commit, branch, tag = result.stdout.split("\n")[:3]
-    return {"commit": commit, "branch": branch, "tag": tag}
+    commit, branch, tag, release_tag = result.stdout.split("\n")[:4]
+    return {"commit": commit, "branch": branch, "tag": tag, "release_tag": release_tag}
 
 
 @pytest.fixture
@@ -169,6 +169,33 @@ class TestResolution:
         _git(repo, "tag", "-d", "ann-tag")
         assert resolve(repo)["tag"] == "v2.0.0-rc2"
 
+    def test_release_tag_names_the_release_on_head(self, repo):
+        # ecr_build_push.sh versions the image with it
+        _git(repo, "checkout", "-q", "release")
+        _git(repo, "tag", "v1.0.10-rc1")
+        assert resolve(repo)["release_tag"] == "v1.0.10"
+
+    def test_release_tag_is_empty_when_head_has_only_prereleases(self, repo):
+        _git(repo, "checkout", "-q", "v1.0.10")
+        _git(repo, "tag", "v2.0.0-rc1")
+        for name in ("v1.0.9", "v1.0.10", "ann-tag"):
+            _git(repo, "tag", "-d", name)
+        info = resolve(repo)
+        assert info["tag"] == "v2.0.0-rc1"
+        assert info["release_tag"] == ""
+
+    def test_release_tag_needs_exactly_three_numeric_parts(self, repo):
+        # ecr_build_push.sh tags the image with it, so a short version or a
+        # date tag must not count as a release
+        _git(repo, "checkout", "-q", "v1.0.10")
+        for name in ("v1.0.9", "v1.0.10", "ann-tag"):
+            _git(repo, "tag", "-d", name)
+        for name in ("v1", "v1.2", "20261117", "v1.2.3.4"):
+            _git(repo, "tag", name)
+        info = resolve(repo)
+        assert info["release_tag"] == ""
+        assert info["tag"] != ""
+
     def test_a_non_version_tag_never_outranks_a_release(self, repo):
         # 'zzz-nightly' sorts above 'v1.0.10' in any refname ordering, so the
         # release preference has to be a filter, not a tie-break.
@@ -211,7 +238,7 @@ class TestResolution:
 
     def test_outside_a_git_worktree(self, tmp_path):
         info = resolve(tmp_path)
-        assert info == {"commit": "unknown", "branch": "", "tag": ""}
+        assert info == {"commit": "unknown", "branch": "", "tag": "", "release_tag": ""}
 
 
 class TestTerraformBuildInfo:
