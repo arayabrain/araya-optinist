@@ -100,6 +100,7 @@ Priority 10 is reserved for the maintenance page. While it is on it answers ever
 | Priority | Rule | Target | Match |
 |---|---|---|---|
 | 10 | maintenance page (only while on) | ALB fixed 503 response | `/*` (created and deleted by `infrastructure/scripts/maintenance_mode.sh`, not Terraform) |
+| 20 | `apex_to_www` (custom domain only, `compute_domain.tf`) | 301 to the same path and query on www | host = the apex, `GET`/`HEAD`, `Accept: *text/html*` (browser page loads only) |
 | 100-199 | premium dynamic rules | Premium instance | `X-Routing-ID` + `X-User-Tier` (Lambda-created) |
 | 200 | `sync_experiment_to_public` | Public | `/system-internal/sync-experiment/*` |
 | 210 | `sync_experiments_to_free` | Free | `/system-internal/sync-experiments/*` |
@@ -119,7 +120,7 @@ Priority 10 is reserved for the maintenance page. While it is on it answers ever
 
 **Why bootstrap routes go to public:** `auth`, `users_me`, and `log-report` are served from the public tier so login, the post-login bootstrap calls, and client-error reporting keep working when the free tier is scaled to zero. Without these rules those requests would hit the priority-320 Bearer catch-all and 503 during a free outage.
 
-**Why the default action is public:** open-ended SPA routes (e.g. `/workspaces/15`) cannot be enumerated as rules. A browser document request carries `Accept: text/html` and no `Authorization` header, so it misses every rule and falls through to the default action, which serves the static SPA shell from public via `SPARoutingMiddleware`. See `PUBLIC_INSTANCE_ARCHITECTURE.md`.
+**Why the default action is public:** open-ended SPA routes (e.g. `/workspaces/15`) cannot be enumerated as rules. A browser document request carries `Accept: text/html` and no `Authorization` header, so it misses every rule and falls through to the default action, which serves the static SPA shell from public via `SPARoutingMiddleware`. The exception is a document request on the apex, which priority 20 first redirects to www, where it falls through the same way. See `PUBLIC_INSTANCE_ARCHITECTURE.md`.
 
 ---
 

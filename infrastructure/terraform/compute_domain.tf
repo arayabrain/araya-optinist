@@ -68,7 +68,7 @@ resource "aws_route53_record" "main" {
   }
 }
 
-# Route53 A record for www subdomain (redirects to main domain)
+# Route53 A record for www, the host the app is served from (apex_to_www below)
 resource "aws_route53_record" "www" {
   count   = var.enable_custom_domain ? 1 : 0
   zone_id = data.aws_route53_zone.main[0].zone_id
@@ -79,5 +79,52 @@ resource "aws_route53_record" "www" {
     name                   = aws_lb.autoscaling.dns_name
     zone_id                = aws_lb.autoscaling.zone_id
     evaluate_target_health = true
+  }
+}
+
+# Sessions and client storage are per host, so the app is served from www
+# only, and page loads on the apex are sent there. Only page loads match: API
+# calls, webhook POSTs and scripts on the apex keep reaching the app. The host
+# match is exact, so callers that use the ALB DNS name are never redirected.
+resource "aws_lb_listener_rule" "apex_to_www" {
+  count        = var.enable_custom_domain ? 1 : 0
+  listener_arn = aws_lb_listener.autoscaling_https.arn
+  priority     = 20 # see the priority map in public_alb_rules.tf
+
+  # After the image rollout, so no page load is sent to www while an older
+  # bundle that calls a fixed API host still serves
+  depends_on = [null_resource.deploy_to_ecs]
+
+  condition {
+    host_header {
+      values = [var.frontend_domain]
+    }
+  }
+
+  condition {
+    http_request_method {
+      values = ["GET", "HEAD"]
+    }
+  }
+
+  # Browsers send text/html only when loading a page, never from fetch/XHR
+  condition {
+    http_header {
+      http_header_name = "Accept"
+      values           = ["*text/html*"]
+    }
+  }
+
+  action {
+    type = "redirect"
+
+    redirect {
+      host        = "www.${var.frontend_domain}"
+      path        = "/#{path}"
+      query       = "#{query}"
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
   }
 }
