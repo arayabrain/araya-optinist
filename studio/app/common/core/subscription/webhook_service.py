@@ -350,7 +350,11 @@ class WebhookService:
 
             # 8. Create or update subscription
             subscription_user_id = CheckoutService.create_or_update_subscription(
-                db, user_id, plan_id, expiration_date
+                db,
+                user_id,
+                plan_id,
+                expiration_date,
+                trial_end=datetime_from_timestamp(trial_end) if trial_end else None,
             )
 
             # 9. Record purchase (optionally store session_id for reference)
@@ -1617,7 +1621,11 @@ class WebhookService:
 
         # 4. Upsert subscription_users (lock-safe, idempotent helper)
         CheckoutService.create_or_update_subscription(
-            db, user_id, plan_id, expiration_date
+            db,
+            user_id,
+            plan_id,
+            expiration_date,
+            trial_end=datetime_from_timestamp(trial_end) if trial_end else None,
         )
 
         # 5. Mirror cancel_at_period_end -> scheduled_downgrade.

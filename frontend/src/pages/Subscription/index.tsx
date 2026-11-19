@@ -18,7 +18,7 @@ import {
   DialogActions,
 } from "@mui/material"
 
-import { PlanName } from "const/Subscription"
+import { PlanName, SubscriptionPeriods } from "const/Subscription"
 import {
   getSubscriptionPlan,
   getUserSubscription,
@@ -29,6 +29,7 @@ import {
 import {
   selectSubscriptionPlans,
   selectUserSubscription,
+  selectUserSubscriptionLoaded,
   selectSubscriptionLoading,
   selectSubscriptionError,
   selectIsSubscriptionExpired,
@@ -51,6 +52,7 @@ const SubscriptionPlans = () => {
   const user = useSelector(selectCurrentUser)
   const plans = useSelector(selectSubscriptionPlans)
   const userSubscription = useSelector(selectUserSubscription)
+  const userSubscriptionLoaded = useSelector(selectUserSubscriptionLoaded)
   const loading = useSelector(selectSubscriptionLoading)
   const error = useSelector(selectSubscriptionError)
   const isSubscriptionExpired = useSelector(selectIsSubscriptionExpired)
@@ -284,6 +286,12 @@ const SubscriptionPlans = () => {
     )
   }
 
+  // The API returns no subscription for a user who never bought one, so a
+  // paid checkout may start a trial. Stripe history can still rule it out,
+  // hence the "first-time subscribers" wording. Only an answer counts: while
+  // the request is pending or after it failed, the subscription is also null.
+  const trialOffered = userSubscriptionLoaded && !userSubscription
+
   return (
     <BoxWrapper>
       <SubscriptionTitle variant="h3">Subscription Plans</SubscriptionTitle>
@@ -357,12 +365,17 @@ const SubscriptionPlans = () => {
             <Typography variant="body1">
               Current Plan: <strong>{userSubscription.plan_name}</strong>
             </Typography>
+            {/* A running trial ends in its first charge, not an expiry */}
             <Typography variant="body2" color="text.secondary">
               {isSubscriptionExpired ? (
                 <span style={{ color: "#dc2626" }}>
                   Expired on{" "}
                   {new Date(userSubscription.expiration).toLocaleDateString()}
                 </span>
+              ) : userSubscription.is_trial &&
+                userSubscription.trial_end &&
+                !userSubscription.scheduled_downgrade ? (
+                `Free trial ends on ${new Date(userSubscription.trial_end).toLocaleDateString()}`
               ) : (
                 `Expires on ${new Date(userSubscription.expiration).toLocaleDateString()}`
               )}
@@ -371,13 +384,14 @@ const SubscriptionPlans = () => {
         )}
 
       <SubscriptionWrapper>
-        <SubscriptionContent>
+        <SubscriptionContent hasTrialRibbon={trialOffered}>
           {activePlans.map((plan) => {
             const features = getPlanFeatures(plan)
             const isCurrent = isCurrentPlan(plan.id)
             const isFree = plan.price === 0
             const priceDisplay = getPriceDisplay(plan)
             const isProcessing = isPlanProcessing(plan.id)
+            const offersTrial = !isFree && trialOffered
 
             return (
               <PlanCard
@@ -385,11 +399,29 @@ const SubscriptionPlans = () => {
                 data-testid={`plan-card-${plan.name}`}
                 isHighlighted={plan.name === PlanName.PREMIUM}
               >
+                {offersTrial && (
+                  <TrialRibbon>
+                    Free trial for first-time subscribers
+                  </TrialRibbon>
+                )}
                 <PlanHeader>
                   <PlanTitle variant="h4">{plan.name}</PlanTitle>
 
                   <PriceContainer>
-                    <PlanPrice variant="h5">{priceDisplay}</PlanPrice>
+                    {/* The trial leads; the price after it stays readable */}
+                    {offersTrial ? (
+                      <>
+                        <TrialHeadline variant="h4">
+                          {SubscriptionPeriods.TRIAL_PERIOD_DAYS} days free
+                        </TrialHeadline>
+                        <TrialPriceRow>
+                          <TrialPriceLead>then</TrialPriceLead>
+                          <PlanPrice variant="h5">{priceDisplay}</PlanPrice>
+                        </TrialPriceRow>
+                      </>
+                    ) : (
+                      <PlanPrice variant="h5">{priceDisplay}</PlanPrice>
+                    )}
                     {!isFree && (
                       <Typography variant="caption" color="text.secondary">
                         + applicable taxes
@@ -457,8 +489,23 @@ const SubscriptionPlans = () => {
                           ? "Downgrade"
                           : userSubscription?.scheduled_downgrade
                             ? "Continue Plan"
-                            : "Upgrade"}
+                            : offersTrial
+                              ? `Start ${SubscriptionPeriods.TRIAL_PERIOD_DAYS}-day free trial`
+                              : "Upgrade"}
                     </UpgradeButton>
+                  )}
+                  {offersTrial && (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: "block", mt: 1 }}
+                    >
+                      {/* Checkout can still rule the trial out, so the payment
+                          term carries the same qualifier as the ribbon */}
+                      First-time subscribers: no charge today. After{" "}
+                      {SubscriptionPeriods.TRIAL_PERIOD_DAYS} days,{" "}
+                      {priceDisplay} + applicable taxes unless you cancel.
+                    </Typography>
                   )}
                 </ButtonWrapper>
               </PlanCard>
@@ -694,13 +741,19 @@ const SubscriptionWrapper = styled(Box)(() => ({
   justifyContent: "center",
 }))
 
-const SubscriptionContent = styled(Box)(() => ({
+// The trial ribbon stands above the paid card: room for it above the row,
+// and between the cards once they stack
+const SubscriptionContent = styled(Box, {
+  shouldForwardProp: (prop) => prop !== "hasTrialRibbon",
+})<{ hasTrialRibbon?: boolean }>(({ hasTrialRibbon }) => ({
   display: "flex",
   flexDirection: "row",
   gap: "2rem",
   width: "100%",
+  marginTop: hasTrialRibbon ? "1.5rem" : 0,
   "@media (max-width: 768px)": {
     flexDirection: "column",
+    gap: hasTrialRibbon ? "3.5rem" : "2rem",
   },
 }))
 
@@ -743,6 +796,43 @@ const PriceContainer = styled(Box)(() => ({
 const PlanPrice = styled(Typography)(() => ({
   fontWeight: "600",
   color: "#3b82f6",
+}))
+
+// Centered on the card's top border; wraps on a card narrower than the text
+const TrialRibbon = styled(Box)(() => ({
+  position: "absolute",
+  top: 0,
+  left: "50%",
+  transform: "translate(-50%, -50%)",
+  boxSizing: "border-box",
+  width: "max-content",
+  maxWidth: "calc(100% - 2rem)",
+  padding: "0.25rem 1rem",
+  borderRadius: "999px",
+  backgroundColor: "#16a34a",
+  color: "white",
+  fontSize: "0.8rem",
+  fontWeight: 700,
+  lineHeight: 1.4,
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+  textAlign: "center",
+}))
+
+const TrialHeadline = styled(Typography)(() => ({
+  fontWeight: 800,
+  color: "#16a34a",
+}))
+
+const TrialPriceRow = styled(Box)(() => ({
+  display: "flex",
+  alignItems: "baseline",
+  gap: "0.5rem",
+}))
+
+const TrialPriceLead = styled(Typography)(() => ({
+  fontSize: "1rem",
+  color: "#374151",
 }))
 
 const FeaturesList = styled(Box)(() => ({

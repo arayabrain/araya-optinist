@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+import stripe
 from fastapi import HTTPException
 from sqlmodel import Session
 
@@ -540,6 +541,138 @@ class TestReactivationIsMirroredOntoTheRow:
             .storage_quota_bytes
         )
         assert quota == 200 * StorageSize.GB
+
+
+class TestTrialEndIsMirroredOntoTheRow:
+    """`trial_end` copies the Stripe subscription's trial end on every write.
+
+    The app reads it to tell a running free trial from a paid period: a write
+    that drops it shows a trial user the renewal wording, and one that keeps a
+    stale value shows a later paid subscription as a trial.
+    """
+
+    TRIAL_END = 2000000000  # 2033-05-18 UTC
+
+    def event(self, trial_end):
+        return {
+            "id": "sub_stripe_123",
+            "customer": STRIPE_CUSTOMER,
+            "status": "trialing" if trial_end else "active",
+            "cancel_at_period_end": False,
+            "current_period_end": self.TRIAL_END,
+            "trial_end": trial_end,
+            "metadata": {"plan_id": str(SubscriptionPlanIds.PREMIUM)},
+        }
+
+    def stored_trial_end(self, db, user_id):
+        stored = row_for(db, user_id).trial_end
+        return (
+            None
+            if stored is None
+            else int(stored.replace(tzinfo=timezone.utc).timestamp())
+        )
+
+    def test_the_upsert_stores_it_on_a_new_row(self, db, unsubscribed_user):
+        trial_end = datetime(2027, 3, 14, 12, 0, 0)
+
+        CheckoutService.create_or_update_subscription(
+            db,
+            unsubscribed_user,
+            SubscriptionPlanIds.PREMIUM,
+            trial_end,
+            trial_end=trial_end,
+        )
+        db.commit()
+
+        assert row_for(db, unsubscribed_user).trial_end == trial_end
+
+    def test_a_trialing_subscription_event_stores_it(self, db, premium_user):
+        assert row_for(db, premium_user).trial_end is None
+
+        with patch(_CACHE_PATCH):
+            WebhookService.handle_subscription_created(db, self.event(self.TRIAL_END))
+
+        assert self.stored_trial_end(db, premium_user) == self.TRIAL_END
+
+    def test_a_later_subscription_without_a_trial_clears_it(self, db, premium_user):
+        # A user who cancels a trial and subscribes again gets no second trial
+        row_for(db, premium_user).trial_end = datetime(2027, 1, 1)
+        db.commit()
+
+        with patch(_CACHE_PATCH):
+            WebhookService.handle_subscription_updated(db, self.event(None))
+
+        assert row_for(db, premium_user).trial_end is None
+
+    def test_checkout_passes_the_stripe_trial_end(self):
+        mock_db = Mock(spec=Session)
+        mock_db.query.return_value.join.return_value.filter.return_value.first.return_value = (  # noqa: E501
+            None
+        )
+
+        with patch.object(
+            CheckoutService, "get_subscription_plan", return_value=Mock(id=2)
+        ), patch.object(
+            CheckoutService, "get_or_create_stripe_provider", return_value=1
+        ), patch.object(
+            CheckoutService, "create_or_update_user_account"
+        ), patch.object(
+            CheckoutService, "set_default_payment_method"
+        ), patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=1
+        ) as mock_upsert, patch.object(
+            CheckoutService, "record_purchase", return_value=Mock(id=1)
+        ), patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "stripe.Subscription.retrieve",
+            return_value={
+                "current_period_end": self.TRIAL_END,
+                "trial_end": self.TRIAL_END,
+                "current_period_start": 1792000000,
+            },
+        ), patch(
+            _CACHE_PATCH
+        ):
+            WebhookService.handle_checkout_completed(mock_db, checkout_session(42))
+
+        trial_end = mock_upsert.call_args.kwargs["trial_end"]
+        assert int(trial_end.timestamp()) == self.TRIAL_END
+
+    def test_missed_webhook_recovery_passes_the_stripe_trial_end(self):
+        # A real SDK object: recovery reads it both by attribute and by key
+        stripe_sub = stripe.StripeObject.construct_from(
+            {
+                "id": "sub_stripe_123",
+                "status": "trialing",
+                "trial_end": self.TRIAL_END,
+                "current_period_end": self.TRIAL_END,
+                "metadata": {"plan_id": str(SubscriptionPlanIds.PREMIUM)},
+                "default_payment_method": "pm_test",
+            },
+            "sk_test_dummy",
+        )
+        checkout_module = "studio.app.common.core.subscription.checkout_service"
+
+        with patch(
+            f"{checkout_module}.stripe.Subscription.list",
+            return_value=SimpleNamespace(data=[stripe_sub]),
+        ), patch(f"{checkout_module}.stripe.Customer.modify"), patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=1
+        ) as mock_upsert, patch.object(
+            CheckoutService, "get_or_create_stripe_provider", return_value=1
+        ), patch.object(
+            CheckoutService, "create_or_update_user_account"
+        ), patch(
+            "studio.app.common.core.middleware.secure_routing_middleware."
+            "invalidate_user_tier_cache"
+        ):
+            recovered = CheckoutService.recover_existing_stripe_subscription(
+                Mock(spec=Session), 42, STRIPE_CUSTOMER, SubscriptionPlanIds.PREMIUM
+            )
+
+        assert recovered is True
+        trial_end = mock_upsert.call_args.kwargs["trial_end"]
+        assert int(trial_end.timestamp()) == self.TRIAL_END
 
 
 class TestReactivateRejectsAnotherUsersSubscription:
