@@ -1212,7 +1212,7 @@ aws ecs update-service \
   --region ap-northeast-1
 
 # Health check
-curl -s -o /dev/null -w "%{http_code}" https://araya-optinist.com/health
+curl -s -o /dev/null -w "%{http_code}" https://www.araya-optinist.com/health
 ```
 
 ---

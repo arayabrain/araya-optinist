@@ -740,6 +740,11 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "FRONTEND_SERVER_PROTO"
           value = var.frontend_protocol
         },
+        # The app's own origin: the origin /auth trusts, and links the app builds
+        {
+          name  = "FRONTEND_URL"
+          value = local.canonical_origin
+        },
         {
           name  = "INITIAL_FIREBASE_UID"
           value = var.optinist_admin_uid
@@ -786,7 +791,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "*"
+          value = local.cors_origins
         },
         {
           name  = "PYTHONUNBUFFERED"
@@ -806,7 +811,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+          value = local.canonical_origin
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -1045,6 +1050,11 @@ resource "aws_ecs_task_definition" "premium" {
           name  = "FRONTEND_SERVER_PROTO"
           value = var.frontend_protocol
         },
+        # The app's own origin: the origin /auth trusts, and links the app builds
+        {
+          name  = "FRONTEND_URL"
+          value = local.canonical_origin
+        },
         {
           name  = "INITIAL_FIREBASE_UID"
           value = var.optinist_admin_uid
@@ -1091,7 +1101,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "*"
+          value = local.cors_origins
         },
         {
           name  = "PYTHONUNBUFFERED"
@@ -1107,7 +1117,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+          value = local.canonical_origin
         },
         {
           name  = "STRIPE_SECRET_KEY"

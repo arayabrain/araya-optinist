@@ -1,4 +1,7 @@
-"""Where ecr_build_push.sh takes the frontend GTM container ID from.
+"""What ecr_build_push.sh puts into the frontend build.
+
+- The GTM container ID, and where it is taken from.
+- No API origin: the bundle calls the origin that served it.
 
 Runs a copy of the real script with stub git / terraform / aws / docker / yarn
 on PATH and reads the frontend/.env.production it writes.
@@ -33,9 +36,17 @@ TERRAFORM_STUB = """
 case "$4" in
     environment) echo development ;;
     ecr_repository_url) echo 123.dkr.ecr.ap-northeast-1.amazonaws.com/repo ;;
-    domain_port) echo 443 ;;
     *) echo x ;;
 esac
+"""
+
+# Records which API origin variables `yarn build` sees, and whether they are set
+YARN_STUB = """
+[ "$1" = build ] || exit 0
+echo "yarn build" \\
+    "HOST=${REACT_APP_SERVER_HOST-unset}" \\
+    "PORT=${REACT_APP_SERVER_PORT-unset}" \\
+    "PROTO=${REACT_APP_SERVER_PROTO-unset}" >> "$CALLS"
 """
 
 
@@ -60,8 +71,8 @@ def build(tmp_path):
     calls.touch()
     _stub(bin_dir / "aws", AWS_STUB)
     _stub(bin_dir / "terraform", TERRAFORM_STUB)
-    for name in ("git", "yarn"):
-        _stub(bin_dir / name, "exit 0")
+    _stub(bin_dir / "git", "exit 0")
+    _stub(bin_dir / "yarn", YARN_STUB)
     _stub(bin_dir / "docker", f'echo "docker $*" >> "{calls}"')
 
     def run(ssm_mode, ssm_value="", env_deploy=None, shell_env=None):
@@ -143,3 +154,17 @@ def test_malformed_ssm_value_fails(build):
     assert result.returncode != 0
     assert "malformed GTM ID from SSM" in result.stdout
     assert gtm is None
+
+
+def test_no_api_origin_is_baked_into_the_bundle(build, tmp_path):
+    """A baked host makes pages served from any other host call it
+    cross-origin, where no refresh cookie is issued and a reload signs the
+    user out. Empty values set for the build itself also outrank a stale
+    frontend/.env* or a shell export."""
+    result, _, calls = build(
+        "missing", shell_env={"REACT_APP_SERVER_HOST": "stale.example.org"}
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    dotenv = (tmp_path / "repo" / "frontend" / ".env.production").read_text()
+    assert "REACT_APP_SERVER_" not in dotenv
+    assert "yarn build HOST= PORT= PROTO=\n" in calls

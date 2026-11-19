@@ -507,6 +507,15 @@ locals {
   # - Development: uses ALB DNS name on port 8080
   effective_frontend_domain = var.enable_custom_domain ? var.frontend_domain : aws_lb.autoscaling.dns_name
   effective_frontend_port   = var.enable_custom_domain ? var.frontend_port : "8080"
+
+  # The one origin the app is served from; apex page loads are redirected to
+  # it (aws_lb_listener_rule.apex_to_www). Scheme and port follow
+  # aws_lb_listener.autoscaling_https.
+  canonical_origin = var.enable_custom_domain ? "https://www.${var.frontend_domain}" : "http://${aws_lb.autoscaling.dns_name}:8080"
+
+  # Origins a browser may call the API from with credentials. The app itself is
+  # same-origin and needs none; dev keeps the wildcard.
+  cors_origins = var.enable_custom_domain ? local.canonical_origin : "*"
 }
 
 # =======
@@ -621,9 +630,6 @@ output "launch_template_id" {
 output "frontend_config_autoscaling" {
   description = "Configuration values for frontend/.env.production"
   value = {
-    REACT_APP_SERVER_HOST             = aws_lb.autoscaling.dns_name
-    REACT_APP_SERVER_PORT             = "80"
-    REACT_APP_SERVER_PROTO            = "http"
     REACT_APP_EXPDB_METADATA_EDITABLE = true
   }
 }
@@ -680,8 +686,8 @@ output "domain_name" {
 }
 
 output "domain_url" {
-  description = "Full URL for the application"
-  value       = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+  description = "Origin the application is served from (www in prod, ALB DNS on port 8080 in dev)"
+  value       = local.canonical_origin
 }
 
 output "domain_protocol" {

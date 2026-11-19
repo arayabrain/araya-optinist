@@ -236,7 +236,7 @@ resource "aws_ecs_task_definition" "background" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "*"
+          value = local.cors_origins
         },
         {
           name  = "PYTHONUNBUFFERED"
@@ -252,7 +252,7 @@ resource "aws_ecs_task_definition" "background" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+          value = local.canonical_origin
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -319,7 +319,7 @@ resource "aws_ecs_task_definition" "background" {
         # Sign-in link used in the lifecycle emails
         {
           name  = "FRONTEND_URL"
-          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+          value = local.canonical_origin
         },
       ]
       mountPoints = [

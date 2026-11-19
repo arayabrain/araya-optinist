@@ -4,7 +4,7 @@ This document covers **application code deployment, release procedures, and Git 
 
 > **For infrastructure management (Terraform operations, environment setup, ECR details)**, see [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
 
-**Production URL:** `https://araya-optinist.com`
+**Production URL:** `https://www.araya-optinist.com` (page loads on the apex are redirected there)
 
 ---
 
@@ -323,7 +323,7 @@ Expected: `runningCount` should match `desiredCount` and status should be `ACTIV
 
 ```bash
 # Health check endpoint (using custom domain)
-curl https://araya-optinist.com/health
+curl https://www.araya-optinist.com/health
 
 # Or use ALB DNS directly
 ALB_DNS=$(aws elbv2 describe-load-balancers \
@@ -339,7 +339,7 @@ Expected: HTTP 200 response
 
 Open in browser:
 
-- Production: `https://araya-optinist.com`
+- Production: `https://www.araya-optinist.com`
 - ALB (direct): `http://$ALB_DNS`
 
 Verify:
