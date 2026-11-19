@@ -1578,13 +1578,14 @@ class WebhookService:
             }
         user_id = user_account.user_id
 
-        # 2. Derive expiration from the event payload (trial overrides period)
+        # 2. Derive expiration from the event payload
         trial_end = subscription_data.get("trial_end")
         current_period_end = CheckoutService.subscription_period_end(subscription_data)
-        if trial_end:
-            expiration_date = datetime_from_timestamp(trial_end)
-        elif current_period_end:
-            expiration_date = datetime_from_timestamp(current_period_end)
+        expiration_end = CheckoutService.stripe_expiration_end(
+            status, trial_end, current_period_end
+        )
+        if expiration_end:
+            expiration_date = datetime_from_timestamp(expiration_end)
         else:
             logger.warning(
                 f"Webhook: No period end in subscription {stripe_subscription_id}; "

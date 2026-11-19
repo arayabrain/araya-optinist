@@ -49,6 +49,19 @@ class CheckoutService:
         return max(ends) if ends else subscription.get("current_period_end")
 
     @staticmethod
+    def stripe_expiration_end(
+        status: Optional[str], trial_end: Optional[int], period_end: Optional[int]
+    ) -> Optional[int]:
+        """Trial end while the subscription is trialing, otherwise the period end.
+
+        Stripe may keep ``trial_end`` after the trial converts, so only the
+        status says whether the trial is still running.
+        """
+        if trial_end and status == StripeSubscriptionStatus.TRIAL:
+            return trial_end
+        return period_end
+
+    @staticmethod
     def get_existing_subscription(
         db: Session, user_id: int
     ) -> Optional[UserSubscription]:
@@ -562,11 +575,12 @@ class CheckoutService:
                     current_period_end = CheckoutService.subscription_period_end(
                         stripe_sub
                     )
+                    expiration_end = CheckoutService.stripe_expiration_end(
+                        status, trial_end, current_period_end
+                    )
 
-                    if trial_end:
-                        expiration_date = datetime_from_timestamp(trial_end)
-                    elif current_period_end:
-                        expiration_date = datetime_from_timestamp(current_period_end)
+                    if expiration_end:
+                        expiration_date = datetime_from_timestamp(expiration_end)
                     else:
                         logger.warning(
                             f"No expiration data in Stripe subscription "
