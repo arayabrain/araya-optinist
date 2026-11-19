@@ -415,11 +415,7 @@ const SubscriptionPlans = () => {
                           {SubscriptionPeriods.TRIAL_PERIOD_DAYS} days free
                         </TrialHeadline>
                         <TrialPriceRow>
-                          <Typography
-                            sx={{ fontSize: "1rem", color: "#374151" }}
-                          >
-                            then
-                          </Typography>
+                          <TrialPriceLead>then</TrialPriceLead>
                           <PlanPrice variant="h5">{priceDisplay}</PlanPrice>
                         </TrialPriceRow>
                       </>
@@ -504,7 +500,9 @@ const SubscriptionPlans = () => {
                       color="text.secondary"
                       sx={{ display: "block", mt: 1 }}
                     >
-                      No charge today. After{" "}
+                      {/* Checkout can still rule the trial out, so the payment
+                          term carries the same qualifier as the ribbon */}
+                      First-time subscribers: no charge today. After{" "}
                       {SubscriptionPeriods.TRIAL_PERIOD_DAYS} days,{" "}
                       {priceDisplay} + applicable taxes unless you cancel.
                     </Typography>
@@ -830,6 +828,11 @@ const TrialPriceRow = styled(Box)(() => ({
   display: "flex",
   alignItems: "baseline",
   gap: "0.5rem",
+}))
+
+const TrialPriceLead = styled(Typography)(() => ({
+  fontSize: "1rem",
+  color: "#374151",
 }))
 
 const FeaturesList = styled(Box)(() => ({

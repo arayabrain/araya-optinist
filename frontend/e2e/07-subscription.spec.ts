@@ -78,10 +78,13 @@ test.describe("Free plan state", () => {
   test("SUB-01 - Subscription page shows Free as current plan", async ({
     page,
   }) => {
-    // The trial offer follows this answer, so it is read as the page reads it
+    // The trial offer follows this answer, so it is read as the page reads it.
+    // Only a successful one: a 401 or 503 is retried by the client, and its
+    // error body is not the answer the page renders.
     const subscription = page.waitForResponse(
       (r) =>
         r.request().method() === "GET" &&
+        r.ok() &&
         new URL(r.url()).pathname.endsWith("/api/subsc/mgmts"),
     )
     await page.goto("/subscription")

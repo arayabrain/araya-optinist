@@ -54,7 +54,7 @@ const OFFER = {
   headline: "30 days free",
   button: "Start 30-day free trial",
   terms:
-    "No charge today. After 30 days, $50/month + applicable taxes unless you cancel.",
+    "First-time subscribers: no charge today. After 30 days, $50/month + applicable taxes unless you cancel.",
 }
 
 // No part of the offer, and the plain price and button
