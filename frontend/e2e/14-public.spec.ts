@@ -1,3 +1,5 @@
+import * as path from "path"
+
 import { test, expect, Browser, Locator, Page } from "@playwright/test"
 
 import {
@@ -5,25 +7,33 @@ import {
   PUBLIC_LOG_GROUP,
   apiUrl,
   cloudwatchHas,
+  deleteFirebaseUser,
   isLocalBaseUrl,
   ensurePublishableAccount,
   ensurePublishedRecord,
+  ensureRegisteredUser,
+  FREE_USER,
   findDataviewRecord,
   dataviewRecord,
   filterPublicToRecord,
+  localStackSkipReason,
   publicRow,
   PublicRecordRef,
   freeStorageState,
   gotoDashboard,
+  runSql,
+  saveStorageState,
   setPublished,
   skipWithoutCreds,
+  sqlLiteral,
   hasRefreshCookie,
 } from "./helpers"
 
 // Public-instance behaviour a browser can observe on any tier: the SPA shell
 // for deep links, the health endpoint, the chunk-load auto-reload, and the
-// frontend error reporter. The @slow group publishes real records and reads
-// their input data back anonymously, the way a public visitor would. ALB
+// frontend error reporter. The @slow groups publish real records and read
+// their input data back the way a public visitor would: anonymously, and
+// signed in as an account that does not own them. ALB
 // routing, CloudWatch delivery and S3 on-demand sync are pinned by
 // test_public_instance_config.py, test_log_report.py and
 // test_outputs_on_demand_sync.py - no e2e lane can reach them.
@@ -191,10 +201,15 @@ async function anonymousPage(browser: Browser): Promise<Page> {
 // Open the record's Workflow Inputs dialog from the public listing and
 // return the dialog locator. Takes the record rather than the name: the listing
 // spans every account, and a name match with .first() picks silently
-async function openPublicInputs(page: Page, record: PublicRecordRef) {
+async function openPublicInputs(
+  page: Page,
+  record: PublicRecordRef,
+  signedIn = false,
+) {
   await page.goto("/public")
-  // Really anonymous: rows 815-818 are about a visitor with no session
-  expect(await hasRefreshCookie(page)).toBe(false)
+  // The session the case is about: none for rows 815-818, the viewer's own for
+  // PUB-08
+  expect(await hasRefreshCookie(page)).toBe(signedIn)
   // Server-side filter first: the grid is virtualized, so an unfiltered
   // listing can hold the target row outside the DOM
   expect(await filterPublicToRecord(page, record)).toHaveLength(1)
@@ -290,6 +305,102 @@ test.describe("Public input data loads @slow", () => {
       ).toBeVisible({ timeout: 120_000 })
     } finally {
       await viewer.context().close()
+      // Best-effort: a cleanup failure must not mask the assertion that
+      // failed, and a record that was already public must stay that way
+      if (unpublishAfter) {
+        await setPublished(page, "Tutorial1", false).catch(() => {})
+      }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The same inputs read by a signed-in viewer who does not own the record. Such
+// a request carries the viewer's session, and the server reads the owner's
+// bucket for it only when the request also names the record. A local server
+// already holds the input, so it loads even without the record's id; the
+// requests are checked as well, since a server that must sync the input 404s.
+// Local stack only: the viewer is a per-run account, and registering and
+// verifying it needs the docker backend.
+// ---------------------------------------------------------------------------
+
+const VIEWER_STORAGE_STATE = path.join(__dirname, ".auth", "public-viewer.json")
+const VIEWER_PASSWORD = "Test@123"
+
+test.describe("Public input data loads for a signed-in non-owner @slow", () => {
+  test.use({ storageState: freeStorageState() })
+
+  let skipReason = ""
+  const viewer = { email: "", id: "" }
+
+  test.beforeAll(async () => {
+    skipReason =
+      !FREE_USER.email || !FREE_USER.password
+        ? "TEST_USER_EMAIL/TEST_USER_PASSWORD not set"
+        : localStackSkipReason()
+    if (skipReason) return
+    ensurePublishableAccount()
+    viewer.email = `e2e_public_viewer_${Date.now()}@test.com`
+    await ensureRegisteredUser(viewer.email, VIEWER_PASSWORD, "E2E Viewer")
+    viewer.id = runSql(
+      `SELECT id FROM users WHERE email = '${sqlLiteral(viewer.email)}'
+         AND active = 1 ORDER BY id DESC LIMIT 1;`,
+    )
+    expect(viewer.id).not.toBe("")
+    await saveStorageState(VIEWER_STORAGE_STATE, viewer.email, VIEWER_PASSWORD)
+  })
+
+  // Retired the light way: the account owns nothing
+  test.afterAll(() => {
+    if (skipReason || !viewer.id) return
+    deleteFirebaseUser(viewer.email)
+    runSql(`UPDATE users SET active = 0 WHERE id = ${viewer.id};`)
+  })
+
+  test("PUB-08 - CSV and TIFF input data load for a signed-in viewer who does not own the record", async ({
+    page,
+    browser,
+  }) => {
+    test.skip(!!skipReason, skipReason)
+    test.setTimeout(300_000)
+    await gotoDashboard(page)
+
+    // Read the prior state before mutating it, and publish inside the try - a
+    // publish that throws half-way still committed, so it has to reach the
+    // cleanup, which must leave a pre-existing public record public
+    const before = await findDataviewRecord(page, "Tutorial1")
+    const unpublishAfter = before?.publish_status !== 1
+    const context = await browser.newContext({
+      baseURL: process.env.BASE_URL || "http://localhost:3000",
+      storageState: VIEWER_STORAGE_STATE,
+    })
+    const viewerPage = await context.newPage()
+    const inputRequests: URL[] = []
+    viewerPage.on("request", (request) => {
+      const url = new URL(request.url())
+      if (/\/api\/visualizations\/(csv|image)\//.test(url.pathname)) {
+        inputRequests.push(url)
+      }
+    })
+    try {
+      await ensurePublishedRecord(page, "Tutorial1")
+      const record = await dataviewRecord(page, "Tutorial1")
+      const dialog = await openPublicInputs(viewerPage, record, true)
+      await expect(
+        inputPanel(dialog, "csv").locator(".MuiDataGrid-row").first(),
+      ).toBeVisible({ timeout: 120_000 })
+      await expect(
+        inputPanel(dialog, "image").locator(".js-plotly-plot").first(),
+      ).toBeVisible({ timeout: 120_000 })
+
+      // Both cards asked, and each named the record
+      const routes = inputRequests.map((url) => url.pathname.split("/")[3])
+      expect(new Set(routes)).toEqual(new Set(["csv", "image"]))
+      for (const url of inputRequests) {
+        expect(url.searchParams.get("unique_id"), url.pathname).toBe(record.uid)
+      }
+    } finally {
+      await context.close()
       // Best-effort: a cleanup failure must not mask the assertion that
       // failed, and a record that was already public must stay that way
       if (unpublishAfter) {

@@ -14,6 +14,7 @@ import {
   selectCsvDataIsInitialized,
   selectCsvDataIsPending,
 } from "store/slice/DisplayData/DisplayDataSelectors"
+import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
 import {
   selectCsvItemSetHeader,
   selectCsvItemSetIndex,
@@ -26,6 +27,8 @@ import { twoDimarrayEqualityFn } from "utils/EqualityUtils"
 export const CsvPlot = memo(function CsvPlot() {
   const { filePath: path } = useContext(DisplayDataContext)
   const workspaceId = useSelector(selectCurrentWorkspaceId)
+  // A published record's id is what lets a viewer other than its owner read it
+  const uniqueId = useSelector(selectPipelineLatestUid)
   const isInitialized = useSelector(selectCsvDataIsInitialized(path))
   const isPending = useSelector(selectCsvDataIsPending(path))
   const isFulfilled = useSelector(selectCsvDataIsFulfilled(path))
@@ -33,9 +36,9 @@ export const CsvPlot = memo(function CsvPlot() {
   const dispatch = useDispatch<AppDispatch>()
   useEffect(() => {
     if (workspaceId && !isInitialized) {
-      dispatch(getCsvData({ path, workspaceId }))
+      dispatch(getCsvData({ path, workspaceId, uniqueId }))
     }
-  }, [dispatch, isInitialized, path, workspaceId])
+  }, [dispatch, isInitialized, path, workspaceId, uniqueId])
   if (isPending) {
     return <LinearProgress />
   } else if (error != null) {
