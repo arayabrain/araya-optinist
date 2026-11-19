@@ -920,6 +920,21 @@ export function premiumInstances(): { id: string; state: string }[] {
   )
 }
 
+// The Terraform-managed base instances, by the attribute that makes them one:
+// termination protection, so a TerminateInstances on one fails with
+// OperationNotPermitted. Instances the manager launches do not carry it.
+export function basePremiumInstanceIds(): string[] {
+  return premiumInstances()
+    .map((i) => i.id)
+    .filter(
+      (id) =>
+        awsJson<{ DisableApiTermination: { Value: boolean } }>(
+          `ec2 describe-instance-attribute --instance-id ${id} ` +
+            `--attribute disableApiTermination`,
+        ).DisableApiTermination.Value,
+    )
+}
+
 export function instanceState(instanceId: string): string {
   return premiumInstances().find((i) => i.id === instanceId)?.state ?? "gone"
 }
@@ -1035,13 +1050,14 @@ export function invokeMonitoringSweep(): string {
 // Idempotent: with the candidate already staged, only the row re-delete does
 // anything, so callers may re-run it after a wait.
 export async function stageSecondRunningInstance(
-  excludeId: string,
+  exclude: string | string[],
 ): Promise<string> {
   const p = progressLog("helpers", "stage-premium-target")
+  const excluded = [exclude].flat()
   const pickFree = () => {
     const occupied = occupiedPremiumInstanceIds()
     const free = premiumInstances().filter(
-      (i) => i.id !== excludeId && !occupied.has(i.id),
+      (i) => !excluded.includes(i.id) && !occupied.has(i.id),
     )
     // Settled first: a `pending`/`stopping` candidate costs the settle wait
     // below, and is one the manager is still cycling.
@@ -1054,7 +1070,7 @@ export async function stageSecondRunningInstance(
   p.step(
     candidate
       ? `found free instance ${candidate} (${instanceState(candidate)})`
-      : `no free instance beside ${excludeId}; asking the manager for one`,
+      : `no free instance beside ${excluded.join(", ") || "none"}; asking the manager for one`,
   )
   if (!candidate) {
     // No free instance to migrate onto - either the user holds the only one,
@@ -1151,20 +1167,50 @@ export async function stageSecondRunningInstance(
   // A running EC2 is not yet a migration target: the readiness check the
   // optimizer runs demands a premium ECS task on it, so raise the service's
   // desired count to cover both instances and wait for the placement.
-  const desired = awsJson<{ services: { desiredCount: number }[] }>(
-    `ecs describe-services --cluster ${PREMIUM_CLUSTER} ` +
-      `--services ${PREMIUM_ECS_SERVICE}`,
-  ).services[0].desiredCount
-  if (desired < 2) {
-    awsJson(
-      `ecs update-service --cluster ${PREMIUM_CLUSTER} ` +
-        `--service ${PREMIUM_ECS_SERVICE} --desired-count 2`,
-    )
+  const raiseDesiredCount = () => {
+    const desired = awsJson<{ services: { desiredCount: number }[] }>(
+      `ecs describe-services --cluster ${PREMIUM_CLUSTER} ` +
+        `--services ${PREMIUM_ECS_SERVICE}`,
+    ).services[0].desiredCount
+    if (desired < 2) {
+      awsJson(
+        `ecs update-service --cluster ${PREMIUM_CLUSTER} ` +
+          `--service ${PREMIUM_ECS_SERVICE} --desired-count 2`,
+      )
+    }
   }
+  raiseDesiredCount()
+  // The manager can stop the candidate again during this wait:
+  // - a standby it has just minted runs briefly, then its create step stops it;
+  // - a sweep stops a running instance that holds no user.
+  // Stopped on two polls in a row is past the manager's 15s stop-waiter, so
+  // the stop is settled: start it again and restore the desired count the
+  // manager's sync may have lowered meanwhile. A few times only: a candidate
+  // stopped again and again has something stopping it on purpose.
+  const maxRestarts = 3
+  let restarts = 0
+  let stoppedPolls = 0
   await expect
     .poll(
       () => {
-        p.tick(`waiting for a premium ECS task on ${candidate}`)
+        const state = instanceState(candidate!)
+        expect(
+          state,
+          `${candidate} was terminated while it was being staged`,
+        ).not.toBe("gone")
+        stoppedPolls = state === "stopped" ? stoppedPolls + 1 : 0
+        if (stoppedPolls >= 2) {
+          expect(
+            restarts,
+            `${candidate} was stopped again after ${restarts} restarts`,
+          ).toBeLessThan(maxRestarts)
+          restarts++
+          p.step(`${candidate} was stopped again; restart ${restarts}`)
+          awsJson(`ec2 start-instances --instance-ids ${candidate}`)
+          raiseDesiredCount()
+          stoppedPolls = 0
+        }
+        p.tick(`waiting for a premium ECS task on ${candidate} (${state})`)
         return premiumTaskStatusOn(candidate!)
       },
       {

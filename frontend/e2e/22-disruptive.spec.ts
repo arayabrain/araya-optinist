@@ -11,12 +11,15 @@ import {
   apiLogin,
   apiUrl,
   awsJson,
+  basePremiumInstanceIds,
   cloudwatchHas,
   devIsUp,
   disruptiveSkipReason,
+  instanceState,
   invokeMonitoringSweep,
   login,
   nextScheduledStop,
+  occupiedPremiumInstanceIds,
   openWorkspace,
   premiumTargetHealth,
   progressLog,
@@ -996,7 +999,7 @@ test.describe("Disruptive: the public ASG replaces an instance @disruptive", () 
 // PremiumRetriggerAssign.test.tsx pins the frontend half against mocks; these
 // destroy the real instance. They are the fixes-state-of-instances class
 // (the ASG-01 family): user-fired only, never in the scheduled lanes, and
-// each run consumes real capacity that the finally block waits to see
+// each run consumes real capacity that the cleanup hook waits to see
 // replaced rather than leaving the cost to the next tester's session.
 // ---------------------------------------------------------------------------
 
@@ -1010,20 +1013,37 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
       `SELECT instance_id FROM premium_user_assignments
          WHERE user_id = ${userId};`,
     )
+  // `instanceId` once the user's row has settled on it, else "". The status
+  // names an assign's instance while the attempt is still in flight: the row
+  // holds the RESERVING placeholder for its ALB ARNs, which the status does
+  // not return, and an attempt that fails rolls the row back.
+  const settledInstance = (userId: number, instanceId: string) =>
+    /^i-[0-9a-f]+$/.test(instanceId) &&
+    runSql(
+      `SELECT instance_id FROM premium_user_assignments
+         WHERE user_id = ${userId} AND target_group_arn LIKE 'arn:%';`,
+    ) === instanceId
+      ? instanceId
+      : ""
   const standbyRows = () =>
     runSql(
       `SELECT COUNT(*) FROM premium_user_assignments
          WHERE is_standby = 1 AND user_id IS NULL;`,
     )
 
-  // Real page login and a settled dedicated assignment, with recovery
+  // A settled dedicated assignment for the signed-in page, with recovery
   // capacity staged so the reassignment after the outage is placement, not
   // luck. Dedicated only: destroying a shared instance takes its other
   // tenants down with it, which is nobody's row.
   async function stageAssignedPremium(
     page: Page,
   ): Promise<{ userId: number; instanceA: string; candidate: string }> {
-    await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
+    const me = await page.request.get(`${apiUrl()}/users/me`, {
+      headers: await apiHeaders(page),
+      timeout: 60_000,
+    })
+    expect(me.ok(), await me.text()).toBe(true)
+    const userId: number = (await me.json()).id
     let instanceA = ""
     await expect
       .poll(
@@ -1033,7 +1053,10 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
             { headers: await apiHeaders(page), timeout: 60_000 },
           )
           expect(res.ok(), await res.text()).toBe(true)
-          instanceA = (await res.json()).assignment?.instance_id ?? ""
+          instanceA = settledInstance(
+            userId,
+            (await res.json()).assignment?.instance_id ?? "",
+          )
           return instanceA
         },
         {
@@ -1043,12 +1066,6 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
         },
       )
       .toMatch(/^i-[0-9a-f]+$/)
-    const me = await page.request.get(`${apiUrl()}/users/me`, {
-      headers: await apiHeaders(page),
-      timeout: 60_000,
-    })
-    expect(me.ok(), await me.text()).toBe(true)
-    const userId: number = (await me.json()).id
     test.skip(
       runSql(
         `SELECT is_shared FROM premium_user_assignments
@@ -1063,26 +1080,125 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
   // Release, then wait for the pool to really self-heal before ending the
   // run: these tests consume the capacity they destroy, and the PREM-06
   // pre-stage recipe in the README assumes a standby exists.
-  async function releaseAndAwaitPoolHeal(page: Page) {
-    await page.request
-      .delete(`${apiUrl()}/users/me/premium/assign`, {
-        headers: await apiHeaders(page),
-        timeout: 300_000,
-      })
+  // The release has to stick:
+  // - the app's own assign calls are cut first: its instance-lost re-trigger
+  //   would assign again behind the release;
+  // - an assign already in flight lands after a release that found nothing,
+  //   so the release goes out only while no assign claim is live, until two
+  //   polls in a row find neither a claim nor the user's row. The row, not
+  //   the status: the status answers "none" for a pool-fallback row;
+  // - one release goes out even with nothing held: with no premium user
+  //   left, it stops idle running instances as standbys, which reclaims
+  //   capacity staged for a run that never got assigned.
+  // A lookup that throws proves nothing: it counts as held, and the
+  // deadline decides.
+  async function releaseAndAwaitPoolHeal(
+    page: Page,
+    session: Awaited<ReturnType<typeof apiLogin>>,
+  ) {
+    const { api, headers } = session
+    await page
+      .route(/\/users\/me\/premium\/assign(\?|$)/, (route) =>
+        route.request().method() === "POST" ? route.abort() : route.continue(),
+      )
       .catch(() => {})
-    invokeMonitoringSweep()
+    const me = await api.get("/users/me", { headers, timeout: 60_000 })
+    expect(me.ok(), await me.text()).toBe(true)
+    const userId: number = (await me.json()).id
+    let released = false
+    let clearPolls = 0
+    await expect
+      .poll(
+        async () => {
+          try {
+            const claimed =
+              runSql(
+                `SELECT COUNT(*) FROM premium_assign_claims
+                   WHERE user_id = ${userId} AND expires_at > NOW();`,
+              ) !== "0"
+            const held =
+              runSql(
+                `SELECT COUNT(*) FROM premium_user_assignments
+                   WHERE user_id = ${userId};`,
+              ) !== "0"
+            const release = (held || !released) && !claimed
+            if (release) {
+              const res = await api.delete("/users/me/premium/assign", {
+                headers,
+                timeout: 300_000,
+              })
+              released ||= res.ok()
+            }
+            clearPolls = held || claimed || release ? 0 : clearPolls + 1
+          } catch {
+            clearPolls = 0
+          }
+          return clearPolls
+        },
+        {
+          timeout: 5 * 60_000,
+          intervals: [10_000],
+          message:
+            "the test user's premium assignment never stayed released " +
+            "(or its lookups kept failing) - the next run starts on a held instance",
+        },
+      )
+      .toBeGreaterThanOrEqual(2)
+    // Only a shortcut to the scheduled sweep; the wait below decides
+    try {
+      invokeMonitoringSweep()
+    } catch (e) {
+      console.log(`[22-disruptive] monitoring sweep invoke failed: ${e}`)
+    }
     let count = ""
     await expect
-      .poll(() => (count = standbyRows()), {
-        timeout: 12 * 60_000,
-        intervals: [30_000],
-        message:
-          "the pool never converged back to a standby after the outage - " +
-          "the next tester inherits a cold, rowless pool",
-      })
+      .poll(
+        () => {
+          try {
+            count = standbyRows()
+          } catch {
+            count = "0"
+          }
+          return count
+        },
+        {
+          timeout: 12 * 60_000,
+          intervals: [30_000],
+          message:
+            "the pool never converged back to a standby after the outage - " +
+            "the next tester inherits a cold, rowless pool",
+        },
+      )
       .not.toBe("0")
     console.log(`[22-disruptive] standby rows after the pool heal: ${count}`)
   }
+
+  // Cleanup in a hook, not in each test's finally: a test timeout abandons
+  // the body without its finally, and hooks run in their own time slot.
+  // A test arms it right before its first change to the pool. It signs in
+  // through the API, so it also cleans up after a failed UI sign-in.
+  let poolTouched = false
+  let workspaceId: number | undefined
+  test.afterEach(async ({ page }) => {
+    const wsId = workspaceId
+    workspaceId = undefined
+    if (!poolTouched) return
+    poolTouched = false
+    const session = await apiLogin(PREMIUM_USER.email, PREMIUM_USER.password)
+    try {
+      await releaseAndAwaitPoolHeal(page, session)
+    } finally {
+      if (wsId !== undefined) {
+        await session.api
+          .delete(`/workspace/${wsId}`, {
+            headers: session.headers,
+            timeout: 60_000,
+          })
+          .catch(() => {})
+      }
+      await session.api.dispose()
+    }
+  })
 
   // Row 6214: stopping the instance under the user. The app must notice
   // (DEGRADED snackbar), the backend must notice (the row leaves the stopped
@@ -1101,16 +1217,40 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
     const sqlReason = sqlSkipReason()
     test.skip(!!sqlReason, `row 6214: ${sqlReason}`)
 
-    const { userId, instanceA } = await stageAssignedPremium(page)
-    // The Record tab's Reload button drives fresh premium-routed requests
-    // (PREM-13's trigger mechanics); idle pages fire none.
-    const wsId = await openWorkspace(page, "e2e-out-stop")
-    await page.locator('button[role="tab"]:has-text("Record")').click()
+    // The sign-in assigns
+    poolTouched = true
+    await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
     const reload = page.getByRole("button", { name: "Reload" })
-    await expect(reload).toBeVisible({ timeout: 30_000 })
+    const workspacesTab = page.getByRole("tab", {
+      name: "Workspaces",
+      exact: true,
+    })
     const snackbar = page.getByText(
       /dedicated premium instance is (temporarily unreachable|unresponsive)/,
     )
+    // One round of premium-routed traffic from the app; idle pages fire none.
+    // - Record table up: its Reload button (PREM-13's trigger mechanics).
+    // - Error view instead (a failed fetch removes the table and its Reload):
+    //   leave for the Workspaces list and come back, which refetches the
+    //   workspace. Both moves are in-app routes, so no unload, no release
+    //   beacon; goBack only from the list keeps it inside this document.
+    async function fireAppRequests() {
+      const answered = page
+        .waitForResponse(
+          (res) => ["xhr", "fetch"].includes(res.request().resourceType()),
+          { timeout: 15_000 },
+        )
+        .catch(() => null)
+      if (await reload.isVisible().catch(() => false)) {
+        await reload.click().catch(() => {})
+      } else {
+        await workspacesTab.click({ timeout: 5_000 }).catch(() => {})
+        if (new URL(page.url()).pathname === "/workspaces") {
+          await page.goBack().catch(() => {})
+        }
+      }
+      await answered
+    }
     // The named recovery mechanism, off the app's own console line: only the
     // instance-lost re-trigger calls assign once the row is gone, so recovery
     // without this line would mean some other path did the work.
@@ -1119,91 +1259,104 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
       if (msg.text().includes("Re-triggering assign")) retriggerArmed = true
     })
 
-    try {
-      awsJson(`ec2 stop-instances --instance-ids ${instanceA}`)
+    // Opened before the assignment settles: openWorkspace is a full page
+    // load, and unloading a page that holds an assignment sends the
+    // release beacon, a soft release the next page reclaims.
+    workspaceId = await openWorkspace(page, "e2e-out-stop")
+    const { userId, instanceA } = await stageAssignedPremium(page)
+    await page.locator('button[role="tab"]:has-text("Record")').click()
+    await expect(reload).toBeVisible({ timeout: 30_000 })
 
-      // The app notices: DEGRADED within the click-loop window. Mutation
-      // check (named): without the stop, PREM-03/PREM-13 prove this same
-      // snackbar never renders against a healthy dedicated instance.
-      await expect
-        .poll(
-          async () => {
-            if (await snackbar.isVisible().catch(() => false)) return true
-            await reload.click().catch(() => {})
-            await page.waitForTimeout(2_000)
-            return snackbar.isVisible().catch(() => false)
-          },
-          {
-            timeout: 240_000,
-            intervals: [1_000],
-            message:
-              "the unreachable snackbar never appeared after the instance was stopped",
-          },
-        )
-        .toBe(true)
+    awsJson(`ec2 stop-instances --instance-ids ${instanceA}`)
 
-      // The backend notices: the row leaves the stopped instance.
-      await expect
-        .poll(() => userRowInstance(userId), {
-          timeout: 8 * 60_000,
-          intervals: [15_000],
-          message: `the assignment row never left stopped ${instanceA}`,
-        })
-        .not.toBe(instanceA)
-
-      // Recovery: the re-trigger reassigns onto whatever the cascade can
-      // really place - new instance or the restarted one - asserted on
-      // viability, not identity.
-      let recovered = ""
-      await expect
-        .poll(
-          async () => {
-            await reload.click().catch(() => {})
-            await page.waitForTimeout(2_000)
-            const res = await page.request.get(
-              `${apiUrl()}/users/me/premium/status`,
-              { headers: await apiHeaders(page), timeout: 60_000 },
-            )
-            if (!res.ok()) return ""
-            recovered = (await res.json()).assignment?.instance_id ?? ""
-            return /^i-[0-9a-f]+$/.test(recovered) ? recovered : ""
-          },
-          {
-            timeout: 12 * 60_000,
-            intervals: [10_000],
-            message:
-              "no working assignment ever came back after the stop - the " +
-              "instance-lost recovery is broken end to end",
-          },
-        )
-        .toMatch(/^i-[0-9a-f]+$/)
-      expect(
-        retriggerArmed,
-        "recovery happened but the instance-lost re-trigger never armed - something else assigned",
-      ).toBe(true)
-
-      // Row and ALB consistent with what the client now holds.
-      expect(userRowInstance(userId)).toBe(recovered)
-      await expect
-        .poll(() => premiumTargetHealth(userId).includes("healthy"), {
-          timeout: 5 * 60_000,
-          intervals: [15_000],
-          message: `premium-${userId}-tg never went healthy on ${recovered}`,
-        })
-        .toBe(true)
-      await expect(snackbar).toBeHidden({ timeout: 120_000 })
-      console.log(
-        `[22-disruptive] OUT-04: recovered from stopped ${instanceA} onto ${recovered}`,
+    // The app notices: DEGRADED within the click-loop window. Mutation
+    // check (named): without the stop, PREM-03/PREM-13 prove this same
+    // snackbar never renders against a healthy dedicated instance.
+    await expect
+      .poll(
+        async () => {
+          if (await snackbar.isVisible().catch(() => false)) return true
+          await fireAppRequests()
+          return snackbar.isVisible().catch(() => false)
+        },
+        {
+          timeout: 240_000,
+          intervals: [1_000],
+          message:
+            "the unreachable snackbar never appeared after the instance was stopped",
+        },
       )
-    } finally {
-      await releaseAndAwaitPoolHeal(page)
-      await page.request
-        .delete(`${apiUrl()}/workspace/${wsId}`, {
-          headers: await apiHeaders(page),
-          timeout: 60_000,
-        })
-        .catch(() => {})
-    }
+      .toBe(true)
+
+    // The backend notices: the row leaves the stopped instance.
+    await expect
+      .poll(() => userRowInstance(userId), {
+        timeout: 8 * 60_000,
+        intervals: [15_000],
+        message: `the assignment row never left stopped ${instanceA}`,
+      })
+      .not.toBe(instanceA)
+
+    // Recovery: the re-trigger reassigns onto whatever the cascade can
+    // really place - new instance or the restarted one - asserted on
+    // viability, not identity.
+    let recovered = ""
+    await expect
+      .poll(
+        async () => {
+          await fireAppRequests()
+          const res = await page.request.get(
+            `${apiUrl()}/users/me/premium/status`,
+            { headers: await apiHeaders(page), timeout: 60_000 },
+          )
+          if (!res.ok()) return ""
+          recovered = settledInstance(
+            userId,
+            (await res.json()).assignment?.instance_id ?? "",
+          )
+          return recovered
+        },
+        {
+          timeout: 12 * 60_000,
+          intervals: [10_000],
+          message:
+            "no working assignment ever came back after the stop - the " +
+            "instance-lost recovery is broken end to end",
+        },
+      )
+      .toMatch(/^i-[0-9a-f]+$/)
+    expect(
+      retriggerArmed,
+      "recovery happened but the instance-lost re-trigger never armed - something else assigned",
+    ).toBe(true)
+
+    // ALB consistent with what the client and the settled row now hold.
+    await expect
+      .poll(() => premiumTargetHealth(userId).includes("healthy"), {
+        timeout: 5 * 60_000,
+        intervals: [15_000],
+        message: `premium-${userId}-tg never went healthy on ${recovered}`,
+      })
+      .toBe(true)
+    // Clears on a reassignment to another instance, or - when the recovery
+    // restarted the same one - on a verified response, which needs traffic.
+    await expect
+      .poll(
+        async () => {
+          if (await snackbar.isHidden().catch(() => false)) return true
+          await fireAppRequests()
+          return snackbar.isHidden().catch(() => false)
+        },
+        {
+          timeout: 120_000,
+          intervals: [1_000],
+          message: "the unreachable snackbar stayed up after the recovery",
+        },
+      )
+      .toBe(true)
+    console.log(
+      `[22-disruptive] OUT-04: recovered from stopped ${instanceA} onto ${recovered}`,
+    )
   })
 
   // Row 6215: terminating the instance under the user. The sheet's own
@@ -1222,85 +1375,99 @@ test.describe("Disruptive: the assigned premium instance goes away @disruptive",
     const sqlReason = sqlSkipReason()
     test.skip(!!sqlReason, `row 6215: ${sqlReason}`)
 
+    // The user must land on an instance TerminateInstances can reach, and a
+    // base instance is termination-protected. So before the sign-in assigns,
+    // an idle running base is stopped and a free non-base instance is staged
+    // running: the cascade's first pick is a ready instance with no user.
+    poolTouched = true
+    const baseIds = basePremiumInstanceIds()
+    const occupied = occupiedPremiumInstanceIds()
+    for (const id of baseIds) {
+      if (instanceState(id) === "running" && !occupied.has(id)) {
+        awsJson(`ec2 stop-instances --instance-ids ${id}`)
+      }
+    }
+    const target = await stageSecondRunningInstance(baseIds)
+
+    await login(page, PREMIUM_USER.email, PREMIUM_USER.password)
     const { userId, instanceA, candidate } = await stageAssignedPremium(page)
+    expect(
+      baseIds,
+      `the user landed on termination-protected ${instanceA}, not on staged ${target}`,
+    ).not.toContain(instanceA)
     // 1-then-not (the PREM-10 rule): the row must point at the doomed
     // instance before the termination, or its move proves nothing.
     expect(userRowInstance(userId), "pre-termination row").toBe(instanceA)
 
     const t0 = windowStart()
-    try {
-      awsJson(`ec2 terminate-instances --instance-ids ${instanceA}`)
+    awsJson(`ec2 terminate-instances --instance-ids ${instanceA}`)
 
-      // The event-driven path, not the hourly walk: this line only comes
-      // from the reconcile_instance action the EventBridge rule delivers.
-      await expect
-        .poll(
-          () =>
-            cloudwatchHas(
-              PREMIUM_CLEANUP_LOG_GROUP,
-              `Targeted instance reconciliation for ${instanceA}`,
-              t0,
-            ),
-          {
-            timeout: 10 * 60_000,
-            intervals: [15_000],
-            message:
-              `no targeted reconciliation for ${instanceA} in ` +
-              `${PREMIUM_CLEANUP_LOG_GROUP} after terminating it`,
-          },
-        )
-        .toBe(true)
-      await expect
-        .poll(() => userRowInstance(userId), {
-          timeout: 8 * 60_000,
+    // The event-driven path, not the hourly walk: this line only comes
+    // from the reconcile_instance action the EventBridge rule delivers.
+    await expect
+      .poll(
+        () =>
+          cloudwatchHas(
+            PREMIUM_CLEANUP_LOG_GROUP,
+            `Targeted instance reconciliation for ${instanceA}`,
+            t0,
+          ),
+        {
+          timeout: 10 * 60_000,
           intervals: [15_000],
-          message: `the assignment row never left terminated ${instanceA}`,
-        })
-        .not.toBe(instanceA)
-
-      // The client's recovery reassigns onto real capacity - the staged
-      // candidate is what makes this placement rather than luck, but the
-      // assert is on viability, not on which instance won.
-      let recovered = ""
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `${apiUrl()}/users/me/premium/status`,
-              { headers: await apiHeaders(page), timeout: 60_000 },
-            )
-            if (!res.ok()) return ""
-            recovered = (await res.json()).assignment?.instance_id ?? ""
-            return /^i-[0-9a-f]+$/.test(recovered) ? recovered : ""
-          },
-          {
-            timeout: 12 * 60_000,
-            intervals: [10_000],
-            message:
-              "no working assignment ever came back after the termination",
-          },
-        )
-        .toMatch(/^i-[0-9a-f]+$/)
-      expect(
-        recovered,
-        "the recovery reassigned onto the terminated instance",
-      ).not.toBe(instanceA)
-      expect(userRowInstance(userId)).toBe(recovered)
-      await expect
-        .poll(() => premiumTargetHealth(userId).includes("healthy"), {
-          timeout: 5 * 60_000,
-          intervals: [15_000],
-          message: `premium-${userId}-tg never went healthy on ${recovered}`,
-        })
-        .toBe(true)
-      console.log(
-        `[22-disruptive] OUT-05: recovered from terminated ${instanceA} onto ` +
-          `${recovered} (staged candidate was ${candidate})`,
+          message:
+            `no targeted reconciliation for ${instanceA} in ` +
+            `${PREMIUM_CLEANUP_LOG_GROUP} after terminating it`,
+        },
       )
-    } finally {
-      // A real instance was destroyed: the heal wait here is the replacement
-      // budget, spent in this run instead of the next tester's session.
-      await releaseAndAwaitPoolHeal(page)
-    }
+      .toBe(true)
+    await expect
+      .poll(() => userRowInstance(userId), {
+        timeout: 8 * 60_000,
+        intervals: [15_000],
+        message: `the assignment row never left terminated ${instanceA}`,
+      })
+      .not.toBe(instanceA)
+
+    // The client's recovery reassigns onto real capacity - the staged
+    // candidate is what makes this placement rather than luck, but the
+    // assert is on viability, not on which instance won.
+    let recovered = ""
+    await expect
+      .poll(
+        async () => {
+          const res = await page.request.get(
+            `${apiUrl()}/users/me/premium/status`,
+            { headers: await apiHeaders(page), timeout: 60_000 },
+          )
+          if (!res.ok()) return ""
+          recovered = settledInstance(
+            userId,
+            (await res.json()).assignment?.instance_id ?? "",
+          )
+          return recovered
+        },
+        {
+          timeout: 12 * 60_000,
+          intervals: [10_000],
+          message: "no working assignment ever came back after the termination",
+        },
+      )
+      .toMatch(/^i-[0-9a-f]+$/)
+    expect(
+      recovered,
+      "the recovery reassigned onto the terminated instance",
+    ).not.toBe(instanceA)
+    await expect
+      .poll(() => premiumTargetHealth(userId).includes("healthy"), {
+        timeout: 5 * 60_000,
+        intervals: [15_000],
+        message: `premium-${userId}-tg never went healthy on ${recovered}`,
+      })
+      .toBe(true)
+    console.log(
+      `[22-disruptive] OUT-05: recovered from terminated ${instanceA} onto ` +
+        `${recovered} (staged candidate was ${candidate})`,
+    )
   })
 })
