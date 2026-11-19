@@ -277,8 +277,10 @@ cd infrastructure/scripts
 # Ensure the correct AWS profile is active
 export AWS_PROFILE=optinist
 
-# Standard usage — asks for confirmation. Version tag: the release tag on HEAD
-# (e.g. v1.2.3), else auto-generated YYYYMMDD-HHMMSS-<git-sha>
+# Standard usage — asks for confirmation, then builds and pushes only: running
+# services keep their image until a rollout (--deploy below, or "Cycling All
+# Services"). Version tag: the release tag on HEAD (e.g. v1.2.3), else
+# auto-generated YYYYMMDD-HHMMSS-<git-sha>
 ./ecr_build_push.sh
 
 # Custom version tag
@@ -286,6 +288,9 @@ export AWS_PROFILE=optinist
 
 # Skip confirmation (for CI/CD pipelines)
 ./ecr_build_push.sh --yes
+
+# Build, push, then roll out every service (see "Cycling All Services")
+./ecr_build_push.sh --deploy
 ```
 
 The script will display:
@@ -435,18 +440,71 @@ aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
   --query 'services[].{name:serviceName,deployments:length(deployments),running:runningCount}'
 ```
 
-`terraform apply` does both steps itself in `null_resource.deploy_to_ecs`. It waits up to about
-an hour for every service to settle (the public service alone took about 40 minutes on
-development) and fails the apply, naming each unsettled service, if one does not. The failed
-resource is tainted, so the next apply forces a new deployment on every service again.
+`terraform apply` (`null_resource.deploy_to_ecs`) and `ecr_build_push.sh --deploy` do both steps
+through `infrastructure/scripts/ecs_rollout.sh`, which the loop above does not replicate. Run it
+directly to cycle the services by hand (from the repository root, with the environment's backend
+initialised):
+
+```bash
+bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
+  --asg <env>-optinist-asg --asg <env>-optinist-public-asg \
+  --hygiene-association "$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)"
+```
+
+Free and public run one task per host, so each host stops its old task, waits out the target
+group's deregistration delay, then starts the new one. A rollout therefore pays that delay plus the
+image pull and start once for free (all its tasks at once) and once per half of the public hosts
+(public keeps at least half of them serving). The script keeps it from growing further:
+
+- **A rollout already in progress finishes first** (up to 30 minutes, then the force goes ahead
+  with a warning). A service counts as rolling while it has more than one deployment or its
+  deployment has not reached steady state: once the old tasks stop, a starting rollout shows only
+  its new deployment. `terraform apply` rolls a service whose task definition changed before it
+  builds the image; forcing on top of that rollout restarts it.
+- **The groups' `HealthCheck` process is suspended until the restarted targets are healthy**, and
+  resumed whichever way the script exits. A restarted task is past its host's grace period, so a
+  target failing a few checks would otherwise get the whole host replaced mid-rollout.
+- **One rollout at a time holds the suspension.** Nothing else suspends `HealthCheck`, so a group
+  found suspended is held by another rollout, still running or killed. The script waits for it to
+  be lifted, within the same 30 minutes, then suspends it for its own rollout; past that it takes
+  the suspension over with a warning and resumes it at the end. So two deploys to one environment
+  run one after the other, and a deploy also resumes a `HealthCheck` suspended by hand.
+- **The targets are waited for after the services settle.** The services count as settled before
+  their last tasks serve (every free task restarts at once, and public replaces half its hosts at
+  a time), so the script waits up to 15 minutes (the services' health check grace) for every
+  target to pass, then resumes the checks; a host still failing then is left to its group. A target
+  group with no healthy target at all is a tier not serving the new image: the script exits 1
+  naming it, as for a service that never settles.
+- **It waits up to about an hour** for every service to settle and exits 1, naming each unsettled
+  service, if one does not. A wait that fails at once (access denied, expired credentials) is not
+  repeated: the script exits 1. A `HealthCheck` it could not resume also exits 1, with the command
+  to resume it. For `terraform apply` a failure fails the apply and taints the resource, so the
+  next apply forces a new deployment on every service again. Docker hygiene runs only after a
+  settled rollout, once the health checks are back on.
+
+Ctrl-C, `kill` and closing the terminal still resume the health checks. A run killed with
+`kill -9`, or one whose credentials expired (the laptop sleeping), cannot; the next deploy takes
+its suspension over after 30 minutes. To clear it at once, check both groups and resume any it left
+suspended:
+
+```bash
+for ASG in <env>-optinist-asg <env>-optinist-public-asg; do
+  aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG" \
+    --region "$REGION" --query 'AutoScalingGroups[0].SuspendedProcesses[].ProcessName'
+done
+aws autoscaling resume-processes --auto-scaling-group-name <group> \
+  --scaling-processes HealthCheck --region "$REGION"
+```
 
 ### Safe Deployment Workflow
 
 1. Switch to dev backend: `terraform init -backend-config=backends/development.hcl -reconfigure`
-2. Build and push dev image: `cd ../scripts && ./ecr_build_push.sh`
-3. Force ECS redeployment across **every** service, using the loop in [Cycling All Services](#cycling-all-services)
-4. Verify in development
-5. When ready for production: switch backend and `terraform apply` from the release commit. It
+2. Build and push the dev image and roll it out to **every** service:
+   `cd ../scripts && ./ecr_build_push.sh --deploy` (the rollout: [Cycling All
+   Services](#cycling-all-services)). If the commit also changes Terraform, run `terraform apply`
+   instead: it builds and rolls out itself
+3. Verify in development
+4. When ready for production: switch backend and `terraform apply` from the release commit. It
    builds, pushes and rolls out ([Builds Run by `terraform apply`](#builds-run-by-terraform-apply));
    a separate rebuild and redeploy afterwards only rolls the services a second time
 
@@ -479,17 +537,15 @@ aws ecr put-image \
   --image-manifest "$MANIFEST" \
   --region ap-northeast-1
 
-# 3. Force ECS to pull the rolled-back image, across EVERY service
+# 3. Roll the rolled-back image out to EVERY service, with the rollout's
+#    safeguards (see "Cycling All Services"). From the repository root, with
+#    the environment's backend initialised
 CLUSTER=development-optinist-cloud-cluster
 REGION=ap-northeast-1
 
-SERVICES=$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
-  --query 'serviceArns[]' --output text)
-
-for SERVICE in $SERVICES; do
-  aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
-    --force-new-deployment --region "$REGION" >/dev/null
-done
+bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
+  --asg development-optinist-asg --asg development-optinist-public-asg \
+  --hygiene-association "$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)"
 ```
 
 A rollback that cycles only one service is the worst case of the digest-pinning behaviour described in [Cycling All Services](#cycling-all-services): the image you are rolling back *away from* keeps serving on every service you did not cycle. Confirm all of them settled before declaring the rollback complete.
