@@ -828,7 +828,9 @@ async def test_a_structured_read_not_started_in_time_is_refused(monkeypatch):
     monkeypatch.setattr(outputs, "_structured_body", held_structured_body)
     url = f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}"
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         held = asyncio.create_task(http.get(f"{url}/hdf5_3d_node"))
         for _ in range(500):
             if reading.is_set():

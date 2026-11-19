@@ -11,7 +11,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Parse arguments
 # ===========================================
 # Usage: ./ecr_build_push.sh [--tag <version-tag>] [--yes] [--deploy]
-#   --tag <tag>  : Custom version tag (default: auto-generated YYYYMMDD-HHMMSS-<git-sha>)
+#   --tag <tag>  : Custom version tag (default: the release tag on HEAD, such as
+#                  v1.2.3, when the repository does not have it yet, else
+#                  auto-generated YYYYMMDD-HHMMSS-<git-sha>)
 #   --yes        : Skip confirmation prompt
 #   --deploy     : After push, force-new-deployment on EVERY service in the
 #                  cluster so all tiers re-pull the just-pushed :latest
@@ -103,10 +105,30 @@ GIT_COMMIT_FULL="$GIT_INFO_COMMIT"
 GIT_BRANCH="$GIT_INFO_BRANCH"
 GIT_TAG="$GIT_INFO_TAG"
 BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# A release commit gets its version even without --tag, which terraform apply
+# never passes; a prerelease or untagged commit gets a timestamp.
+# A release tag already in the repository stays on the image it marks: a rebuild
+# of the release commit (a rollback apply, a retry) is a new image and gets a
+# timestamp. Only --tag moves a tag. A failed check also falls back to the timestamp
+TIMESTAMP_TAG="$(date +%Y%m%d-%H%M%S)-${GIT_SHA}"
+TAG_WARNING=""
 if [ -n "$CUSTOM_TAG" ]; then
     VERSION_TAG="$CUSTOM_TAG"
+elif [ -n "$GIT_INFO_RELEASE_TAG" ]; then
+    TAG_CHECK_ERR=$(mktemp)
+    if aws ecr describe-images --repository-name "$REPO_NAME" \
+        --image-ids imageTag="$GIT_INFO_RELEASE_TAG" --region "$REGION" >/dev/null 2>"$TAG_CHECK_ERR"; then
+        VERSION_TAG="$TIMESTAMP_TAG"
+        TAG_WARNING="${GIT_INFO_RELEASE_TAG} is already in ${REPO_NAME} and stays on that image; this build is tagged ${VERSION_TAG}. To move ${GIT_INFO_RELEASE_TAG}, run this script with --tag ${GIT_INFO_RELEASE_TAG}"
+    elif grep -q ImageNotFoundException "$TAG_CHECK_ERR"; then
+        VERSION_TAG="$GIT_INFO_RELEASE_TAG"
+    else
+        VERSION_TAG="$TIMESTAMP_TAG"
+        TAG_WARNING="could not check whether ${GIT_INFO_RELEASE_TAG} is already in ${REPO_NAME}, so this build is tagged ${VERSION_TAG}: $(cat "$TAG_CHECK_ERR")"
+    fi
+    rm -f "$TAG_CHECK_ERR"
 else
-    VERSION_TAG="$(date +%Y%m%d-%H%M%S)-${GIT_SHA}"
+    VERSION_TAG="$TIMESTAMP_TAG"
 fi
 
 # ===========================================
@@ -131,6 +153,11 @@ echo ""
 PRODUCTION_ENV="subscr"
 if [ "$ENVIRONMENT" = "$PRODUCTION_ENV" ]; then
     echo "  *** WARNING: You are pushing to PRODUCTION! ***"
+    echo ""
+fi
+
+if [ -n "$TAG_WARNING" ]; then
+    echo "  WARNING: ${TAG_WARNING}"
     echo ""
 fi
 
@@ -237,8 +264,42 @@ docker build -f studio/config/docker/Dockerfile \
 # Tag and push to ECR — both :latest (for ECS) and versioned (for history/rollback)
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:latest
 docker tag $REPO_NAME:$IMAGE_TAG $ECR_URI:$VERSION_TAG
-docker push $ECR_URI:latest
-docker push $ECR_URI:$VERSION_TAG
+# Without a terminal (terraform apply, CI) docker drops its progress bars, sizes
+# included, and prints a line per layer and state. Keep a count instead: a line
+# each time a layer upload ends; a layer already in the registry is only counted.
+# The containerd image store lists no layers up front (no Preparing lines) and
+# also reports the config and manifest uploads, so there the line gives the
+# uploads alone, with no total
+count_pushed_layers() {
+    local tag="$1" line total=0 finished=0 uploaded=0
+    while IFS= read -r line; do
+        case "$line" in
+            *": Preparing") total=$((total + 1)) ;;
+            *": Pushed")
+                finished=$((finished + 1))
+                uploaded=$((uploaded + 1))
+                if [ "$total" -gt 0 ]; then
+                    echo "  ${tag}: ${finished}/${total} layers"
+                else
+                    echo "  ${tag}: ${uploaded} pushed"
+                fi
+                ;;
+            *": Layer already exists"|*": Already exists"|*": Mounted from "*) finished=$((finished + 1)) ;;
+            *": Waiting"|"The push refers to repository"*) ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done
+}
+
+for PUSH_TAG in latest "$VERSION_TAG"; do
+    echo "Pushing ${ECR_URI}:${PUSH_TAG}..."
+    if [ -t 1 ]; then
+        docker push "$ECR_URI:$PUSH_TAG"
+    else
+        # pipefail: a failed push still stops the build
+        (set -o pipefail; docker push "$ECR_URI:$PUSH_TAG" | count_pushed_layers "$PUSH_TAG")
+    fi
+done
 
 echo ""
 echo "============================================"
@@ -248,34 +309,36 @@ echo "  Environment : ${ENVIRONMENT}"
 echo "  latest      : ${ECR_URI}:latest"
 echo "  Version     : ${ECR_URI}:${VERSION_TAG}"
 echo "============================================"
+if [ -n "$TAG_WARNING" ]; then
+    echo "  WARNING: ${TAG_WARNING}"
+fi
 
 # ===========================================
 # Optional: force every service to re-pull :latest
 # ===========================================
 # Runs AFTER the push, so the force always resolves the digest we just pushed.
-# Cycles all tiers (main/premium/public/background), not just the main service.
+# Cycles all tiers (main/premium/public/background), not just the main service;
+# ecs_rollout.sh is the same rollout terraform apply runs.
 if [ "$DEPLOY" = true ]; then
     CLUSTER=$(terraform -chdir="$TERRAFORM_DIR" output -raw ecs_cluster_name)
-    echo ""
-    echo "Forcing new deployment on all services in ${CLUSTER}..."
-    SERVICES=$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
-        --query 'serviceArns[]' --output text)
-    for svc in $SERVICES; do
-        echo "  -> ${svc##*/}"
-        aws ecs update-service --cluster "$CLUSTER" --service "$svc" \
-            --force-new-deployment --region "$REGION" >/dev/null
+    ROLLOUT_ARGS="--cluster $CLUSTER --region $REGION"
+    # An output missing from an older state only leaves that group's host
+    # health checks on during the rollout
+    for ASG_OUTPUT in asg_name public_asg_name; do
+        ASG=$(terraform -chdir="$TERRAFORM_DIR" output -raw "$ASG_OUTPUT" 2>/dev/null || echo "")
+        if [ -n "$ASG" ]; then
+            ROLLOUT_ARGS="$ROLLOUT_ARGS --asg $ASG"
+        else
+            echo "Warning: no '${ASG_OUTPUT}' output; that group's host health checks stay on during the rollout"
+        fi
     done
-    echo "Force-new-deployment issued for all services (re-pulling ${ECR_URI}:latest)."
-    echo "Running services restart now; any service at desiredCount 0 re-pulls on next scale-up."
-
-    # Each host now holds the image this deploy replaced; prune it once the
-    # new tasks are up rather than at the next scheduled run
-    echo "Waiting for services to stabilize..."
-    aws ecs wait services-stable --cluster "$CLUSTER" --services $SERVICES --region "$REGION" \
-        || echo "Warning: services not stable yet; docker hygiene runs on its 6 h schedule"
     HYGIENE_ID=$(terraform -chdir="$TERRAFORM_DIR" output -raw docker_hygiene_association_id 2>/dev/null || echo "")
     if [ -n "$HYGIENE_ID" ]; then
-        aws ssm start-associations-once --association-ids "$HYGIENE_ID" --region "$REGION" \
-            || echo "Warning: could not trigger docker hygiene"
+        ROLLOUT_ARGS="$ROLLOUT_ARGS --hygiene-association $HYGIENE_ID"
     fi
+    echo ""
+    # Unquoted: the names and ids carry no spaces
+    # shellcheck disable=SC2086
+    bash "$SCRIPT_DIR/ecs_rollout.sh" $ROLLOUT_ARGS
+    echo "Any service at desiredCount 0 re-pulls :latest on its next scale-up."
 fi
