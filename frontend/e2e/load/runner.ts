@@ -192,8 +192,8 @@ export async function setPublished(
 // A record the run published is owed a restore until it is unpublished. The
 // debt is written to the run's folder before the publish request, so a run
 // that is killed, or whose request answer is lost, leaves it for the next run.
-// Once the publish answers, the debt notes the record's updated_at: a record
-// changed after that is its owner's again and is not unpublished.
+// Once the publish answers, the debt notes the record's updated_at, so a later
+// run can tell the publish it owes from one the owner made since.
 export const RESTORE_FILE = "publish-restore.json"
 export type RestoreDebt = {
   workspaceId: number
@@ -207,6 +207,10 @@ export type RestoreDebt = {
 
 // A debt whose publish never answered is paid only while it is this fresh
 const UNANSWERED_DEBT_MS = 24 * 3600_000
+// After a publish, the first public open or the 5-minute sync job marks the
+// record synced, and that one write moves its updated_at; a later move is
+// somebody else's
+const PUBLISH_SYNC_ALLOWANCE_MS = 15 * 60_000
 
 export function owe(dir: string, debt: RestoreDebt): string {
   const file = path.join(dir, RESTORE_FILE)
@@ -218,24 +222,35 @@ export function readDebt(file: string): RestoreDebt {
   return JSON.parse(fs.readFileSync(file, "utf-8")) as RestoreDebt
 }
 
+// Whether a debt an earlier run left still names that run's publish: the
+// record's updated_at has moved no further than the publish's own sync moves it
+function stillOwed(
+  debt: RestoreDebt,
+  updatedAt: string | null,
+  now: number,
+): boolean {
+  if (debt.updatedAt === null)
+    return now - Date.parse(debt.at) < UNANSWERED_DEBT_MS
+  if (updatedAt === null) return false
+  const moved = Date.parse(updatedAt) - Date.parse(debt.updatedAt)
+  return moved >= 0 && moved <= PUBLISH_SYNC_ALLOWANCE_MS
+}
+
 // Unpublishes the record, then confirms it is private before the debt goes.
+// The run that owes it pays at once; a later run only while stillOwed().
 // Throws, keeping the debt, when the record changed since the run published it
 // or the restore did not take.
 export async function payDebt(
   base: URL,
   owner: () => Promise<Session>,
   file: string,
-  now = Date.now(),
+  { now = Date.now(), ownRun = false }: { now?: number; ownRun?: boolean } = {},
 ): Promise<void> {
   const debt = readDebt(file)
   const ref = { workspaceId: debt.workspaceId, uid: debt.uid }
   const before = await findRecord(base, await owner(), ref)
   if (before?.publishStatus === PUBLISHED) {
-    const ours =
-      debt.updatedAt !== null
-        ? before.updatedAt === debt.updatedAt
-        : now - Date.parse(debt.at) < UNANSWERED_DEBT_MS
-    if (!ours) {
+    if (!ownRun && !stillOwed(debt, before.updatedAt, now)) {
       throw new Error(
         `${file}: the record changed after the run published it; check it ` +
           "as its owner, then delete the file",

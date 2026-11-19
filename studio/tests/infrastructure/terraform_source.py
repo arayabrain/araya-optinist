@@ -93,6 +93,16 @@ def attribute(source: str, name: str) -> str:
     return match.group(1)
 
 
+def per_environment(value: str) -> dict:
+    """Return ``{"production": n, "development": m}`` for a right-hand side
+    written ``var.environment == local.production_env_prefix ? n : m``."""
+    match = re.fullmatch(
+        r"var\.environment == local\.production_env_prefix \? (\d+) : (\d+)", value
+    )
+    assert match, f"not a per-environment number: {value}"
+    return {"production": int(match.group(1)), "development": int(match.group(2))}
+
+
 def string_list(value: str) -> list:
     """Return the quoted items of a one-line list literal, e.g. ``["a", "b"]``."""
     assert value.startswith("[") and value.endswith("]"), f"not a list: {value}"

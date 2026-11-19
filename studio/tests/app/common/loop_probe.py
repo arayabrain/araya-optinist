@@ -51,7 +51,9 @@ async def health_while_held(hold: Hold, method: str, url: str, **kwargs):
         "set_client_id",
         staticmethod(lambda client_id: set_client_id(client_id or REQUEST_CLIENT_ID)),
     ):
-        async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
             held = asyncio.create_task(http.request(method, url, **kwargs))
             await wait_until(hold.started)
             health = await http.get("/health")

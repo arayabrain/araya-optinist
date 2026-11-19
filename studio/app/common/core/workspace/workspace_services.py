@@ -296,32 +296,26 @@ class WorkspaceService:
         """
         Get all workspace IDs that a user has access to
         (owned or shared), each once.
+
+        A database error raises: an empty list would read as "no workspaces",
+        and the storage scans that call this would measure 0.
         """
-        try:
-            workspaces_query = (
-                # The share join gives an owned workspace one row per share
-                select(common_model.Workspace.id)
-                .distinct()
-                .join(
-                    common_model.WorkspacesShareUser,
-                    common_model.Workspace.id
-                    == common_model.WorkspacesShareUser.workspace_id,
-                    isouter=True,
-                )
-                .filter(
-                    common_model.Workspace.deleted.is_(False),
-                    or_(
-                        common_model.WorkspacesShareUser.user_id == user_id,
-                        common_model.Workspace.user_id == user_id,
-                    ),
-                )
+        workspaces_query = (
+            # The share join gives an owned workspace one row per share
+            select(common_model.Workspace.id)
+            .distinct()
+            .join(
+                common_model.WorkspacesShareUser,
+                common_model.Workspace.id
+                == common_model.WorkspacesShareUser.workspace_id,
+                isouter=True,
             )
-            workspace_ids = db.execute(workspaces_query).scalars().all()
-
-            return list(workspace_ids)
-
-        except Exception as e:
-            logger.error(
-                "Failed to get accessible workspace IDs " f"for user {user_id}: {e}"
+            .filter(
+                common_model.Workspace.deleted.is_(False),
+                or_(
+                    common_model.WorkspacesShareUser.user_id == user_id,
+                    common_model.Workspace.user_id == user_id,
+                ),
             )
-            return []
+        )
+        return list(db.execute(workspaces_query).scalars().all())

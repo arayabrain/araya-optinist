@@ -5,6 +5,7 @@ Provides endpoints for checking and managing S3 storage alerts.
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlmodel import Session
 
 from studio.app.common.core.auth.auth_dependencies import (
@@ -15,9 +16,10 @@ from studio.app.common.core.cloud.s3_storage_monitor import (
     S3StorageMonitor,
     monitor_storage_and_generate_alerts,
 )
+from studio.app.common.core.cloud.storage_tracking import StorageScanFailed
 from studio.app.common.core.logger import AppLogger
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
-from studio.app.common.db.database import get_db
+from studio.app.common.db.database import get_db, run_db_lookup
 from studio.app.common.schemas.storage import (
     LimitWarning,
     LimitWarningStatus,
@@ -68,7 +70,7 @@ async def get_my_storage_alert(
         # Get user's quota and calculate alert
         from studio.app.common.core.cloud.storage_tracking import get_user_storage_usage
 
-        storage_info = get_user_storage_usage(current_user.id)
+        storage_info = await run_db_lookup(get_user_storage_usage, current_user.id)
 
         alert = None
         if storage_info and storage_info["storage_quota_bytes"] > 0:
@@ -139,7 +141,7 @@ async def get_my_storage_usage(
         current_usage = await get_current_user_storage_usage(current_user.id)
 
         # Get quota information from database
-        storage_info = get_user_storage_usage(current_user.id)
+        storage_info = await run_db_lookup(get_user_storage_usage, current_user.id)
 
         # Use storage utilities for formatting and thresholds
         monitor = _get_storage_utilities()
@@ -259,7 +261,9 @@ async def refresh_storage_usage(
             update_user_storage_usage,
         )
 
-        success = update_user_storage_usage(current_user.id, current_usage)
+        success = await run_db_lookup(
+            update_user_storage_usage, current_user.id, current_usage
+        )
 
         if not success:
             logger.warning(
@@ -275,6 +279,23 @@ async def refresh_storage_usage(
 
     except HTTPException:
         raise
+    except StorageScanFailed as e:
+        # Nothing stored: the scan could not measure, which is not 0 bytes
+        if isinstance(e.__cause__, PoolTimeoutError):
+            # Busy, not down: a 503 would read as an unreachable premium instance
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="The server is busy. Please retry.",
+                headers={"Retry-After": "5"},
+            )
+        logger.error(
+            f"Failed to refresh storage usage for user {current_user.id}: "
+            f"{e.__cause__!r}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to refresh storage usage",
+        )
     except Exception as e:
         logger.error(f"Failed to refresh storage usage for user {current_user.id}: {e}")
         raise HTTPException(

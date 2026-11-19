@@ -150,6 +150,33 @@ resource "aws_cloudwatch_metric_alarm" "ebs_queue_length_high" {
 }
 
 # ==================================================
+# Root Filesystem Usage Monitoring
+# ==================================================
+# The agent collects only "/", so the ASG roll-up is the root filesystem.
+resource "aws_cloudwatch_metric_alarm" "root_disk_used_high" {
+  for_each = {
+    free   = aws_autoscaling_group.main.name
+    public = aws_autoscaling_group.public.name
+  }
+
+  alarm_name          = "${local.env_prefix}-${each.key}-root-disk-used-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "disk_used_percent"
+  namespace           = "CWAgent"
+  period              = "300"
+  statistic           = "Maximum"
+  threshold           = "85"
+  alarm_description   = "Root filesystem above 85% on a ${each.key} host"
+  alarm_actions       = local.critical_alerts_actions
+  ok_actions          = local.critical_alerts_actions
+
+  dimensions = {
+    AutoScalingGroupName = each.value
+  }
+}
+
+# ==================================================
 # RDS Monitoring Alarms
 # ==================================================
 resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
@@ -347,7 +374,8 @@ resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
       tg_arn_suffix = aws_lb_target_group.public.arn_suffix
       service_name  = aws_ecs_service.public.name
       asg_name      = aws_autoscaling_group.public.name
-      # A host replacement waits out two 600 s drains, about 25 min short
+      # A host replacement waits out two 600 s drains on production, about
+      # 25 min short; development's 60 s drains only widen the margin
       periods    = 40
       datapoints = 35
     }

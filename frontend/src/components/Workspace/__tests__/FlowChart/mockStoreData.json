@@ -1,6 +1,7 @@
 {
   "mockStoreData": {
     "isLatest": true,
+    "mode": { "mode": false, "loading": false },
     "algorithmList": {
       "tree": {
         "caiman": {

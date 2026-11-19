@@ -1441,8 +1441,8 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     ).toBe(true)
   })
 
-  // Row 6211's cross-tab half: a UI logout in one tab logs every tab out via
-  // the localStorage broadcast, and only the tab that logged out fires the
+  // Row 6211's cross-tab half: a UI logout in one tab logs every signed-in tab
+  // out via the tab broadcast, and only the tab that logged out fires the
   // release beacon. The AWS half - the soft release landing and the monitor
   // finalizing the row - is PREM-02 / PREM-04 against real infrastructure.
   test("LC-29 - Logout in one tab logs the others out, releasing exactly once", async ({
@@ -1468,7 +1468,13 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
         const tab = await page.context().newPage()
         await armTab(tab)
         await tab.goto("/dashboard")
-        await expect(tab).toHaveURL(/\/dashboard/, { timeout: 30_000 })
+        // The URL matches at once. The header, whose profile menu is the only
+        // listener for the logout broadcast, mounts after the tab's own
+        // session check settles; a broadcast before that is never replayed.
+        await expect(
+          tab.locator('[aria-label="open profile menu"]'),
+        ).toBeVisible({ timeout: 30_000 })
+        await expect(tab).toHaveURL(/\/dashboard/)
         others.push(tab)
       }
 
