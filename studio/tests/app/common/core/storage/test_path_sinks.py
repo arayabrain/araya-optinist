@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from studio.app.common.core.storage import mock_storage_controller as mock_module
 from studio.app.common.core.storage.mock_storage_controller import MockStorageController
@@ -93,6 +94,17 @@ def _s3_client():
     client.__aenter__.return_value = client
     client.__aexit__.return_value = None
     return client
+
+
+def _client_error(code: str) -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": code}}, "HeadObject")
+
+
+META_NAMES = [
+    DIRPATH.EXPERIMENT_YML,
+    DIRPATH.SNAKEMAKE_CONFIG_YML,
+    DIRPATH.WORKFLOW_YML,
+]
 
 
 class TestS3StorageController:
@@ -227,6 +239,57 @@ class TestS3StorageController:
         }
         assert not (storage_dirs / "local" / "etc").exists()
 
+    @staticmethod
+    def _one_experiment_listing(client):
+        client.list_objects_v2.side_effect = [
+            {"CommonPrefixes": [{"Prefix": f"{S3_BASE}/output/1/"}]},
+            {"CommonPrefixes": [{"Prefix": f"{S3_BASE}/output/1/rec/"}]},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_all_metas_leave_no_file_when_a_download_fails(self, storage_dirs):
+        """The listing writes the same files the structured route reads."""
+        controller = S3StorageController("bucket")
+        client = _s3_client()
+        self._one_experiment_listing(client)
+
+        async def failing_download(bucket, key, path):
+            Path(path).write_text("nodeDict:\n  par")
+            raise ConnectionError("connection reset")
+
+        client.download_file.side_effect = failing_download
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            await controller.download_all_experiments_metas(["1"])
+
+        record_dir = Path(DIRPATH.OUTPUT_DIR) / "1" / "rec"
+        assert list(record_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_all_metas_file_appears_only_once_complete(self, storage_dirs):
+        controller = S3StorageController("bucket")
+        client = _s3_client()
+        self._one_experiment_listing(client)
+        record_dir = Path(DIRPATH.OUTPUT_DIR) / "1" / "rec"
+        body = "nodeDict: {}\nedgeDict: {}\n"
+        target_seen_mid_download = []
+
+        async def download(bucket, key, path):
+            Path(path).write_text("")
+            target_seen_mid_download.append((record_dir / Path(key).name).exists())
+            Path(path).write_text(body)
+
+        client.download_file.side_effect = download
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            await controller.download_all_experiments_metas(["1"])
+
+        assert target_seen_mid_download == [False, False, False]
+        assert sorted(p.name for p in record_dir.iterdir()) == sorted(META_NAMES)
+        assert all((record_dir / name).read_text() == body for name in META_NAMES)
+
     @pytest.mark.asyncio
     async def test_experiment_meta_refuses_an_escaping_id(self, storage_dirs):
         controller = S3StorageController("bucket")
@@ -235,6 +298,112 @@ class TestS3StorageController:
         ):
             with pytest.raises(InvalidPathError):
                 await controller.download_experiment_meta("1", "../../etc")
+
+    @pytest.mark.asyncio
+    async def test_experiment_meta_leaves_no_file_when_a_download_fails(
+        self, storage_dirs
+    ):
+        """A partly written file would be read as the record's config."""
+        controller = S3StorageController("bucket")
+        client = _s3_client()
+
+        async def failing_download(bucket, key, path):
+            # aioboto3 creates its target before the body arrives
+            Path(path).write_text("nodeDict:\n  par")
+            raise ConnectionError("connection reset")
+
+        client.download_file.side_effect = failing_download
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            with pytest.raises(ConnectionError):
+                await controller.download_experiment_meta("1", "rec")
+
+        record_dir = Path(DIRPATH.OUTPUT_DIR) / "1" / "rec"
+        assert list(record_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_experiment_meta_skips_a_file_the_record_does_not_have(
+        self, storage_dirs
+    ):
+        controller = S3StorageController("bucket")
+        client = _s3_client()
+
+        async def head_object(Bucket, Key):
+            if Key.endswith(DIRPATH.SNAKEMAKE_CONFIG_YML):
+                raise _client_error("404")
+
+        async def download(bucket, key, path):
+            Path(path).write_text("x: 1\n")
+
+        client.head_object.side_effect = head_object
+        client.download_file.side_effect = download
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            assert await controller.download_experiment_meta("1", "rec") is True
+
+        record_dir = Path(DIRPATH.OUTPUT_DIR) / "1" / "rec"
+        assert sorted(p.name for p in record_dir.iterdir()) == sorted(
+            [DIRPATH.EXPERIMENT_YML, DIRPATH.WORKFLOW_YML]
+        )
+
+    @pytest.mark.asyncio
+    async def test_experiment_meta_raises_a_failed_read_once_every_file_is_tried(
+        self, storage_dirs
+    ):
+        """A throttled or failed read is not an absent file: callers must be
+        able to tell the two apart."""
+        controller = S3StorageController("bucket")
+        client = _s3_client()
+
+        async def head_object(Bucket, Key):
+            if Key.endswith(DIRPATH.EXPERIMENT_YML):
+                raise _client_error("SlowDown")
+
+        async def download(bucket, key, path):
+            Path(path).write_text("x: 1\n")
+
+        client.head_object.side_effect = head_object
+        client.download_file.side_effect = download
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            with pytest.raises(ClientError, match="SlowDown"):
+                await controller.download_experiment_meta("1", "rec")
+
+        record_dir = Path(DIRPATH.OUTPUT_DIR) / "1" / "rec"
+        assert sorted(p.name for p in record_dir.iterdir()) == sorted(
+            [DIRPATH.SNAKEMAKE_CONFIG_YML, DIRPATH.WORKFLOW_YML]
+        )
+
+    @pytest.mark.asyncio
+    async def test_experiment_meta_file_appears_only_once_complete(self, storage_dirs):
+        controller = S3StorageController("bucket")
+        client = _s3_client()
+        record_dir = Path(DIRPATH.OUTPUT_DIR) / "1" / "rec"
+        body = "nodeDict: {}\nedgeDict: {}\n"
+        target_seen_mid_download = []
+
+        async def download(bucket, key, path):
+            Path(path).write_text("")
+            target_seen_mid_download.append((record_dir / Path(key).name).exists())
+            Path(path).write_text(body)
+
+        client.download_file.side_effect = download
+        with patch.object(
+            controller, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            await controller.download_experiment_meta("1", "rec")
+
+        names = [
+            DIRPATH.EXPERIMENT_YML,
+            DIRPATH.SNAKEMAKE_CONFIG_YML,
+            DIRPATH.WORKFLOW_YML,
+        ]
+        assert target_seen_mid_download == [False, False, False]
+        assert sorted(p.name for p in record_dir.iterdir()) == sorted(names)
+        assert all((record_dir / name).read_text() == body for name in names)
 
 
 class TestOutputsVisualizationSync:

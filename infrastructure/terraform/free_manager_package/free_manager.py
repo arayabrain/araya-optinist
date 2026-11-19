@@ -546,7 +546,7 @@ def sync_ecs_to_asg() -> Dict[str, Any]:
 
     Why the floor counts instances that are still terminating: on scale-in
     the ASG deregisters the instance and waits out the target group's
-    deregistration delay (300 s by default) *before* ECS's draining hook, and
+    deregistration delay (300 s on production) *before* ECS's draining hook, and
     ECS still sees the container instance as ACTIVE throughout. Lowering the
     desired count while it is in the group would let ECS pick which task to
     stop by AZ balance -- possibly a survivor's -- leaving no healthy free

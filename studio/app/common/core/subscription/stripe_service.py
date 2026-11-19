@@ -719,6 +719,9 @@ class StripeService:
     async def handle_cancel_user_subscription(
         db: Session, user: User, *, immediate: bool = False
     ) -> CancelSubscriptionResponse:
+        if immediate:
+            return await StripeService._cancel_for_account_deletion(db, user)
+
         # Get current user subscription
         current_subscription_result = SubscriptionService.get_user_subscription(
             db, user.id
@@ -772,36 +775,28 @@ class StripeService:
             except Exception as e:
                 logger.warning(f"Could not cancel schedule: {e}")
 
-        if immediate:
-            # Account deletion: cancel now, no grace period
-            stripe.Subscription.cancel(stripe_subscription.id)
-        else:
-            # User-initiated cancel: keep access until period end
-            stripe.Subscription.modify(
-                stripe_subscription.id,
-                cancel_at_period_end=True,
-                metadata={
-                    **stripe_subscription.metadata,
-                    "cancellation_requested": "true",
-                    "cancellation_requested_at": str(
-                        int(SubscriptionService.get_current_datetime().timestamp())
-                    ),
-                },
-            )
+        stripe.Subscription.modify(
+            stripe_subscription.id,
+            cancel_at_period_end=True,
+            metadata={
+                **stripe_subscription.metadata,
+                "cancellation_requested": "true",
+                "cancellation_requested_at": str(
+                    int(SubscriptionService.get_current_datetime().timestamp())
+                ),
+            },
+        )
 
         SubscriptionService.update_scheduled_downgrade(db, user.id, True)
 
         # Database will be updated via customer.subscription.updated webhook
 
         access_until_date = datetime_from_timestamp(current_period_end)
-        if immediate:
-            message = "Subscription cancelled immediately."
-        else:
-            message = (
-                f"Subscription will be cancelled on "
-                f"{format_date_for_display(access_until_date)}. "
-                f"You will retain access until then."
-            )
+        message = (
+            f"Subscription will be cancelled on "
+            f"{format_date_for_display(access_until_date)}. "
+            f"You will retain access until then."
+        )
 
         logger.info(
             f"Successfully scheduled cancellation for user {user.id} " f"at period end"
@@ -812,4 +807,60 @@ class StripeService:
             message=message,
             cancellation_date=access_until_date.strftime("%Y-%m-%d"),
             access_until=access_until_date.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    @staticmethod
+    async def _cancel_for_account_deletion(
+        db: Session, user: User
+    ) -> CancelSubscriptionResponse:
+        """Cancel every Stripe subscription that can still bill, trusting Stripe
+        over the local row: a past_due subscription has an expired local row."""
+        customer = await get_stripe_customer(db, user)
+        billable, pending_schedules = [], []
+        if customer:
+            billable = [
+                sub
+                for sub in stripe.Subscription.list(
+                    customer=customer.id, status="all", limit=100
+                ).auto_paging_iter()
+                if sub.status
+                not in (
+                    StripeSubscriptionStatus.CANCELED,
+                    StripeSubscriptionStatus.INCOMPLETE_EXPIRED,
+                )
+            ]
+            # A not_started schedule is attached to no subscription yet.
+            pending_schedules = [
+                schedule
+                for schedule in stripe.SubscriptionSchedule.list(
+                    customer=customer.id, scheduled=True, limit=100
+                ).auto_paging_iter()
+                if schedule.status == "not_started"
+            ]
+        if not billable and not pending_schedules:
+            raise HTTPException(
+                status_code=404, detail="No billable Stripe subscription found"
+            )
+
+        for schedule in pending_schedules:
+            stripe.SubscriptionSchedule.cancel(schedule.id)
+            logger.info(f"Cancelled schedule {schedule.id} for user {user.id}")
+
+        for sub in billable:
+            if sub.get("schedule"):
+                try:
+                    stripe.SubscriptionSchedule.release(sub["schedule"])
+                except Exception as e:
+                    logger.warning(f"Could not release schedule: {e}")
+            stripe.Subscription.cancel(sub.id)
+            logger.info(f"Cancelled subscription {sub.id} for user {user.id}")
+
+        SubscriptionService.update_scheduled_downgrade(db, user.id, True)
+
+        cancelled_at = SubscriptionService.get_current_datetime()
+        return CancelSubscriptionResponse(
+            success=True,
+            message="Subscription cancelled immediately.",
+            cancellation_date=cancelled_at.strftime("%Y-%m-%d"),
+            access_until=cancelled_at.strftime("%Y-%m-%d %H:%M:%S"),
         )

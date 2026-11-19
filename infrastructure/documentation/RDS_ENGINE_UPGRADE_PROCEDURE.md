@@ -6,7 +6,7 @@
 - **The engine change is two lines of Terraform.** Everything else here exists because the surrounding configuration does not tolerate those two lines without preparation: **six constraints, B1 to B6**, properties of this stack rather than of any version pair.
 - **The development scheduler's nightly destroy and restore cycle is the dominant constraint.** The scheduler's restore passes a parameter group but no engine version, so the parameter group swap and the engine upgrade must land in one apply, the instance must be `available` on `<TO>` before that day's scheduled stop, and the nightly cycle is itself a mandatory verification step.
 - **The apply must modify the instance, never replace it.** A replacement is an empty database behind the same endpoint, and the loss is silent. This and every other gate is an asserted command output or a plan-JSON query, never a visual read: the failure mode is an upgrade that Terraform reports as successful and RDS has deferred.
-- **Whether a terraform apply is also an application deploy depends on the branch lineage (B6).** On the development lineage every apply rebuilds the image and rolls every ECS service; on the production lineage the apply is the database alone.
+- **Whether a terraform apply is also an application deploy depends on the branch lineage (B6).** On the development lineage every apply rebuilds the image and rolls every ECS service; on the production lineage the apply is the database alone — for releases up to v1.1.11 only: from v1.2.0 production rebuilds and rolls out too (B6).
 - **Recovery points are created before the apply and closed deliberately afterwards.** A manual snapshot and a retained outgoing-family parameter group are prerequisites, both verified. **On an environment rebuilt on a schedule, automated retention is not one continuous window**: each cycle's instance carries its own backup — one `active` row for the current instance, one `retained` row per earlier cycle — so point-in-time recovery reaches any moment *inside* a running day and nothing overnight. The manual snapshot covers the gaps, and deleting it is what closes the rollback window.
 - **Rollback is a snapshot restore.** There is no engine downgrade; the restore creates a new instance under the same identifier.
 
@@ -82,6 +82,13 @@ lineage. **Read it from the plan's `before` triggers (phase 0C), not from the ch
 |-------------------------|-----------------------|-----------------------|
 | **Development** (`develop-main`) | ALB DNS, ECR repository, `var.git_branch`, **`source_revision`** (the HEAD commit) | **Rebuilds the image and force-deploys every ECS service.** The window must cover the RDS downtime plus a full rollout |
 | **Production** (the release lineage) | ALB DNS, ECR repository, `var.git_branch` — a branch name, while the release is a tag | **A no-op.** The apply is the database alone; the image push and the service cycle are separate manual steps |
+
+> **The production row holds for releases up to v1.1.11 only.** From v1.2.0 production's trigger map
+> carries `source_revision` too, so a production apply from a commit other than the one production
+> last applied rebuilds the image from the local checkout and rolls every ECS service, as on
+> development. Phase 4 and the other production statements in this procedure still assume the old
+> map. Until they are revised, take the answer from phase 0C's `before` triggers and plan, and size
+> the production window for a full rollout whenever the plan replaces `null_resource.build_and_deploy`.
 
 On the development lineage, **what gets built is the local working tree**: `ecr_build_push.sh` uses the
 local checkout as its build context, so apply from a branch cut from what is deployed, carrying only the

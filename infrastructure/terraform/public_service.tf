@@ -8,8 +8,8 @@ resource "aws_lb_target_group" "public" {
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
 
-  # Match the listener idle_timeout so streaming responses survive deregistration.
-  deregistration_delay = 600
+  # Production: the listener idle_timeout, so streaming responses survive deregistration
+  deregistration_delay = local.public_tg_deregistration_delay
 
   health_check {
     enabled             = true
@@ -118,7 +118,7 @@ resource "aws_autoscaling_group" "public" {
   }
 
   # force_delete=false so ASG-level removals respect the TG deregistration_delay
-  # (in-flight streaming responses get the 600s drain we promise above).
+  # (in-flight streaming responses get the drain set above, 600 s on production).
   force_delete              = false
   termination_policies      = ["OldestInstance"]
   wait_for_capacity_timeout = "0"
@@ -210,6 +210,8 @@ resource "aws_ecs_task_definition" "public" {
         { name = "FRONTEND_SERVER_HOST", value = local.effective_frontend_domain },
         { name = "FRONTEND_SERVER_PORT", value = local.effective_frontend_port },
         { name = "FRONTEND_SERVER_PROTO", value = var.frontend_protocol },
+        # The app's own origin: the origin /auth trusts, and links the app builds
+        { name = "FRONTEND_URL", value = local.canonical_origin },
 
         { name = "INITIAL_FIREBASE_UID", value = var.optinist_admin_uid },
         { name = "INITIAL_USER_NAME", value = var.optinist_admin_name },
@@ -222,11 +224,11 @@ resource "aws_ecs_task_definition" "public" {
         { name = "REMOTE_STORAGE_TYPE", value = "2" },
 
         { name = "LOG_LEVEL", value = "INFO" },
-        { name = "CORS_ORIGINS", value = "*" },
+        { name = "CORS_ORIGINS", value = local.cors_origins },
         { name = "PYTHONUNBUFFERED", value = "1" },
         { name = "OPTINIST_DIR", value = "/app/studio_data" },
 
-        # Stripe vars omitted: subscriptions router is gated out on public.
+        # No Stripe key on public: account deletion is routed to free (public_alb_rules.tf).
         { name = "ROUTING_SECRET_KEY", value = var.routing_secret_key },
 
         { name = "INTERNAL_API_SECRET", value = random_password.internal_api_secret.result },
@@ -372,6 +374,11 @@ output "public_task_definition_arn" {
 output "public_target_group_arn" {
   description = "ARN of the public target group"
   value       = aws_lb_target_group.public.arn
+}
+
+output "public_asg_name" {
+  description = "Name of the public Auto Scaling group; ecr_build_push.sh --deploy suspends its host health checks during a rollout"
+  value       = aws_autoscaling_group.public.name
 }
 
 # wait_for_capacity_timeout=0 means `terraform apply` returns before targets

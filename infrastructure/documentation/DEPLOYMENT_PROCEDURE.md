@@ -4,7 +4,7 @@ This document covers **application code deployment, release procedures, and Git 
 
 > **For infrastructure management (Terraform operations, environment setup, ECR details)**, see [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
 
-**Production URL:** `https://araya-optinist.com`
+**Production URL:** `https://www.araya-optinist.com` (page loads on the apex are redirected there)
 
 ---
 
@@ -67,7 +67,9 @@ To turn analytics off again, delete the parameter (and any `.env.deploy` entry) 
 The deploying user needs the following AWS permissions:
 
 - **ECR**: Push images (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:PutImage`, etc.)
-- **ECS**: List and update services (`ecs:ListClusters`, `ecs:ListServices`, `ecs:UpdateService`, etc.)
+- **ECS**: List, read and update services (`ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `ecs:UpdateService`, etc.)
+- **Auto Scaling**: Hold the free and public groups' host health checks during a rollout (`autoscaling:DescribeAutoScalingGroups`, `autoscaling:SuspendProcesses`, `autoscaling:ResumeProcesses`)
+- **Elastic Load Balancing**: Wait for the restarted targets (`elasticloadbalancing:DescribeTargetHealth`)
 - **SSM**: Trigger the docker hygiene run after a deploy (`ssm:StartAssociationsOnce`)
 - **Secrets Manager**: Read secrets (granted automatically to the deployment role)
 - **SSM**: `ssm:GetParameter` on `arn:aws:ssm:ap-northeast-1:<account-id>:parameter/<environment>/optinist/gtm-id` (the analytics container ID; not managed by Terraform)
@@ -140,7 +142,7 @@ OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team 
 
 4. **Host docker hygiene (`docker_hygiene.sh`, every 6 hours and after each deploy):**
    - `aws_ssm_association "docker_hygiene"` (`deployment.tf`) runs on every host launched from one of the four launch templates (free, premium, background, public). It prunes stopped containers older than 10 minutes and, when the ECS agent reports a steady running task, every image no container uses.
-   - Each force-deploy leaves the replaced 2.1 GB image and the previous task's stopped container on every host; without this, a few deploys fill a 48 GB root. Both `terraform apply` (`null_resource.deploy_to_ecs`) and `ecr_build_push.sh --deploy` trigger a run after `ecs wait services-stable`. See [MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#host-root-volume-hygiene) for the manual trigger and the full-disk runbook.
+   - Each force-deploy leaves the replaced 2.1 GB image and the previous task's stopped container on every host; without this, a few deploys fill a 48 GB root. Both `terraform apply` (`null_resource.deploy_to_ecs`) and `ecr_build_push.sh --deploy` roll out through `ecs_rollout.sh`, which triggers a run once every service is stable. See [MAINTENANCE_PROCEDURES.md](MAINTENANCE_PROCEDURES.md#host-root-volume-hygiene) for the manual trigger and the full-disk runbook.
 
    > **Design note / future consideration:** this script runs one-shot bootstrap (package installs, DB seeding, Firebase admin verification, which need only run once) on a 30-minute loop. The seed migration now owns the DB reference rows, so the DB block could be removed from here entirely. Running the rest once at launch would be cleaner. Not required for correctness — the bootstrap steps are idempotent — but it would stop re-running one-shot work every 30 minutes for the life of each instance.
 
@@ -150,16 +152,16 @@ OptiNiSt uses **AWS Secrets Manager** for credential storage. This enables team 
 
 ### Determine What Needs to Be Deployed
 
-| What changed                 | Actions needed                                                   |
-| ---------------------------- | ---------------------------------------------------------------- |
-| Frontend code (`frontend/`)  | `ecr_build_push.sh` → Force ECS redeployment                     |
-| Studio code (`studio/`)      | `ecr_build_push.sh` → Force ECS redeployment                     |
-| Lambda code (`*_package/`)   | `terraform apply`                                                |
-| Infrastructure (`.tf` files) | `terraform apply`                                                |
-| Frontend + Infrastructure    | `terraform apply` → `ecr_build_push.sh` → Force ECS redeployment |
-| Everything                   | `terraform apply` → `ecr_build_push.sh` → Force ECS redeployment |
+| What changed                 | Actions needed                                          |
+| ---------------------------- | ------------------------------------------------------- |
+| Frontend code (`frontend/`)  | `ecr_build_push.sh --deploy`                            |
+| Studio code (`studio/`)      | `ecr_build_push.sh --deploy`                            |
+| Lambda code (`*_package/`)   | `terraform apply`                                       |
+| Infrastructure (`.tf` files) | `terraform apply`                                       |
+| Frontend + Infrastructure    | `terraform apply` (builds, pushes and rolls out itself) |
+| Everything                   | `terraform apply` (builds, pushes and rolls out itself) |
 
-> **Important:** When both infrastructure and application code change, run `terraform apply` **before** `ecr_build_push.sh`. The build script reads Terraform outputs (domain, port, protocol) to configure the frontend build.
+> **Important:** One deploy, one rollout. On a new commit `terraform apply` runs `ecr_build_push.sh` itself (`null_resource.build_and_deploy`) and then rolls out every service (`null_resource.deploy_to_ecs`), so do not follow it with `ecr_build_push.sh --deploy` or a manual force: on free and public each extra rollout waits out every host's target deregistration delay again, and one issued while another is in progress restarts it. What a rollout does: [INFRA_DEPLOYMENT_PROCEDURE.md — Cycling All Services](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services).
 
 ### Step 1: Apply Infrastructure Changes (if needed)
 
@@ -186,6 +188,10 @@ terraform apply -var-file=environments/<ENV>.tfvars
 - Infrastructure (VPC, ALB, RDS, ECS, Auto Scaling, Route53, ACM)
 - Lambda function code and layers
 - Copies `infrastructure/aws_constants.py` to all Lambda packages via provisioners
+- From a commit other than the last one applied: the Docker image, built and pushed by
+  `ecr_build_push.sh` on your machine, and a rollout of every ECS service. A release commit's
+  image is tagged with its version, unless the repository already has that tag. See [INFRA_DEPLOYMENT_PROCEDURE.md — Builds Run by
+  `terraform apply`](INFRA_DEPLOYMENT_PROCEDURE.md#builds-run-by-terraform-apply)
 
 > **Traceability:** Each apply stamps the applied `infrastructure/` git revision onto the
 > ECS cluster as tags (`TfGitCommit` / `TfGitBranch` / `TfGitTag`), so you can later confirm
@@ -200,7 +206,7 @@ terraform apply -var-file=environments/<ENV>.tfvars
 
 ### Step 2: Build and Push Docker Image (if application code changed)
 
-Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
+Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to. Skip it too when Step 1 applied a commit other than the last one applied: that apply has already built and pushed the image and rolled it out.
 
 #### 2a. Initialize Terraform for the target environment
 
@@ -221,7 +227,8 @@ terraform init -backend-config=backends/<ENV>.hcl -reconfigure
 
 ```bash
 cd infrastructure/scripts
-./ecr_build_push.sh --tag {VERSION}  # Tag is automatically generated if omitted
+./ecr_build_push.sh --deploy  # Builds, pushes, then does Step 3
+# --tag {VERSION} sets the version tag. Omitted: the release tag on HEAD unless ECR has it, else YYYYMMDD-HHMMSS-<git-sha>
 ```
 
 The script automatically:
@@ -231,6 +238,7 @@ The script automatically:
 3. Builds frontend with correct environment variables (`.env.production`)
 4. Builds and tags Docker image
 5. Pushes to the ECR repository for the active environment
+6. With `--deploy`, rolls out every service (Step 3)
 
 > For details on ECR repository isolation, image tagging, and rollback, see [INFRA_DEPLOYMENT_PROCEDURE.md — ECR Repository Management](INFRA_DEPLOYMENT_PROCEDURE.md#ecr-repository-management).
 
@@ -238,7 +246,9 @@ The script automatically:
 
 ### Step 3: Force ECS Redeployment (after Docker image push)
 
-Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
+Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to. Skip it too when Step 1 applied a commit other than the last one applied, or Step 2 ran with `--deploy`: each has already rolled out every service through `ecs_rollout.sh` ([what it does](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services)).
+
+To roll out an image that is already pushed, run `ecs_rollout.sh` by hand as [Cycling All Services](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services) shows. The options below are manual fallbacks without its safeguards: they neither wait for a rollout in progress nor keep the Auto Scaling groups from replacing a host mid-rollout.
 
 **Option A: AWS Console**
 
@@ -313,7 +323,7 @@ Expected: `runningCount` should match `desiredCount` and status should be `ACTIV
 
 ```bash
 # Health check endpoint (using custom domain)
-curl https://araya-optinist.com/health
+curl https://www.araya-optinist.com/health
 
 # Or use ALB DNS directly
 ALB_DNS=$(aws elbv2 describe-load-balancers \
@@ -329,7 +339,7 @@ Expected: HTTP 200 response
 
 Open in browser:
 
-- Production: `https://araya-optinist.com`
+- Production: `https://www.araya-optinist.com`
 - ALB (direct): `http://$ALB_DNS`
 
 Verify:
@@ -384,6 +394,14 @@ aws logs tail $LOG_GROUP \
 ```
 
 **Tip:** You can also view logs in AWS Console → CloudWatch → Log Groups → `/ecs/subscr-optinist-*`
+
+**Conda env pre-build:** after startup, the first free-tier task to take `.prebuild.lock` on the shared EFS builds, in the background, the conda envs the image needs and the EFS lacks (`PREBUILD_CONDA_ENVS=1`); the other tasks log `Conda env pre-build already runs on another task` and skip it. The deploy does not wait for it. Its result is in that task's log:
+
+- `Conda envs to build: none`: no env yaml changed, done in seconds.
+- `Conda envs to build: [...]`: those yamls changed (any byte), so they get new envs; up to an hour for caiman. Runs that need one of these envs wait until it is built.
+- `Conda envs not built: [...]`: a build failed (`Conda env <name> failed to build` holds the traceback). The first run that needs the env retries the build, or an admin can run the matching `setup_conda_*` maintenance node.
+
+Snakemake's own build output (`Creating conda environment ...`) goes to `logs/studio.log` on the instance, not to CloudWatch.
 
 ### 6. Verify Secrets Manager Access (optional)
 
@@ -654,11 +672,17 @@ git push origin main
 # Follow "Creating a Release" section above
 # Use title format: "Hotfix vX.Y.Z"
 
-# Deploy to production
+# Deploy to production from the hotfix commit. The release tag on HEAD becomes
+# the image's version tag; fetch it first, since it was created on GitHub
+git fetch --tags
+git tag --points-at HEAD   # must list vX.Y.Z
 export AWS_PROFILE=optinist
+terraform -chdir=infrastructure/terraform init -backend-config=backends/production.hcl -reconfigure
 cd infrastructure/scripts
-./ecr_build_push.sh --tag {VERSION}-hotfix
+./ecr_build_push.sh --deploy
 ```
+
+If the hotfix changes Terraform or Lambda code, run `terraform apply` from the hotfix commit instead of the build script: it builds, pushes and rolls out itself ([Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed)).
 
 #### 5. Sync Hotfix to develop-main
 
@@ -678,6 +702,8 @@ Or create a PR: `main → develop-main` with title "Sync hotfix vX.Y.Z to develo
 ## Troubleshooting
 
 ### ECS service not updating after image push
+
+Pushing `:latest` deploys nothing: each task keeps the image digest it started with. Roll out every service with `ecs_rollout.sh` ([Cycling All Services](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services)); `ecr_build_push.sh --deploy` does this after the push. A force on one service, as below, updates that service alone and skips the rollout's safeguards.
 
 ```bash
 # Force new deployment

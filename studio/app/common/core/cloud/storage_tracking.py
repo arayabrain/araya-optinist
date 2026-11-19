@@ -4,7 +4,7 @@ Storage usage tracking, calculation, and reconciliation.
 Extracted from cloud_utils.py for module cohesion.
 """
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from sqlalchemy import update
@@ -23,7 +23,7 @@ from studio.app.common.core.subscription.constants import (
     SubscriptionType,
 )
 from studio.app.common.core.subscription.subscription_service import SubscriptionService
-from studio.app.common.db.database import session_scope
+from studio.app.common.db.database import run_db_lookup, session_scope
 from studio.app.common.models import SubscriptionPlans
 from studio.app.common.models import User as UserModel
 from studio.app.common.models import UserStorageUsage, UserSubscription
@@ -40,6 +40,18 @@ class StorageOwnerInactive(Exception):
 
     def __init__(self, user_id: int):
         super().__init__(f"no active user row for user {user_id}")
+        self.user_id = user_id
+
+
+class StorageScanFailed(Exception):
+    """A database lookup that a storage scan needs failed; the cause is chained.
+
+    Raised rather than returned as 0: a failed lookup is not "no workspaces",
+    and a stored 0 would let every quota check pass until the next good scan.
+    """
+
+    def __init__(self, user_id: int):
+        super().__init__(f"storage scan lookup failed for user {user_id}")
         self.user_id = user_id
 
 
@@ -163,20 +175,21 @@ def get_user_storage_usage(
                         f"No storage usage data found for "
                         f"user {user_id}, using defaults"
                     )
-                    return _get_fallback_storage_quota(user_id)
 
             except Exception as orm_error:
                 logger.warning(
                     f"UserStorageUsage table not accessible:"
                     f" {orm_error}, using default quota"
                 )
-                return _get_fallback_storage_quota(user_id)
 
     except Exception as e:
         logger.warning(
             f"Failed to get storage usage for user " f"{user_id}: {e}, using defaults"
         )
-        return _get_fallback_storage_quota(user_id)
+
+    # Once the session above has closed: the fallback opens its own, and taking
+    # a second connection while holding one can wait out an exhausted pool
+    return _get_fallback_storage_quota(user_id)
 
 
 def update_user_storage_usage(user_id: int, new_usage_bytes: int) -> bool:
@@ -436,10 +449,13 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
 
     Returns:
         Current storage usage in bytes
+
+    The database reads and writes run in a worker thread (run_db_lookup): a
+    wait for a pooled connection must not block the event loop.
     """
     try:
         if not force_live:
-            storage_info = get_user_storage_usage(user_id)
+            storage_info = await run_db_lookup(get_user_storage_usage, user_id)
             if storage_info and _is_storage_data_fresh(
                 storage_info,
                 SubscriptionPeriods.MAX_CACHE_AGE_MINUTES,
@@ -455,18 +471,23 @@ async def get_current_user_storage_usage(user_id: int, force_live: bool = False)
         # A slower scan of the same user must not store over a newer total
         async with storage_scan_lock(f"user:{user_id}"):
             live_usage = await _calculate_live_storage_usage(user_id)
-            update_user_storage_usage(user_id, live_usage)
+            await run_db_lookup(update_user_storage_usage, user_id, live_usage)
 
         return live_usage
 
     except StorageOwnerInactive:
         # The storage row outlives the account, so this is not a failed read
         logger.info(f"Skipped live storage usage for inactive user {user_id}")
-        storage_info = get_user_storage_usage(user_id)
+        storage_info = await run_db_lookup(get_user_storage_usage, user_id)
+        return storage_info.get("storage_usage_bytes", 0) if storage_info else 0
+    except StorageScanFailed as e:
+        # The stored usage stands until a scan can measure it
+        logger.warning(f"Kept the stored usage for user {user_id}: {e.__cause__!r}")
+        storage_info = await run_db_lookup(get_user_storage_usage, user_id)
         return storage_info.get("storage_usage_bytes", 0) if storage_info else 0
     except Exception as e:
         logger.error(f"Failed to get current storage usage for " f"user {user_id}: {e}")
-        storage_info = get_user_storage_usage(user_id)
+        storage_info = await run_db_lookup(get_user_storage_usage, user_id)
         return storage_info.get("storage_usage_bytes", 0) if storage_info else 0
 
 
@@ -525,30 +546,16 @@ async def _calculate_live_storage_usage(
         remote_storage_type = RemoteStorageType.get_activated_type()
 
         if remote_storage_type == RemoteStorageType.S3:
-            from studio.app.common.core.users.crud_users import get_user_with_context
-
-            with session_scope() as db:
-                try:
-                    user = await get_user_with_context(db, user_id)
-                except HTTPException as lookup_error:
-                    if lookup_error.status_code != 404:
-                        raise
-                    # Deleting an account leaves its storage row behind, so the
-                    # reconciliation job still selects it. Routine, not a fault.
-                    raise StorageOwnerInactive(user_id) from None
-                if (
-                    user
-                    and user.attributes
-                    and user.attributes.get("remote_bucket_name")
-                ):
-                    user_bucket_name = user.attributes.get("remote_bucket_name")
-                else:
-                    user_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
-                    logger.warning(
-                        f"User {user_id} has no personal "
-                        f"bucket, using shared bucket: "
-                        f"{user_bucket_name}"
-                    )
+            user = await run_db_lookup(_get_active_user, user_id)
+            if user and user.attributes and user.attributes.get("remote_bucket_name"):
+                user_bucket_name = user.attributes.get("remote_bucket_name")
+            else:
+                user_bucket_name = os.environ.get("S3_DEFAULT_BUCKET_NAME")
+                logger.warning(
+                    f"User {user_id} has no personal "
+                    f"bucket, using shared bucket: "
+                    f"{user_bucket_name}"
+                )
 
             from studio.app.common.core.cloud.s3_storage_monitor import S3StorageMonitor
 
@@ -557,7 +564,7 @@ async def _calculate_live_storage_usage(
         else:
             return await _calculate_local_user_storage(user_id)
 
-    except StorageOwnerInactive:
+    except (StorageOwnerInactive, StorageScanFailed):
         raise
     except Exception as e:
         # Use repr(e) so the exception type is visible even when str(e) is empty.
@@ -566,6 +573,33 @@ async def _calculate_live_storage_usage(
             exc_info=True,
         )
         return 0
+
+
+def _get_active_user(user_id: int):
+    """The active user's context; runs in a worker thread."""
+    from studio.app.common.core.users.crud_users import get_user_with_context_sync
+
+    with session_scope() as db:
+        try:
+            return get_user_with_context_sync(db, user_id)
+        except HTTPException as lookup_error:
+            if lookup_error.status_code != 404:
+                # The lookup reports a database error as a 400
+                raise StorageScanFailed(user_id) from lookup_error
+            # Deleting an account leaves its storage row behind, so the
+            # reconciliation job still selects it. Routine, not a fault.
+            raise StorageOwnerInactive(user_id) from None
+
+
+def get_accessible_workspace_ids(user_id: int) -> List[int]:
+    """
+    Ids of the workspaces the user owns or shares; blocking, for run_db_lookup.
+    A database error raises.
+    """
+    from studio.app.common.core.workspace.workspace_services import WorkspaceService
+
+    with session_scope() as db:
+        return WorkspaceService.get_user_accessible_workspace_ids(db, user_id)
 
 
 async def _calculate_local_user_storage(
@@ -589,13 +623,11 @@ async def _calculate_local_user_storage(
         return 0
 
     try:
-        from studio.app.common.core.workspace.workspace_services import WorkspaceService
+        workspace_ids = await run_db_lookup(get_accessible_workspace_ids, user_id)
+    except Exception as lookup_error:
+        raise StorageScanFailed(user_id) from lookup_error
 
-        with session_scope() as db:
-            workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(
-                db, user_id
-            )
-
+    try:
         total_usage = 0
         import os
 

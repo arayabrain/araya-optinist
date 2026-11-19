@@ -409,8 +409,8 @@ def main():
     parser = argparse.ArgumentParser(description="JWT-Based Routing Integration Tests")
     parser.add_argument(
         "--api-url",
-        default=os.environ.get("API_BASE_URL", "https://araya-optinist.com"),
-        help="API base URL (default: https://araya-optinist.com)",
+        default=os.environ.get("API_BASE_URL", "https://www.araya-optinist.com"),
+        help="API base URL (default: https://www.araya-optinist.com)",
     )
     parser.add_argument(
         "--firebase-token",

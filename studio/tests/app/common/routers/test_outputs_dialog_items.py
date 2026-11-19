@@ -89,7 +89,9 @@ class Hold:
 
 
 async def get_while_held(hold, held_url, other_url):
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         held = asyncio.create_task(http.get(held_url))
         for _ in range(500):
             if hold.reading.is_set():
@@ -151,7 +153,9 @@ async def test_image_items_are_read_two_at_a_time_at_most(node_dir, monkeypatch)
         JsonReader, "read_as_output_bytes", counted_read_as_output_bytes
     )
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         responses = await asyncio.gather(
             *(http.get(image_url(name)) for name in ["meanImg", "Vcorr"] * 2)
         )
@@ -175,7 +179,9 @@ async def test_image_items_are_read_two_at_a_time_at_most(node_dir, monkeypatch)
 async def test_a_timeseries_response_is_what_the_response_model_gave(
     node_dir, route, name
 ):
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         response = await http.get(timeseries_url(route, name))
 
     assert response.status_code == 200, response.text
@@ -234,7 +240,9 @@ async def test_timeseries_records_are_read_one_at_a_time(node_dir, monkeypatch):
         outputs, "_load_timeseries_records", counted_load_timeseries_records
     )
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         responses = await asyncio.gather(
             http.get(timeseries_url("inittimedata", "fluorescence")),
             http.get(timeseries_url("inittimedata", "spks")),
@@ -260,7 +268,9 @@ async def test_a_timeseries_read_not_started_in_time_is_refused(node_dir, monkey
 
     monkeypatch.setattr(outputs, "_load_timeseries_record", held_load_timeseries_record)
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         held = asyncio.create_task(http.get(timeseries_url("timedata", "fluorescence")))
         for _ in range(500):
             if reading.is_set():
