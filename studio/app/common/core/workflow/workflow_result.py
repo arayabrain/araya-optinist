@@ -57,7 +57,7 @@ from studio.app.common.schemas.workflow import (
     WorkflowPIDFileData,
     WorkflowProcessInfo,
 )
-from studio.app.const import DATE_FORMAT
+from studio.app.const import DATE_FORMAT, OBSERVATION_UPLOAD_PATTERNS
 from studio.app.dir_path import DIRPATH
 
 logger = AppLogger.get_logger()
@@ -341,24 +341,31 @@ class WorkflowResult:
                     self.workspace_id,
                     self.unique_id,
                 ) as remote_storage_controller:
-                    # Upload experiment.yaml and all JSON visualization files
-                    # JSON files are created during observation by save_json()
-                    # and need to be synced to S3 for remote viewing
+                    # Upload experiment.yaml and the visualization files
+                    # save_json() wrote during observation, which post_process's
+                    # full upload may have missed, so other hosts can view them
                     target_files = [DIRPATH.EXPERIMENT_YML]
 
-                    # Find all JSON files in function directories
+                    # Find them in function directories
                     # Use recursive glob to include nested files like:
                     # - {function_id}/*.json (ROI, heatmap, etc.)
+                    # - {function_id}/*.html (HTMLData)
                     # - {function_id}/timeseries/*.json (fluorescence traces)
                     # - {function_id}/csv/*.json (CSV data)
-                    json_files = glob(
-                        join_filepath([self.workflow_dirpath, "**", "*.json"]),
+                    # Sync status files are local-only, as in the full upload
+                    status_file = RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE
+                    files = glob(
+                        join_filepath([self.workflow_dirpath, "**", "*"]),
                         recursive=True,
                     )
-                    for json_file in json_files:
-                        # Get relative path from experiment directory
-                        rel_path = os.path.relpath(json_file, self.workflow_dirpath)
-                        target_files.append(rel_path)
+                    for file in files:
+                        if file.endswith(OBSERVATION_UPLOAD_PATTERNS) and (
+                            os.path.basename(file) != status_file
+                        ):
+                            # Get relative path from experiment directory
+                            target_files.append(
+                                os.path.relpath(file, self.workflow_dirpath)
+                            )
 
                     logger.info(
                         f"Uploading observation files to S3: {len(target_files)} files"
