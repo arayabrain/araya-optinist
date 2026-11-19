@@ -169,9 +169,8 @@ assignees: ''
       - [ ] GitHub など別の場所で作成した tag は手元に無いため、`git fetch --tags` で取り込み、`git tag --points-at HEAD` に表示されることを確認
       - 同じバージョンの tag が ECR に既にある場合は、tag は元の image に残り、今回の image には timestamp tag が付く（出力に WARNING が出る）
     - [ ] 実績: {時刻}
-  - [ ] `infrastructure/scripts/ecr_build_push.sh` で image を build・push（frontend / studio に変更があり、apply を行わない場合）
-    - [ ] 実績: {時刻}
-  - [ ] 全 ECS サービス（main / premium / public / background）を force-new-deployment で cycle（apply を行わない場合）
+  - [ ] `infrastructure/scripts/ecr_build_push.sh --deploy` で image を build・push し、全 ECS サービス（main / premium / public / background）を cycle（frontend / studio に変更があり、apply を行わない場合）
+    - 手動の force-new-deployment は使わない。`--deploy` は進行中のロールアウトの完了を待ち、ロールアウト中の host 入れ替えを止める（Auto Scaling group の HealthCheck を一時停止）
     - [ ] 実績: {時刻}
   - [ ] 全サービスが 1 deployment に収束したことを確認
     - `check_ecs_image_drift.py --tag <バージョン>` を使用して、デプロイしたインスタンスが最新かの確認
@@ -249,7 +248,8 @@ assignees: ''
     - 旧 commit からの apply は、その commit の image を build・push し、全サービスを cycle する（上の retag は置き換わる）
     - 新しい image には timestamp tag が付き、旧バージョンの tag は ECR 上の元の image に残る。そのため `check_ecs_image_drift.py --tag <旧バージョン>` は不一致を報告する。元の image で動かす場合は、apply の後に retag と cycle をやり直す
   - [ ] （DBマイグレーションがある場合）ロールバック手順を実施
-  - [ ] 全 ECS サービス（main / premium / public / background）を force-new-deployment で cycle
+  - [ ] （apply の後に元の image へ retag し直した場合のみ）全 ECS サービス（main / premium / public / background）を `ecs_rollout.sh` で cycle
+    - apply が cycle 済みのため、retag し直さない場合は行わない（cycle が二重になる）
   - [ ] 全サービスが 1 deployment に収束したことを確認・ヘルスチェック
 - [ ] **4. 動作確認**
   - 担当: @

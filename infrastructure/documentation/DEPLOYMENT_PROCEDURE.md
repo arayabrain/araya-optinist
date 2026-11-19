@@ -206,7 +206,7 @@ terraform apply -var-file=environments/<ENV>.tfvars
 
 ### Step 2: Build and Push Docker Image (if application code changed)
 
-Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
+Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to. Skip it too when Step 1 applied a commit other than the last one applied: that apply has already built and pushed the image and rolled it out.
 
 #### 2a. Initialize Terraform for the target environment
 
@@ -227,7 +227,8 @@ terraform init -backend-config=backends/<ENV>.hcl -reconfigure
 
 ```bash
 cd infrastructure/scripts
-./ecr_build_push.sh --tag {VERSION}  # Omitted: the release tag on HEAD unless ECR has it, else YYYYMMDD-HHMMSS-<git-sha>
+./ecr_build_push.sh --deploy  # Builds, pushes, then does Step 3
+# --tag {VERSION} sets the version tag. Omitted: the release tag on HEAD unless ECR has it, else YYYYMMDD-HHMMSS-<git-sha>
 ```
 
 The script automatically:
@@ -237,6 +238,7 @@ The script automatically:
 3. Builds frontend with correct environment variables (`.env.production`)
 4. Builds and tags Docker image
 5. Pushes to the ECR repository for the active environment
+6. With `--deploy`, rolls out every service (Step 3)
 
 > For details on ECR repository isolation, image tagging, and rollback, see [INFRA_DEPLOYMENT_PROCEDURE.md — ECR Repository Management](INFRA_DEPLOYMENT_PROCEDURE.md#ecr-repository-management).
 
@@ -244,9 +246,9 @@ The script automatically:
 
 ### Step 3: Force ECS Redeployment (after Docker image push)
 
-Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to.
+Skip this step if only Lambda or infrastructure code changed — see [Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed) for the exact paths each category maps to. Skip it too when Step 1 applied a commit other than the last one applied, or Step 2 ran with `--deploy`: each has already rolled out every service through `ecs_rollout.sh` ([what it does](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services)).
 
-`ecr_build_push.sh --deploy` does this step for every service through `ecs_rollout.sh` ([what it does](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services)). The options below are manual fallbacks without its safeguards: they neither wait for a rollout in progress nor keep the Auto Scaling groups from replacing a host mid-rollout.
+To roll out an image that is already pushed, run `ecs_rollout.sh` by hand as [Cycling All Services](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services) shows. The options below are manual fallbacks without its safeguards: they neither wait for a rollout in progress nor keep the Auto Scaling groups from replacing a host mid-rollout.
 
 **Option A: AWS Console**
 
@@ -670,11 +672,17 @@ git push origin main
 # Follow "Creating a Release" section above
 # Use title format: "Hotfix vX.Y.Z"
 
-# Deploy to production
+# Deploy to production from the hotfix commit. The release tag on HEAD becomes
+# the image's version tag; fetch it first, since it was created on GitHub
+git fetch --tags
+git tag --points-at HEAD   # must list vX.Y.Z
 export AWS_PROFILE=optinist
+terraform -chdir=infrastructure/terraform init -backend-config=backends/production.hcl -reconfigure
 cd infrastructure/scripts
-./ecr_build_push.sh --tag {VERSION}-hotfix
+./ecr_build_push.sh --deploy
 ```
+
+If the hotfix changes Terraform or Lambda code, run `terraform apply` from the hotfix commit instead of the build script: it builds, pushes and rolls out itself ([Determine What Needs to Be Deployed](#determine-what-needs-to-be-deployed)).
 
 #### 5. Sync Hotfix to develop-main
 
@@ -694,6 +702,8 @@ Or create a PR: `main → develop-main` with title "Sync hotfix vX.Y.Z to develo
 ## Troubleshooting
 
 ### ECS service not updating after image push
+
+Pushing `:latest` deploys nothing: each task keeps the image digest it started with. Roll out every service with `ecs_rollout.sh` ([Cycling All Services](INFRA_DEPLOYMENT_PROCEDURE.md#cycling-all-services)); `ecr_build_push.sh --deploy` does this after the push. A force on one service, as below, updates that service alone and skips the rollout's safeguards.
 
 ```bash
 # Force new deployment

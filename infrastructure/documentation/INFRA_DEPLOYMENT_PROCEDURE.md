@@ -277,8 +277,10 @@ cd infrastructure/scripts
 # Ensure the correct AWS profile is active
 export AWS_PROFILE=optinist
 
-# Standard usage — asks for confirmation. Version tag: the release tag on HEAD
-# (e.g. v1.2.3), else auto-generated YYYYMMDD-HHMMSS-<git-sha>
+# Standard usage — asks for confirmation, then builds and pushes only: running
+# services keep their image until a rollout (--deploy below, or "Cycling All
+# Services"). Version tag: the release tag on HEAD (e.g. v1.2.3), else
+# auto-generated YYYYMMDD-HHMMSS-<git-sha>
 ./ecr_build_push.sh
 
 # Custom version tag
@@ -286,6 +288,9 @@ export AWS_PROFILE=optinist
 
 # Skip confirmation (for CI/CD pipelines)
 ./ecr_build_push.sh --yes
+
+# Build, push, then roll out every service (see "Cycling All Services")
+./ecr_build_push.sh --deploy
 ```
 
 The script will display:
@@ -494,10 +499,12 @@ aws autoscaling resume-processes --auto-scaling-group-name <group> \
 ### Safe Deployment Workflow
 
 1. Switch to dev backend: `terraform init -backend-config=backends/development.hcl -reconfigure`
-2. Build and push dev image: `cd ../scripts && ./ecr_build_push.sh`
-3. Force ECS redeployment across **every** service, using the loop in [Cycling All Services](#cycling-all-services)
-4. Verify in development
-5. When ready for production: switch backend and `terraform apply` from the release commit. It
+2. Build and push the dev image and roll it out to **every** service:
+   `cd ../scripts && ./ecr_build_push.sh --deploy` (the rollout: [Cycling All
+   Services](#cycling-all-services)). If the commit also changes Terraform, run `terraform apply`
+   instead: it builds and rolls out itself
+3. Verify in development
+4. When ready for production: switch backend and `terraform apply` from the release commit. It
    builds, pushes and rolls out ([Builds Run by `terraform apply`](#builds-run-by-terraform-apply));
    a separate rebuild and redeploy afterwards only rolls the services a second time
 
@@ -530,17 +537,15 @@ aws ecr put-image \
   --image-manifest "$MANIFEST" \
   --region ap-northeast-1
 
-# 3. Force ECS to pull the rolled-back image, across EVERY service
+# 3. Roll the rolled-back image out to EVERY service, with the rollout's
+#    safeguards (see "Cycling All Services"). From the repository root, with
+#    the environment's backend initialised
 CLUSTER=development-optinist-cloud-cluster
 REGION=ap-northeast-1
 
-SERVICES=$(aws ecs list-services --cluster "$CLUSTER" --region "$REGION" \
-  --query 'serviceArns[]' --output text)
-
-for SERVICE in $SERVICES; do
-  aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
-    --force-new-deployment --region "$REGION" >/dev/null
-done
+bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
+  --asg development-optinist-asg --asg development-optinist-public-asg \
+  --hygiene-association "$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)"
 ```
 
 A rollback that cycles only one service is the worst case of the digest-pinning behaviour described in [Cycling All Services](#cycling-all-services): the image you are rolling back *away from* keeps serving on every service you did not cycle. Confirm all of them settled before declaring the rollback complete.
