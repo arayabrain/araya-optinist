@@ -49,7 +49,7 @@ class CheckoutService:
         return max(ends) if ends else subscription.get("current_period_end")
 
     @staticmethod
-    def subscription_expiration(
+    def stripe_expiration_end(
         status: Optional[str], trial_end: Optional[int], period_end: Optional[int]
     ) -> Optional[int]:
         """Trial end while the subscription is trialing, otherwise the period end.
@@ -575,7 +575,7 @@ class CheckoutService:
                     current_period_end = CheckoutService.subscription_period_end(
                         stripe_sub
                     )
-                    expiration_end = CheckoutService.subscription_expiration(
+                    expiration_end = CheckoutService.stripe_expiration_end(
                         status, trial_end, current_period_end
                     )
 
