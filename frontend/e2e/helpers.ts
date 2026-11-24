@@ -493,9 +493,11 @@ export const FIREBASE_PYTHON = process.env.FIREBASE_ADMIN_PYTHON || "python3"
 
 // verifyEmail forces email_verified through the backend container, which a
 // deployed run has no local copy of; FIREBASE_PYTHON reaches the same shared
-// project from the host. Skip with a name when it cannot import firebase_admin,
-// because the alternative is a failure that reads like a product bug.
+// project from the host. A deployed run skips with a name when it cannot import
+// firebase_admin, because the alternative is a failure that reads like a
+// product bug.
 export function firebaseAdminSkipReason(): string {
+  if (isLocalBaseUrl()) return ""
   try {
     execFileSync(FIREBASE_PYTHON, ["-c", "import firebase_admin"], {
       stdio: "ignore",
@@ -511,6 +513,7 @@ export function firebaseAdminSkipReason(): string {
 }
 
 export function forceEmailVerified(email: string) {
+  if (isLocalBaseUrl()) return verifyEmail(email)
   const key = path.join(
     REPO_ROOT,
     "studio",
