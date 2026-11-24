@@ -50,6 +50,31 @@ def is_no_such_bucket_error(e: Exception) -> bool:
     return "NoSuchBucket" in str(type(e).__name__)
 
 
+def is_not_found_error(e: Exception) -> bool:
+    """Check if exception is S3's answer for a missing key."""
+    if isinstance(e, ClientError):
+        return e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey")
+    return False
+
+
+async def _download_file_atomically(s3_client, bucket: str, key: str, path: str):
+    """
+    Download to a sibling tmp path then rename: callers take the file's
+    existence as a finished download, and download_file creates its target
+    before the body arrives
+    """
+    tmp_path = f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+    try:
+        await s3_client.download_file(bucket, key, tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 class S3StorageController(BaseRemoteStorageController):
     """
     S3 Storage Controller
@@ -642,8 +667,8 @@ class S3StorageController(BaseRemoteStorageController):
                                     Bucket=self.bucket_name, Key=file_remote_path
                                 )
 
-                                # download file
-                                await __s3_client.download_file(
+                                await _download_file_atomically(
+                                    __s3_client,
                                     self.bucket_name,
                                     file_remote_path,
                                     flie_local_path,
@@ -666,6 +691,10 @@ class S3StorageController(BaseRemoteStorageController):
         one experiment is needed.
 
         Downloads: experiment.yaml, workflow.yaml, snakemake_config.yaml
+
+        A file the record does not have is skipped. Any other failure is raised
+        once every file has been tried, so callers can tell a failed read from
+        an absent file.
         """
         metadata_filenames = [
             DIRPATH.EXPERIMENT_YML,
@@ -682,6 +711,7 @@ class S3StorageController(BaseRemoteStorageController):
         )
 
         downloaded_count = 0
+        failure = None
         async with self.__get_s3_client() as __s3_client:
             for metadata_filename in metadata_filenames:
                 file_remote_path = experiment_prefix + metadata_filename
@@ -705,8 +735,8 @@ class S3StorageController(BaseRemoteStorageController):
                         Bucket=self.bucket_name, Key=file_remote_path
                     )
 
-                    # Download file from S3
-                    await __s3_client.download_file(
+                    await _download_file_atomically(
+                        __s3_client,
                         self.bucket_name,
                         file_remote_path,
                         file_local_path,
@@ -714,16 +744,21 @@ class S3StorageController(BaseRemoteStorageController):
                     downloaded_count += 1
                     logger.debug(f"Downloaded: {file_remote_path}")
                 except Exception as e:
-                    # File may not exist in S3 - this is OK for optional files
+                    if is_not_found_error(e):
+                        logger.debug(f"Not in remote storage: {file_remote_path}")
+                        continue
                     logger.warning(
                         f"Could not download [{self.bucket_name}]"
                         f"[{file_remote_path}]: {e}"
                     )
+                    failure = failure or e
 
         logger.debug(
             f"Downloaded {downloaded_count} metadata files for "
             f"[{workspace_id}/{unique_id}]"
         )
+        if failure is not None:
+            raise failure
         return True
 
     async def experiment_prefix_exists(

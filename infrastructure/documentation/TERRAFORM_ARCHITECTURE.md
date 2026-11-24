@@ -227,22 +227,23 @@ The `enable_custom_domain` variable controls whether Route53, ACM (SSL certifica
 ### Production (`enable_custom_domain = true`)
 
 ```
-User → https://araya-optinist.com
+User → https://www.araya-optinist.com
          │
          ▼
     Route53 (DNS)
-         │  A record → ALB
+         │  A records (apex and www) → ALB
          ▼
     ALB Listener (port 443, HTTPS)
          │  SSL terminated with ACM certificate
          │  TLS 1.3
+         │  Page loads on the apex: 301 to the same path on www
          ▼
     ECS Target Group (port 8000)
 
     ALB Listener (port 80, HTTP)
          │  Redirects to HTTPS (301)
          ▼
-    https://araya-optinist.com
+    https:// on the same host
 ```
 
 **Resources created**: Route53 hosted zone, ACM certificate, DNS validation records, A records (apex + www), HTTPS listener with SSL.
@@ -326,7 +327,7 @@ Terraform creates no IAM user or access key for the application. Every Secrets M
 
 | Aspect                          | Production (`subscr`)               | Development (`development`)                                   |
 | ------------------------------- | ----------------------------------- | ------------------------------------------------------------- |
-| **Access URL**                  | `https://araya-optinist.com`        | `http://<ALB-DNS-NAME>` (see `terraform output alb_dns_name`) |
+| **Access URL**                  | `https://www.araya-optinist.com`    | `http://<ALB-DNS-NAME>` (see `terraform output alb_dns_name`) |
 | **VPC CIDR**                    | `10.1.0.0/16`                       | `10.2.0.0/16`                                                 |
 | **Custom domain**               | `araya-optinist.com` (HTTPS)        | ALB DNS name (HTTP)                                           |
 | **Route53 / ACM**               | Created                             | Not created (`enable_custom_domain = false`)                  |

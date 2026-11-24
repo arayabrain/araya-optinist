@@ -30,16 +30,16 @@ import { ThunkApiConfig } from "store/store"
  */
 export const getImageItemData = createAsyncThunk<
   void,
-  { itemId: number; path: string; workspaceId: number },
+  { itemId: number; path: string; workspaceId: number; uniqueId?: string },
   ThunkApiConfig
 >(
   `${VISUALIZE_ITEM_SLICE_NAME}/getImageItemData`,
-  async ({ itemId, path, workspaceId }, thunkAPI) => {
+  async ({ itemId, path, workspaceId, uniqueId }, thunkAPI) => {
     const item = selectVisualizeItems(thunkAPI.getState())[itemId]
     if (item == null || !isImageItem(item)) return
     const { startIndex, endIndex } = item
     const result = await thunkAPI.dispatch(
-      getImageData({ path, workspaceId, startIndex, endIndex }),
+      getImageData({ path, workspaceId, uniqueId, startIndex, endIndex }),
     )
     if (!item.isWorkflowDialog || !getImageData.rejected.match(result)) return
     // The dialog may have closed meanwhile, and its id gone to another item
@@ -65,6 +65,7 @@ export const getImageItemData = createAsyncThunk<
         getImageData({
           path,
           workspaceId,
+          uniqueId,
           startIndex,
           endIndex: fittedEndIndex,
         }),

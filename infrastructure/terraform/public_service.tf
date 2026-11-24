@@ -249,6 +249,8 @@ resource "aws_ecs_task_definition" "public" {
         { name = "FRONTEND_SERVER_HOST", value = local.effective_frontend_domain },
         { name = "FRONTEND_SERVER_PORT", value = local.effective_frontend_port },
         { name = "FRONTEND_SERVER_PROTO", value = var.frontend_protocol },
+        # The app's own origin: the origin /auth trusts, and links the app builds
+        { name = "FRONTEND_URL", value = local.canonical_origin },
 
         { name = "INITIAL_FIREBASE_UID", value = var.optinist_admin_uid },
         { name = "INITIAL_USER_NAME", value = var.optinist_admin_name },
@@ -261,7 +263,7 @@ resource "aws_ecs_task_definition" "public" {
         { name = "REMOTE_STORAGE_TYPE", value = "2" },
 
         { name = "LOG_LEVEL", value = "INFO" },
-        { name = "CORS_ORIGINS", value = "*" },
+        { name = "CORS_ORIGINS", value = local.cors_origins },
         { name = "PYTHONUNBUFFERED", value = "1" },
         { name = "OPTINIST_DIR", value = "/app/studio_data" },
 
@@ -425,6 +427,11 @@ output "public_task_definition_arn" {
 output "public_target_group_arn" {
   description = "ARN of the public target group"
   value       = aws_lb_target_group.public.arn
+}
+
+output "public_asg_name" {
+  description = "Name of the public Auto Scaling group; ecr_build_push.sh --deploy suspends its host health checks during a rollout"
+  value       = aws_autoscaling_group.public.name
 }
 
 # wait_for_capacity_timeout=0 means `terraform apply` returns before targets

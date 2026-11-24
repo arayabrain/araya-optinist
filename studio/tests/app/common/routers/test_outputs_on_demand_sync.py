@@ -217,6 +217,13 @@ class TestStructuredCallSiteRefetchesAfterCleanup:
     input cache was wiped reports the file as permanently missing.
     """
 
+    @pytest.fixture(autouse=True)
+    def config_present(self):
+        """The record's config fetch comes first; these cases are about its
+        input."""
+        with patch(f"{MODULE}._ensure_workflow_config", new_callable=AsyncMock):
+            yield
+
     @staticmethod
     def _node(path="raw.hdf5"):
         node = Mock()

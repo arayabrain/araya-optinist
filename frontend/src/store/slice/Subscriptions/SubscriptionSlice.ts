@@ -30,6 +30,7 @@ const initialState: SubscriptionState = {
   error: null,
   plansLoading: false,
   userSubscriptionLoading: false,
+  userSubscriptionLoaded: false,
   serverTime: null,
   deletionPriority: null,
   deletionPriorityLoading: false,
@@ -44,6 +45,7 @@ const subscriptionSlice = createSlice({
     },
     clearUserSubscription: (state) => {
       state.userSubscription = null
+      state.userSubscriptionLoaded = false
     },
     resetSubscriptionState: (state) => {
       state.plans = []
@@ -52,6 +54,7 @@ const subscriptionSlice = createSlice({
       state.error = null
       state.plansLoading = false
       state.userSubscriptionLoading = false
+      state.userSubscriptionLoaded = false
     },
   },
   extraReducers: (builder) => {
@@ -95,6 +98,7 @@ const subscriptionSlice = createSlice({
       // User Subscription
       .addCase(getUserSubscription.pending, (state) => {
         state.userSubscriptionLoading = true
+        state.userSubscriptionLoaded = false
         state.loading = true
         state.error = null
       })
@@ -120,10 +124,15 @@ const subscriptionSlice = createSlice({
                 ),
                 plan_name: String(action.payload.plan_name || ""),
                 plan_price: Number(action.payload.plan_price) || 0,
+                is_trial: Boolean(action.payload.is_trial),
+                trial_end: action.payload.trial_end
+                  ? String(action.payload.trial_end)
+                  : null,
               }
             } else {
               state.userSubscription = null
             }
+            state.userSubscriptionLoaded = true
           } catch (error) {
             state.userSubscription = null
             state.error = "Failed to process user subscription data"
@@ -132,6 +141,7 @@ const subscriptionSlice = createSlice({
       )
       .addCase(getUserSubscription.rejected, (state, action) => {
         state.userSubscriptionLoading = false
+        state.userSubscriptionLoaded = false
         state.loading = false
         state.userSubscription = null
         state.error = extractRejectedErrorMessage(

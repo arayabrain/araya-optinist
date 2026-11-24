@@ -62,6 +62,7 @@ import {
   selectImageMeta,
   selectStatusRoi,
 } from "store/slice/DisplayData/DisplayDataSelectors"
+import { selectPipelineLatestUid } from "store/slice/Pipeline/PipelineSelectors"
 import {
   getImageItemData,
   selectingImageArea,
@@ -145,6 +146,8 @@ export const ImagePlot = memo(function ImagePlot() {
   const { filePath: path, itemId } = useContext(DisplayDataContext)
 
   const workspaceId = useSelector(selectCurrentWorkspaceId)
+  // A published record's id is what lets a viewer other than its owner read it
+  const uniqueId = useSelector(selectPipelineLatestUid)
   const isPending = useSelector(selectImageDataIsPending(path))
   const isInitialized = useSelector(selectImageDataIsInitialized(path))
   const isFulfilled = useSelector(selectImageDataIsFulfilled(path))
@@ -160,17 +163,27 @@ export const ImagePlot = memo(function ImagePlot() {
   // path may be another item's window, or a refusal of one
   useEffect(() => {
     if (workspaceId && isWorkflowDialog) {
-      dispatch(getImageItemData({ itemId, path, workspaceId }))
+      dispatch(getImageItemData({ itemId, path, workspaceId, uniqueId }))
     }
-  }, [dispatch, isWorkflowDialog, itemId, path, workspaceId])
+  }, [dispatch, isWorkflowDialog, itemId, path, workspaceId, uniqueId])
   useEffect(() => {
-    if (workspaceId) {
-      if (!isWorkflowDialog && !isInitialized) {
-        dispatch(getImageItemData({ itemId, path, workspaceId }))
-      }
-      if (roiFilePath != null) {
-        dispatch(getRoiData({ path: roiFilePath, workspaceId }))
-      }
+    if (workspaceId && !isWorkflowDialog && !isInitialized) {
+      dispatch(getImageItemData({ itemId, path, workspaceId, uniqueId }))
+    }
+  }, [
+    dispatch,
+    isInitialized,
+    isWorkflowDialog,
+    itemId,
+    path,
+    workspaceId,
+    uniqueId,
+  ])
+  // Refetched along with the image it overlays. The ROI path names its record,
+  // so a new current pipeline alone is no reason to fetch it again
+  useEffect(() => {
+    if (workspaceId && roiFilePath != null) {
+      dispatch(getRoiData({ path: roiFilePath, workspaceId }))
     }
   }, [
     dispatch,

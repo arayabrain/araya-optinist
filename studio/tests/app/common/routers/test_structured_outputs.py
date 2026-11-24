@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import threading
+from unittest.mock import AsyncMock, patch
 
 import h5py
 import httpx
@@ -9,8 +10,16 @@ import numpy as np
 import pytest
 import scipy.io
 import yaml
+from botocore.exceptions import ClientError
 
 from studio.__main_unit__ import app
+from studio.app.common.core.storage.remote_storage_controller import (
+    RemoteStorageController,
+    RemoteSyncAction,
+    RemoteSyncLockFileUtil,
+    RemoteSyncStatusFileUtil,
+)
+from studio.app.common.core.storage.s3_storage_controller import S3StorageController
 from studio.app.common.routers import outputs
 from studio.app.dir_path import DIRPATH
 
@@ -318,6 +327,212 @@ def test_structured_missing_workflow(client):
     assert response.status_code == 404
 
 
+def _structured_url(unique_id, node_id):
+    return f"/api/visualizations/structured/{WORKSPACE_ID}/{unique_id}/{node_id}"
+
+
+def _drop_record(unique_id):
+    shutil.rmtree(
+        os.path.join(DIRPATH.OUTPUT_DIR, WORKSPACE_ID, unique_id), ignore_errors=True
+    )
+
+
+def _remote_config(delay=0.0):
+    """
+    Stands in for the remote metadata download: after `delay` seconds, writes
+    the module record's workflow.yaml into the requested record. Returns the
+    patch for RemoteStorageController and the record ids it was asked for.
+    """
+    source = os.path.join(DIRPATH.OUTPUT_DIR, WORKSPACE_ID, UNIQUE_ID, "workflow.yaml")
+    asked = []
+
+    async def download_experiment_meta(self, workspace_id, unique_id):
+        asked.append(unique_id)
+        await asyncio.sleep(delay)
+        record_dir = os.path.join(DIRPATH.OUTPUT_DIR, workspace_id, unique_id)
+        os.makedirs(record_dir, exist_ok=True)
+        shutil.copy(source, os.path.join(record_dir, "workflow.yaml"))
+        return True
+
+    meta_patch = patch.object(
+        RemoteStorageController, "download_experiment_meta", download_experiment_meta
+    )
+    return meta_patch, asked
+
+
+def test_structured_fetches_a_missing_config_before_reading_it(client):
+    """A server that has not synced the record has no workflow.yaml for it; the
+    route fetches the record's metadata, then reads it."""
+    meta_patch, asked = _remote_config()
+    try:
+        with meta_patch:
+            response = client.get(_structured_url("run_unsynced", "hdf5_1d_node"))
+    finally:
+        _drop_record("run_unsynced")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data_type"] == "bar"
+    assert asked == ["run_unsynced"]
+
+
+def test_structured_reads_a_local_config_without_the_record_lock(client):
+    """A run holds the record's lock, with its sync status at processing, until
+    its upload starts; a server that has the config needs neither."""
+    token = RemoteSyncLockFileUtil.create_sync_lock_file(WORKSPACE_ID, UNIQUE_ID)
+    RemoteSyncStatusFileUtil.create_sync_status_file_for_processing(
+        "bucket", WORKSPACE_ID, UNIQUE_ID, RemoteSyncAction.UPLOAD
+    )
+    meta_patch, asked = _remote_config()
+    try:
+        with meta_patch:
+            response = client.get(_structured_url(UNIQUE_ID, "hdf5_1d_node"))
+    finally:
+        RemoteSyncLockFileUtil.delete_sync_lock_file(WORKSPACE_ID, UNIQUE_ID, token)
+        os.remove(
+            os.path.join(
+                DIRPATH.OUTPUT_DIR,
+                WORKSPACE_ID,
+                UNIQUE_ID,
+                RemoteSyncStatusFileUtil.REMOTE_SYNC_STATUS_FILE,
+            )
+        )
+
+    assert response.status_code == 200, response.text
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_structured_cards_on_a_server_without_the_config_both_load():
+    """The dialog's HDF5 and MAT cards ask at once: the second waits for the
+    first's fetch instead of failing on the lock it holds."""
+    meta_patch, asked = _remote_config(delay=0.3)
+    try:
+        with meta_patch:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as http:
+                responses = await asyncio.gather(
+                    http.get(_structured_url("run_unsynced_pair", "hdf5_1d_node")),
+                    http.get(_structured_url("run_unsynced_pair", "mat_node")),
+                )
+    finally:
+        _drop_record("run_unsynced_pair")
+
+    assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
+    assert asked == ["run_unsynced_pair"]
+
+
+def test_structured_answers_423_when_the_lock_outlasts_the_wait(client, monkeypatch):
+    monkeypatch.setattr(outputs, "STRUCTURED_CONFIG_WAIT_SECONDS", 0.3)
+    token = RemoteSyncLockFileUtil.create_sync_lock_file(WORKSPACE_ID, "run_locked")
+    meta_patch, asked = _remote_config()
+    try:
+        with meta_patch:
+            response = client.get(_structured_url("run_locked", "hdf5_1d_node"))
+    finally:
+        RemoteSyncLockFileUtil.delete_sync_lock_file(WORKSPACE_ID, "run_locked", token)
+        _drop_record("run_locked")
+
+    assert response.status_code == 423, response.text
+    assert asked == []
+
+
+def test_structured_answers_429_when_the_config_cannot_be_fetched(client):
+    """A failed fetch asks the client to retry later. Not 404, which reads as a
+    missing record; not 503, which the frontend takes for an unreachable
+    instance."""
+
+    async def unreachable(self, workspace_id, unique_id):
+        raise RuntimeError("S3 unreachable")
+
+    try:
+        with patch.object(
+            RemoteStorageController, "download_experiment_meta", unreachable
+        ):
+            response = client.get(_structured_url("run_unreachable", "hdf5_1d_node"))
+    finally:
+        _drop_record("run_unreachable")
+
+    assert response.status_code == 429, response.text
+    assert response.headers["Retry-After"] == "5"
+
+
+def _client_error(code):
+    return ClientError({"Error": {"Code": code, "Message": code}}, "HeadObject")
+
+
+def _via_s3(head_error=None, download_error=None):
+    """
+    Runs the real S3StorageController under the route, on a mocked client whose
+    bucket holds the module record's workflow.yaml and no other metadata file.
+    The errors, when given, are what S3 answers for workflow.yaml.
+    """
+    source = os.path.join(DIRPATH.OUTPUT_DIR, WORKSPACE_ID, UNIQUE_ID, "workflow.yaml")
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    async def head_object(Bucket, Key):
+        if not Key.endswith("/workflow.yaml"):
+            raise _client_error("404")
+        if head_error:
+            raise head_error
+
+    async def download_file(bucket, key, path):
+        if download_error:
+            # aioboto3 creates its target before the body arrives
+            with open(path, "w") as f:
+                f.write("nodeDict:\n  par")
+            raise download_error
+        shutil.copy(source, path)
+
+    client.head_object.side_effect = head_object
+    client.download_file.side_effect = download_file
+
+    async def download_experiment_meta(self, workspace_id, unique_id):
+        s3 = S3StorageController("bucket")
+        with patch.object(
+            s3, "_S3StorageController__get_s3_client", return_value=client
+        ):
+            return await s3.download_experiment_meta(workspace_id, unique_id)
+
+    return patch.object(
+        RemoteStorageController, "download_experiment_meta", download_experiment_meta
+    )
+
+
+@pytest.mark.parametrize(
+    "head_error, download_error, expected",
+    [
+        (None, None, 200),
+        (_client_error("404"), None, 404),
+        (_client_error("SlowDown"), None, 429),
+        (None, _client_error("InternalError"), 429),
+    ],
+    ids=["fetched", "absent", "throttled", "failed-mid-body"],
+)
+def test_structured_tells_a_failed_s3_read_from_an_absent_config(
+    client, head_error, download_error, expected
+):
+    """A config S3 does not have reads as missing. A read S3 failed asks the
+    client to retry, and leaves no partial config for the retry to trust."""
+    unique_id = "run_via_s3"
+    config_path = os.path.join(
+        DIRPATH.OUTPUT_DIR, WORKSPACE_ID, unique_id, "workflow.yaml"
+    )
+    try:
+        with _via_s3(head_error, download_error):
+            response = client.get(_structured_url(unique_id, "hdf5_1d_node"))
+        config_kept = os.path.exists(config_path)
+    finally:
+        _drop_record(unique_id)
+
+    assert response.status_code == expected, response.text
+    assert config_kept == (expected == 200)
+    if expected == 429:
+        assert response.headers["Retry-After"] == "5"
+
+
 def test_structured_missing_node(client):
     response = client.get(
         f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}/nonexistent_node"
@@ -397,6 +612,9 @@ async def test_structured_missing_input_triggers_on_demand_sync():
     config.nodeDict.get.return_value = node
 
     with patch(
+        "studio.app.common.routers.outputs._ensure_workflow_config",
+        new_callable=AsyncMock,
+    ), patch(
         "studio.app.common.routers.outputs.WorkflowConfigReader.read",
         return_value=config,
     ), patch(
@@ -440,6 +658,9 @@ async def test_structured_missing_input_resyncs_via_download_layer():
 
     rsc = "studio.app.common.core.storage.remote_storage_controller"
     with patch(
+        "studio.app.common.routers.outputs._ensure_workflow_config",
+        new_callable=AsyncMock,
+    ), patch(
         "studio.app.common.routers.outputs.WorkflowConfigReader.read",
         return_value=config,
     ), patch(
@@ -607,7 +828,9 @@ async def test_a_structured_read_not_started_in_time_is_refused(monkeypatch):
     monkeypatch.setattr(outputs, "_structured_body", held_structured_body)
     url = f"/api/visualizations/structured/{WORKSPACE_ID}/{UNIQUE_ID}"
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
         held = asyncio.create_task(http.get(f"{url}/hdf5_3d_node"))
         for _ in range(500):
             if reading.is_set():

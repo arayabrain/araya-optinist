@@ -1,6 +1,3 @@
-import { execFileSync } from "child_process"
-import * as path from "path"
-
 import { test, expect, Page, request } from "@playwright/test"
 
 import {
@@ -9,10 +6,10 @@ import {
   authHeaders,
   confirmDialog,
   ERROR_RED,
-  FIREBASE_PYTHON,
+  firebaseAdminSkipReason,
+  forceEmailVerified,
   isLocalBaseUrl,
   login,
-  REPO_ROOT,
   runSql,
   runSqlWriteOnDev,
   sqlLiteral,
@@ -82,48 +79,6 @@ function setStorage(usageBytes: number, quotaBytes: number) {
 
 async function loginKeepWarnings(page: Page) {
   await login(page, USER.email, USER.password, false)
-}
-
-// helpers.ts forces email_verified through the backend container, which a
-// deployed run has no local copy of; FIREBASE_PYTHON reaches the same shared
-// project from the host. Skip with a name when it cannot import firebase_admin,
-// because the alternative is a failure that reads like a product bug.
-function firebaseAdminSkipReason(): string {
-  try {
-    execFileSync(FIREBASE_PYTHON, ["-c", "import firebase_admin"], {
-      stdio: "ignore",
-    })
-    return ""
-  } catch {
-    return (
-      `${FIREBASE_PYTHON} cannot import firebase_admin; set ` +
-      `FIREBASE_ADMIN_PYTHON to an interpreter that can, to force ` +
-      `email_verified on a deployed throwaway account`
-    )
-  }
-}
-
-function forceEmailVerified(email: string) {
-  const key = path.join(
-    REPO_ROOT,
-    "studio",
-    "config",
-    "auth",
-    "firebase_private.json",
-  )
-  execFileSync(
-    FIREBASE_PYTHON,
-    [
-      "-c",
-      "import sys,firebase_admin\n" +
-        "from firebase_admin import auth, credentials\n" +
-        "firebase_admin.initialize_app(credentials.Certificate(sys.argv[1]))\n" +
-        "auth.update_user(auth.get_user_by_email(sys.argv[2]).uid, email_verified=True)\n",
-      key,
-      email,
-    ],
-    { stdio: "pipe" },
-  )
 }
 
 const dialog = confirmDialog
