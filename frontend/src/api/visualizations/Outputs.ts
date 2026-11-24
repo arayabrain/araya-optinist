@@ -108,12 +108,15 @@ export type CsvData = number[][]
 
 export async function getCsvDataApi(
   path: string,
-  params: { workspaceId: number },
+  params: { workspaceId: number; uniqueId?: string },
 ): Promise<{ data: CsvData; meta?: PlotMetaData }> {
   const response = await axios.get(
     `${BASE_URL}/api/visualizations/csv/${path}`,
     {
-      params: { workspace_id: params.workspaceId },
+      params: {
+        workspace_id: params.workspaceId,
+        unique_id: params.uniqueId,
+      },
     },
   )
 

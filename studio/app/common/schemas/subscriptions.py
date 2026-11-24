@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, validator
 from studio.app.common.core.subscription.constants import (
     DeletionPriority as DeletionPriorityEnum,
 )
+from studio.app.common.core.utils.datetime_utils import ensure_utc
 
 
 class SubscriptionPlanResponse(BaseModel):
@@ -88,8 +89,17 @@ class UserSubscriptionResponse(BaseModel):
     plan_name: str
     plan_price: int
     status: int = Field(..., description="1=Active, 2=Cancelled, 3=Expired, 4=CANCELED")
+    trial_end: Optional[datetime] = None
+    is_trial: bool = Field(
+        False, description="True while the free trial runs (trial_end ahead)"
+    )
     created_at: datetime
     updated_at: datetime
+
+    @validator("expiration", "trial_end")
+    def dates_shown_carry_utc(cls, v):
+        """Rows hold naive UTC; with the offset the browser shows its local date"""
+        return ensure_utc(v)
 
     class Config:
         from_attributes = True

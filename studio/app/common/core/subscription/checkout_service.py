@@ -42,6 +42,26 @@ class CheckoutService:
     """Service class for handling checkout operations"""
 
     @staticmethod
+    def subscription_period_end(subscription: Dict[str, Any]) -> Optional[int]:
+        """Period end of a Stripe subscription; API basil keeps it on items only."""
+        items = (subscription.get("items") or {}).get("data") or []
+        ends = [i["current_period_end"] for i in items if i.get("current_period_end")]
+        return max(ends) if ends else subscription.get("current_period_end")
+
+    @staticmethod
+    def stripe_expiration_end(
+        status: Optional[str], trial_end: Optional[int], period_end: Optional[int]
+    ) -> Optional[int]:
+        """Trial end while the subscription is trialing, otherwise the period end.
+
+        Stripe may keep ``trial_end`` after the trial converts, so only the
+        status says whether the trial is still running.
+        """
+        if trial_end and status == StripeSubscriptionStatus.TRIAL:
+            return trial_end
+        return period_end
+
+    @staticmethod
     def get_existing_subscription(
         db: Session, user_id: int
     ) -> Optional[UserSubscription]:
@@ -336,7 +356,11 @@ class CheckoutService:
 
     @staticmethod
     def create_or_update_subscription(
-        db: Session, user_id: int, plan_id: int, expiration_date: datetime
+        db: Session,
+        user_id: int,
+        plan_id: int,
+        expiration_date: datetime,
+        trial_end: Optional[datetime] = None,
     ) -> int:
         """
         Create new subscription or update existing one.
@@ -349,6 +373,8 @@ class CheckoutService:
             user_id: Internal user ID
             plan_id: Subscription plan ID
             expiration_date: When subscription expires
+            trial_end: The Stripe subscription's trial end; None when it has
+                no trial. Always written, so the row mirrors Stripe.
 
         Returns:
             Subscription user ID
@@ -365,7 +391,7 @@ class CheckoutService:
 
         if existing_subscription:
             return CheckoutService._apply_subscription_update(
-                existing_subscription, plan_id, expiration_date
+                existing_subscription, plan_id, expiration_date, trial_end
             )
 
         # Create new subscription. ``subscription_users.user_id`` is unique,
@@ -383,6 +409,7 @@ class CheckoutService:
                     plan_id=plan_id,
                     user_id=user_id,
                     expiration=expiration_date,
+                    trial_end=trial_end,
                     sync_status=SyncStatus.SYNCED,
                 )
                 db.add(new_subscription)
@@ -404,17 +431,21 @@ class CheckoutService:
                 # it, surface the original error rather than swallow it.
                 raise
             return CheckoutService._apply_subscription_update(
-                existing_subscription, plan_id, expiration_date
+                existing_subscription, plan_id, expiration_date, trial_end
             )
 
     @staticmethod
     def _apply_subscription_update(
-        subscription: UserSubscription, plan_id: int, expiration_date: datetime
+        subscription: UserSubscription,
+        plan_id: int,
+        expiration_date: datetime,
+        trial_end: Optional[datetime] = None,
     ) -> int:
         """Apply the standard field updates to an existing subscription row."""
         subscription.plan_id = plan_id
         subscription.sync_status = SyncStatus.SYNCED
         subscription.expiration = expiration_date
+        subscription.trial_end = trial_end
         subscription.scheduled_downgrade = False
         subscription.updated_at = SubscriptionService.get_current_datetime()
         return subscription.id
@@ -552,12 +583,15 @@ class CheckoutService:
 
                     # Determine expiration from Stripe subscription
                     trial_end = getattr(stripe_sub, "trial_end", None)
-                    current_period_end = getattr(stripe_sub, "current_period_end", None)
+                    current_period_end = CheckoutService.subscription_period_end(
+                        stripe_sub
+                    )
+                    expiration_end = CheckoutService.stripe_expiration_end(
+                        status, trial_end, current_period_end
+                    )
 
-                    if trial_end:
-                        expiration_date = datetime_from_timestamp(trial_end)
-                    elif current_period_end:
-                        expiration_date = datetime_from_timestamp(current_period_end)
+                    if expiration_end:
+                        expiration_date = datetime_from_timestamp(expiration_end)
                     else:
                         logger.warning(
                             f"No expiration data in Stripe subscription "
@@ -575,7 +609,13 @@ class CheckoutService:
 
                     # Sync to database: create/update subscription
                     CheckoutService.create_or_update_subscription(
-                        db, user_id, recovered_plan_id, expiration_date
+                        db,
+                        user_id,
+                        recovered_plan_id,
+                        expiration_date,
+                        trial_end=(
+                            datetime_from_timestamp(trial_end) if trial_end else None
+                        ),
                     )
 
                     # Ensure provider and account are linked

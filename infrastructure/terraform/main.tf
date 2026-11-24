@@ -525,11 +525,28 @@ locals {
   env_prefix        = "${var.environment}-optinist"
   environment_label = var.environment == local.production_env_prefix ? "Production" : "Development"
 
+  # How long a deregistered free / public target keeps its in-flight requests
+  # before ECS stops the task. One task per host, so every rollout and
+  # scale-in waits this out host by host. Production lets long downloads
+  # finish (public: the listener's idle_timeout); development trades that for
+  # rollouts several times faster
+  free_tg_deregistration_delay   = var.environment == local.production_env_prefix ? 300 : 60
+  public_tg_deregistration_delay = var.environment == local.production_env_prefix ? 600 : 60
+
   # Resolve frontend host/port from ALB DNS when no custom domain is configured
   # - Production: uses custom domain on port 443
   # - Development: uses ALB DNS name on port 8080
   effective_frontend_domain = var.enable_custom_domain ? var.frontend_domain : aws_lb.autoscaling.dns_name
   effective_frontend_port   = var.enable_custom_domain ? var.frontend_port : "8080"
+
+  # The one origin the app is served from; apex page loads are redirected to
+  # it (aws_lb_listener_rule.apex_to_www). Scheme and port follow
+  # aws_lb_listener.autoscaling_https.
+  canonical_origin = var.enable_custom_domain ? "https://www.${var.frontend_domain}" : "http://${aws_lb.autoscaling.dns_name}:8080"
+
+  # Origins a browser may call the API from with credentials. The app itself is
+  # same-origin and needs none; dev keeps the wildcard.
+  cors_origins = var.enable_custom_domain ? local.canonical_origin : "*"
 }
 
 # =======
@@ -644,9 +661,6 @@ output "launch_template_id" {
 output "frontend_config_autoscaling" {
   description = "Configuration values for frontend/.env.production"
   value = {
-    REACT_APP_SERVER_HOST             = aws_lb.autoscaling.dns_name
-    REACT_APP_SERVER_PORT             = "80"
-    REACT_APP_SERVER_PROTO            = "http"
     REACT_APP_EXPDB_METADATA_EDITABLE = true
   }
 }
@@ -703,8 +717,8 @@ output "domain_name" {
 }
 
 output "domain_url" {
-  description = "Full URL for the application"
-  value       = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+  description = "Origin the application is served from (www in prod, ALB DNS on port 8080 in dev)"
+  value       = local.canonical_origin
 }
 
 output "domain_protocol" {

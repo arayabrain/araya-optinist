@@ -7,15 +7,32 @@ import GitHubIcon from "@mui/icons-material/GitHub"
 import { Box, Button, Typography, Card, CardContent } from "@mui/material"
 
 import { CheckoutValidationStatus } from "api/subscriptions/SubscriptionsApiDTO"
+import { SubscriptionPeriods } from "const/Subscription"
 
 interface PaymentResultProps {
   type?: CheckoutValidationStatus
+  // Set when the new subscription is trialing: the first charge date
+  trialEnd?: string | null
 }
 
 const PaymentResult: React.FC<PaymentResultProps> = ({
   type = CheckoutValidationStatus.SUCCESS,
+  trialEnd = null,
 }) => {
   const navigate = useNavigate()
+
+  // A trial checkout takes no payment, so there is nothing to report but the
+  // date of the first charge
+  const successDescription = trialEnd
+    ? `Your ${SubscriptionPeriods.TRIAL_PERIOD_DAYS}-day free trial has started. ` +
+      `Your first payment will be taken on ${new Date(
+        trialEnd,
+      ).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })}.`
+    : "We've sent you an email with the payment information."
 
   interface Config {
     icon: React.ReactNode
@@ -35,7 +52,7 @@ const PaymentResult: React.FC<PaymentResultProps> = ({
       circleColor: "#10b981",
       title: "Thank you!",
       subtitle: "You are now eligible to use premium services",
-      description: "We've sent you an email with the payment information.",
+      description: successDescription,
       buttonText: "Dashboard",
       buttonColor: "#3b82f6",
       buttonHoverColor: "#2563eb",

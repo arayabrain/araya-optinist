@@ -8,6 +8,7 @@ import {
   runSql,
   stripeAccountSkipReason,
   sqlLiteral,
+  periodEnd,
   sqlSkipReason,
   stripeGet,
   stripeSubscriptionFor,
@@ -41,21 +42,6 @@ function scheduledDowngrade(): string {
     `SELECT scheduled_downgrade FROM subscription_users
        WHERE user_id = ${premiumUserId};`,
   )
-}
-
-// The end of the current billing period. Newer Stripe API versions carry this
-// on the subscription item, not on the subscription, so reading it off the top
-// level silently yields undefined.
-function periodEnd(subscription: Record<string, any>): number {
-  const items = (subscription.items?.data ?? []) as Record<string, any>[]
-  const ends = items
-    .map((item) => item.current_period_end as number)
-    .filter((end) => typeof end === "number")
-  expect(
-    ends.length,
-    "the subscription has no item with a period end",
-  ).toBeGreaterThan(0)
-  return Math.max(...ends)
 }
 
 // Update events for this subscription raised at or after `since` (epoch

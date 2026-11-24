@@ -11,6 +11,7 @@ public and free bands are static terraform, so nothing but this test connects
 the two halves.
 """
 
+import fnmatch
 import re
 
 import pytest
@@ -19,8 +20,10 @@ from terraform_source import (
     NEXT_TOP_LEVEL_BLOCK,
     TERRAFORM_DIR,
     attribute,
+    per_environment,
     read,
     resource_block,
+    resource_blocks,
 )
 
 PUBLIC_ALB_RULES_TF = TERRAFORM_DIR / "public_alb_rules.tf"
@@ -52,6 +55,7 @@ EXPECTED_ALB_ROUTING = {
         ("/api/public/dataview", "/api/public/dataview/*"),
         "public",
     ),
+    "account_deletion_to_free": (304, ("/users/me",), "autoscaling"),
     "auth_to_public": (305, ("/auth/*",), "public"),
     "users_me_to_public": (306, ("/users/me", "/users/me/*"), "public"),
     "log_report_to_public": (307, ("/log-report/*",), "public"),
@@ -83,6 +87,9 @@ EXPECTED_ALB_ROUTING = {
     ),
     "authenticated_to_free": (320, None, "autoscaling"),
 }
+
+# Redirect rather than forward rules, pinned in test_canonical_host_config.py
+REDIRECT_RULES = {"apex_to_www"}
 
 
 def _variable_default(tf: str, name: str) -> str:
@@ -289,7 +296,7 @@ class TestAlbRuleRouting:
     def test_the_declared_rule_set_is_exactly_the_pinned_set(self):
         """A rule added or removed without updating this table would otherwise
         go uncovered by the per-rule cases below."""
-        assert set(self.blocks) == set(EXPECTED_ALB_ROUTING)
+        assert set(self.blocks) == set(EXPECTED_ALB_ROUTING) | REDIRECT_RULES
 
     @pytest.mark.parametrize("name", sorted(EXPECTED_ALB_ROUTING))
     def test_rule_routes_its_paths_to_the_intended_tier(self, name):
@@ -309,6 +316,15 @@ class TestAlbRuleRouting:
                 r"listener_arn\s*=\s*aws_lb_listener\.autoscaling_https\.arn", block
             ), f"{name} is not attached to the https listener"
 
+    def test_the_account_deletion_rule_is_gated_on_method(self):
+        """Without the method condition p304 would take GET and PUT /users/me
+        off public, breaking login bootstrap and name edits during a free
+        outage."""
+        method = _nested_block(
+            self.blocks["account_deletion_to_free"], "http_request_method"
+        )
+        assert attribute(method, "values") == '["DELETE"]'
+
     def test_the_public_visualization_rule_is_gated_on_its_header(self):
         """p280 and p315 carry the same path pattern. Drop the header condition
         and p280 shadows p315, sending every authenticated visualization read
@@ -324,6 +340,83 @@ class TestAlbRuleRouting:
         header = _nested_block(block, "http_header")
         assert attribute(header, "http_header_name") == '"Authorization"'
         assert attribute(header, "values") == '["Bearer *"]'
+
+
+def _static_rule_target(method: str, path: str, headers: dict) -> str:
+    """Target group of the first static rule matching the request, by priority.
+
+    Redirect rules are left out: they match only page loads, never the API
+    calls modelled here.
+    """
+    blocks = {
+        name: block
+        for name, block in _listener_rule_blocks().items()
+        if name not in REDIRECT_RULES
+    }
+    priorities = _terraform_rule_priorities()
+    for name in sorted(blocks, key=lambda n: priorities[_rule_priority_key(blocks[n])]):
+        block = blocks[name]
+        kinds = set(re.findall(r"condition\s*\{\s*(\w+)\s*\{", block))
+        assert kinds <= {
+            "path_pattern",
+            "http_request_method",
+            "http_header",
+        }, f"{name} uses a condition this resolver does not model: {kinds}"
+        patterns = _rule_path_patterns(block)
+        if patterns and not any(fnmatch.fnmatchcase(path, p) for p in patterns):
+            continue
+        if "http_request_method" in kinds and f'"{method}"' not in attribute(
+            _nested_block(block, "http_request_method"), "values"
+        ):
+            continue
+        if "http_header" in kinds:
+            header = _nested_block(block, "http_header")
+            sent = headers.get(attribute(header, "http_header_name").strip('"'))
+            allowed = re.findall(r'"([^"]+)"', attribute(header, "values"))
+            if sent is None or not any(fnmatch.fnmatchcase(sent, v) for v in allowed):
+                continue
+        return _rule_forward_target(block)
+    return "public"  # listener default action
+
+
+def _task_definition_env_names(target_group: str) -> set:
+    """Env var names of the task definition behind a target group's ECS service."""
+    for path in sorted(TERRAFORM_DIR.glob("*.tf")):
+        tf = read(path)
+        for service in resource_blocks(tf, "aws_ecs_service").values():
+            if f"aws_lb_target_group.{target_group}.arn" not in service:
+                continue
+            taskdef = re.search(
+                r"task_definition\s*=\s*aws_ecs_task_definition\.(\w+)\.arn", service
+            ).group(1)
+            for source in sorted(TERRAFORM_DIR.glob("*.tf")):
+                blocks = resource_blocks(read(source), "aws_ecs_task_definition")
+                if taskdef in blocks:
+                    return set(re.findall(r'name\s*=\s*"(\w+)"', blocks[taskdef]))
+    raise AssertionError(f"no ECS service behind aws_lb_target_group.{target_group}")
+
+
+class TestStripeCallsLandOnATierWithTheKey:
+    """Routing and task definition env are declared in different files, so
+    nothing else ties a Stripe-calling route to a tier that has the key.
+    Requests carry a Bearer token and no premium routing headers, as after the
+    premium assignment is released or on the SPA's header-stripping retry."""
+
+    def test_account_deletion_reaches_a_tier_with_the_stripe_key(self):
+        target = _static_rule_target(
+            "DELETE", "/users/me", {"Authorization": "Bearer token"}
+        )
+        assert "STRIPE_SECRET_KEY" in _task_definition_env_names(
+            target
+        ), f"DELETE /users/me routes to {target}, whose task has no Stripe key"
+
+    @pytest.mark.parametrize("method", ["GET", "PUT"])
+    def test_users_me_read_and_profile_edit_stay_on_public(self, method):
+        """Login bootstrap and name edits must survive a free-tier outage."""
+        target = _static_rule_target(
+            method, "/users/me", {"Authorization": "Bearer token"}
+        )
+        assert target == "public"
 
 
 class TestAnonymousRegistrationPath:
@@ -427,11 +520,27 @@ class TestPublishedDataSurvivesTaskReplacement:
         assert match, f"no efs_volume_configuration for {PUBLISHED_DATA_VOLUME}"
         assert match.group(1) == "published_data"
 
-    def test_target_group_drains_for_600_seconds(self):
+    def test_target_group_drains_per_environment(self):
+        """Production drains for the listener's 600 s idle timeout, so a
+        streaming response survives deregistration; development drains for
+        60 s, because every rollout waits it out host by host."""
         target_group = resource_block(
             read(PUBLIC_SERVICE_TF), "aws_lb_target_group", "public"
         )
-        assert int(attribute(target_group, "deregistration_delay")) == 600
+        assert (
+            attribute(target_group, "deregistration_delay")
+            == "local.public_tg_deregistration_delay"
+        )
+        delay = per_environment(
+            attribute(read(MAIN_TF), "public_tg_deregistration_delay")
+        )
+        assert delay == {"production": 600, "development": 60}
+        assert delay["production"] == int(
+            attribute(
+                resource_block(read(COMPUTE_TF), "aws_lb", "autoscaling"),
+                "idle_timeout",
+            )
+        )
 
 
 class TestPublicUnhealthyHostsAlarm:
@@ -597,7 +706,8 @@ class TestServingBelowDesiredAlarm:
 
     def test_alarm_measures_the_gap_outside_deployments(self):
         """A public rollout replaces its two tasks one at a time, each held
-        below desired by the 600 s drain, for about 28 of 30 min. Missing
+        below desired by production's 600 s drain, for about 28 of 30 min there
+        (less on development, which drains for 60 s). Missing
         healthy counts as 0 healthy, so a target that has gone cannot hide in
         a data gap. Desired is the ASG's, not ECS's DesiredTaskCount, which
         Container Insights stops publishing once no task runs: the tier's last

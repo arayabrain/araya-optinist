@@ -2,11 +2,14 @@
 # ============================================================================
 # git_ref_info.sh
 # ============================================================================
-# Resolves the git provenance of the current worktree into three variables:
+# Resolves the git provenance of the current worktree into four variables:
 #
-#   GIT_INFO_COMMIT  full commit hash, or "unknown" outside a git worktree
-#   GIT_INFO_BRANCH  branch name, or "" when HEAD is detached
-#   GIT_INFO_TAG     tag pointing exactly at HEAD, or "" when there is none
+#   GIT_INFO_COMMIT       full commit hash, or "unknown" outside a git worktree
+#   GIT_INFO_BRANCH       branch name, or "" when HEAD is detached
+#   GIT_INFO_TAG          tag pointing exactly at HEAD, or "" when there is none
+#   GIT_INFO_RELEASE_TAG  GIT_INFO_TAG when it is a release tag (v1.2.3 or
+#                         1.2.3: exactly three numeric parts, no suffix),
+#                         otherwise ""
 #
 # Meant to be sourced, not executed:
 #
@@ -52,6 +55,9 @@ resolve_git_ref_info() {
     # release tag (v1.2.3 or 1.2.3, no suffix) always wins, and among those the
     # ordering is pure numeric comparison, which no setting affects.
     #
+    # Exactly three parts: ecr_build_push.sh tags the image with this, so `v1`,
+    # `v1.2` or a date tag such as `20261117` must not count as a release.
+    #
     # `|| true` keeps the pipeline non-fatal for callers running under
     # `set -e -o pipefail` (head closing the pipe early, or grep matching
     # nothing, is not an error here).
@@ -62,8 +68,9 @@ resolve_git_ref_info() {
     # for the requested tag even under `--no-tags`. It would also answer
     # *differently* on a commit carrying several tags, preferring the annotated
     # one over the highest version and breaking the ordering above.
-    GIT_INFO_TAG=$(git -C "$repo_dir" tag --points-at HEAD --sort=-v:refname 2>/dev/null \
-        | grep -E '^v?[0-9]+(\.[0-9]+)*$' | head -n1 || true)
+    GIT_INFO_RELEASE_TAG=$(git -C "$repo_dir" tag --points-at HEAD --sort=-v:refname 2>/dev/null \
+        | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
+    GIT_INFO_TAG="$GIT_INFO_RELEASE_TAG"
 
     # No release tag on this commit: a prerelease, or a name like `nightly`, is
     # still worth recording. `-refname` is a plain reverse-lexical sort, which

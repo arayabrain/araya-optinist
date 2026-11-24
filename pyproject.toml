@@ -50,6 +50,7 @@ exclude = [
 python = "^3.11"
 fastapi = "0.104.*"  # NOTE: pinned until an upgrade (with pydantic 1.x, starlette, fastapi_pagination) passes the tests
 uvicorn = "0.24.*"
+h11 = ">=0.16"  # NOTE: uvicorn's HTTP parser here (no httptools); 0.16 fixes CVE-2025-43859
 numpy = "1.26.4"
 pandas = "1.5.3"
 aiofiles = "*"
@@ -65,7 +66,7 @@ psutil = "*"
 nbstripout = "*"
 snakemake = { version = ">=9, <10" }
 jinja2 = "3.1.*"
-httpx = "0.21.0"
+httpx = "0.27.*"  # NOTE: 0.28 drops the `app` argument Starlette 0.27's TestClient passes
 requests = "*"
 starlette = "0.27.0"
 firebase_admin = "*"
@@ -154,6 +155,10 @@ filterwarnings = [
     "ignore:pkg_resources is deprecated as an API:DeprecationWarning",
     "ignore:Deprecated call to `pkg_resources.declare_namespace:DeprecationWarning",
     "ignore:invalid escape sequence :DeprecationWarning",
+    # NOTE: Starlette 0.27's TestClient passes `app` to `httpx.Client`, which httpx
+    # 0.27 deprecates; goes with a Starlette upgrade. The pattern stops at the sync
+    # client's `WSGITransport`, so `httpx.AsyncClient(app=...)` still warns
+    "ignore:The 'app' shortcut is now deprecated\\. Use the explicit style 'transport=WSGITransport:DeprecationWarning",
 ]
 markers = [
     "lighter_processing",

@@ -22,6 +22,7 @@ import {
   nameInput,
   PREMIUM_SUBSCRIPTION,
   renderAccount,
+  TRIAL_SUBSCRIPTION,
 } from "pages/Account/accountTestHarness"
 
 // Only useNavigate is replaced; the harness needs the real MemoryRouter
@@ -354,10 +355,43 @@ describe("Subscription state on the profile", () => {
       { ...PREMIUM_SUBSCRIPTION, status: SubscriptionUserStatus.CANCELED },
       /Expired on/,
     ],
+    [
+      "expires when a trial is cancelled before its end",
+      { ...TRIAL_SUBSCRIPTION, scheduled_downgrade: true },
+      /Expires on/,
+    ],
   ])("says the subscription %s", async (_label, subscription, expected) => {
     showAccount(subscription)
 
     await waitFor(() => expect(screen.getByText(expected)).toBeInTheDocument())
+  })
+
+  it("names the end of a running trial instead of a renewal", async () => {
+    showAccount(TRIAL_SUBSCRIPTION)
+
+    const trialEnd = new Date(TRIAL_SUBSCRIPTION.trial_end).toLocaleDateString()
+    await waitFor(() =>
+      expect(
+        screen.getByText(`(Free trial ends on ${trialEnd})`),
+      ).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/Renew on/)).toBeNull()
+  })
+
+  it("renews a trial that has converted to paid", async () => {
+    // Stripe keeps the trial end after the first charge; only is_trial says
+    // whether the trial still runs
+    showAccount({
+      ...TRIAL_SUBSCRIPTION,
+      expiration: "2027-02-15T00:00:00",
+      is_trial: false,
+      trial_end: "2026-10-15T00:00:00",
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText(/Renew on/)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/Free trial/)).toBeNull()
   })
 
   it("offers a free user Upgrade and no Manage", async () => {

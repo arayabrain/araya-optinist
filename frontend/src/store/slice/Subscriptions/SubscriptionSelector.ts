@@ -13,6 +13,8 @@ export const selectPlansLoading = (state: RootState) =>
   state.subscription.plansLoading
 export const selectUserSubscriptionLoading = (state: RootState) =>
   state.subscription.userSubscriptionLoading
+export const selectUserSubscriptionLoaded = (state: RootState) =>
+  state.subscription.userSubscriptionLoaded
 export const selectCheckoutLoading = (state: RootState) =>
   state.subscription.checkoutLoading
 export const selectIsSubscriptionExpired = (state: RootState) =>

@@ -77,6 +77,8 @@ resource "aws_lb_target_group" "autoscaling" {
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
 
+  deregistration_delay = local.free_tg_deregistration_delay
+
   health_check {
     enabled             = true
     healthy_threshold   = 2
@@ -835,6 +837,11 @@ resource "aws_ecs_task_definition" "autoscaling" {
           name  = "FRONTEND_SERVER_PROTO"
           value = var.frontend_protocol
         },
+        # The app's own origin: the origin /auth trusts, and links the app builds
+        {
+          name  = "FRONTEND_URL"
+          value = local.canonical_origin
+        },
         {
           name  = "INITIAL_FIREBASE_UID"
           value = var.optinist_admin_uid
@@ -881,7 +888,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "*"
+          value = local.cors_origins
         },
         {
           name  = "PYTHONUNBUFFERED"
@@ -901,7 +908,7 @@ resource "aws_ecs_task_definition" "autoscaling" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+          value = local.canonical_origin
         },
         {
           name  = "STRIPE_SECRET_KEY"
@@ -932,6 +939,10 @@ resource "aws_ecs_task_definition" "autoscaling" {
         # cloud-startup.sh starts studio/cleanup_worker.py when this is set.
         {
           name  = "ENABLE_LOCAL_CLEANUP"
+          value = "1"
+        },
+        {
+          name  = "PREBUILD_CONDA_ENVS"
           value = "1"
         },
         {
@@ -1149,6 +1160,11 @@ resource "aws_ecs_task_definition" "premium" {
           name  = "FRONTEND_SERVER_PROTO"
           value = var.frontend_protocol
         },
+        # The app's own origin: the origin /auth trusts, and links the app builds
+        {
+          name  = "FRONTEND_URL"
+          value = local.canonical_origin
+        },
         {
           name  = "INITIAL_FIREBASE_UID"
           value = var.optinist_admin_uid
@@ -1195,7 +1211,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "*"
+          value = local.cors_origins
         },
         {
           name  = "PYTHONUNBUFFERED"
@@ -1211,7 +1227,7 @@ resource "aws_ecs_task_definition" "premium" {
         },
         {
           name  = "STRIPE_CALLBACK_URL"
-          value = "${var.frontend_protocol}://${local.effective_frontend_domain}"
+          value = local.canonical_origin
         },
         {
           name  = "STRIPE_SECRET_KEY"

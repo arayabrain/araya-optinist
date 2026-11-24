@@ -491,6 +491,51 @@ const SWEEP_TIMEOUT_MS = 120_000
 // missing dependency reads as such and not as a product bug.
 export const FIREBASE_PYTHON = process.env.FIREBASE_ADMIN_PYTHON || "python3"
 
+// verifyEmail forces email_verified through the backend container, which a
+// deployed run has no local copy of; FIREBASE_PYTHON reaches the same shared
+// project from the host. A deployed run skips with a name when it cannot import
+// firebase_admin, because the alternative is a failure that reads like a
+// product bug.
+export function firebaseAdminSkipReason(): string {
+  if (isLocalBaseUrl()) return ""
+  try {
+    execFileSync(FIREBASE_PYTHON, ["-c", "import firebase_admin"], {
+      stdio: "ignore",
+    })
+    return ""
+  } catch {
+    return (
+      `${FIREBASE_PYTHON} cannot import firebase_admin; set ` +
+      `FIREBASE_ADMIN_PYTHON to an interpreter that can, to force ` +
+      `email_verified on a deployed throwaway account`
+    )
+  }
+}
+
+export function forceEmailVerified(email: string) {
+  if (isLocalBaseUrl()) return verifyEmail(email)
+  const key = path.join(
+    REPO_ROOT,
+    "studio",
+    "config",
+    "auth",
+    "firebase_private.json",
+  )
+  execFileSync(
+    FIREBASE_PYTHON,
+    [
+      "-c",
+      "import sys,firebase_admin\n" +
+        "from firebase_admin import auth, credentials\n" +
+        "firebase_admin.initialize_app(credentials.Certificate(sys.argv[1]))\n" +
+        "auth.update_user(auth.get_user_by_email(sys.argv[2]).uid, email_verified=True)\n",
+      key,
+      email,
+    ],
+    { stdio: "pipe" },
+  )
+}
+
 // A run that dies before its afterAll orphans the Firebase user even though the
 // DB row is gone, which puts it beyond the reach of any DB-driven cleanup.
 // Returns how many accounts the sweep removed; the script lists each address
@@ -715,6 +760,56 @@ export function stripeGet(
   return body
 }
 
+// Stripe writes, for the opt-in lanes that make their own throwaway subscriber.
+// Test mode only: a live key would bill a real card.
+export function stripePost(
+  apiPath: string,
+  params: Record<string, string | number | boolean> = {},
+  method: "POST" | "DELETE" = "POST",
+): Record<string, any> {
+  const key = stripeKey()
+  if (!key.startsWith("sk_test_")) {
+    throw new Error("refusing to write to Stripe with a non-test key")
+  }
+  const form = Object.entries(params)
+    .map(
+      ([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`,
+    )
+    .join("&")
+  const out = execSync(
+    `curl -sS -X ${method} -H "Authorization: Bearer $STRIPE_KEY" ` +
+      `--data-binary @- ${JSON.stringify(`https://api.stripe.com${apiPath}`)}`,
+    {
+      env: { ...process.env, STRIPE_KEY: key },
+      input: form,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 30_000,
+    },
+  ).toString()
+  const body = JSON.parse(out)
+  if (body.error) {
+    throw new Error(
+      `Stripe ${method} ${apiPath}: ${JSON.stringify(body.error)}`,
+    )
+  }
+  return body
+}
+
+// The end of the current billing period. Newer Stripe API versions carry this
+// on the subscription item, not on the subscription, so reading it off the top
+// level silently yields undefined.
+export function periodEnd(subscription: Record<string, any>): number {
+  const items = (subscription.items?.data ?? []) as Record<string, any>[]
+  const ends = items
+    .map((item) => item.current_period_end as number)
+    .filter((end) => typeof end === "number")
+  expect(
+    ends.length,
+    "the subscription has no item with a period end",
+  ).toBeGreaterThan(0)
+  return Math.max(...ends)
+}
+
 // The one Stripe subscription belonging to an account, by email.
 export function stripeSubscriptionFor(email: string): Record<string, any> {
   const customers = stripeGet("/v1/customers", { email, limit: 10 })
@@ -826,6 +921,21 @@ export function premiumInstances(): { id: string; state: string }[] {
       `Name=instance-state-name,Values=running,stopped,pending,stopping ` +
       `--query 'Reservations[].Instances[].{id:InstanceId,state:State.Name}'`,
   )
+}
+
+// The Terraform-managed base instances, by the attribute that makes them one:
+// termination protection, so a TerminateInstances on one fails with
+// OperationNotPermitted. Instances the manager launches do not carry it.
+export function basePremiumInstanceIds(): string[] {
+  return premiumInstances()
+    .map((i) => i.id)
+    .filter(
+      (id) =>
+        awsJson<{ DisableApiTermination: { Value: boolean } }>(
+          `ec2 describe-instance-attribute --instance-id ${id} ` +
+            `--attribute disableApiTermination`,
+        ).DisableApiTermination.Value,
+    )
 }
 
 export function instanceState(instanceId: string): string {
@@ -943,13 +1053,14 @@ export function invokeMonitoringSweep(): string {
 // Idempotent: with the candidate already staged, only the row re-delete does
 // anything, so callers may re-run it after a wait.
 export async function stageSecondRunningInstance(
-  excludeId: string,
+  exclude: string | string[],
 ): Promise<string> {
   const p = progressLog("helpers", "stage-premium-target")
+  const excluded = [exclude].flat()
   const pickFree = () => {
     const occupied = occupiedPremiumInstanceIds()
     const free = premiumInstances().filter(
-      (i) => i.id !== excludeId && !occupied.has(i.id),
+      (i) => !excluded.includes(i.id) && !occupied.has(i.id),
     )
     // Settled first: a `pending`/`stopping` candidate costs the settle wait
     // below, and is one the manager is still cycling.
@@ -962,7 +1073,7 @@ export async function stageSecondRunningInstance(
   p.step(
     candidate
       ? `found free instance ${candidate} (${instanceState(candidate)})`
-      : `no free instance beside ${excludeId}; asking the manager for one`,
+      : `no free instance beside ${excluded.join(", ") || "none"}; asking the manager for one`,
   )
   if (!candidate) {
     // No free instance to migrate onto - either the user holds the only one,
@@ -1059,20 +1170,50 @@ export async function stageSecondRunningInstance(
   // A running EC2 is not yet a migration target: the readiness check the
   // optimizer runs demands a premium ECS task on it, so raise the service's
   // desired count to cover both instances and wait for the placement.
-  const desired = awsJson<{ services: { desiredCount: number }[] }>(
-    `ecs describe-services --cluster ${PREMIUM_CLUSTER} ` +
-      `--services ${PREMIUM_ECS_SERVICE}`,
-  ).services[0].desiredCount
-  if (desired < 2) {
-    awsJson(
-      `ecs update-service --cluster ${PREMIUM_CLUSTER} ` +
-        `--service ${PREMIUM_ECS_SERVICE} --desired-count 2`,
-    )
+  const raiseDesiredCount = () => {
+    const desired = awsJson<{ services: { desiredCount: number }[] }>(
+      `ecs describe-services --cluster ${PREMIUM_CLUSTER} ` +
+        `--services ${PREMIUM_ECS_SERVICE}`,
+    ).services[0].desiredCount
+    if (desired < 2) {
+      awsJson(
+        `ecs update-service --cluster ${PREMIUM_CLUSTER} ` +
+          `--service ${PREMIUM_ECS_SERVICE} --desired-count 2`,
+      )
+    }
   }
+  raiseDesiredCount()
+  // The manager can stop the candidate again during this wait:
+  // - a standby it has just minted runs briefly, then its create step stops it;
+  // - a sweep stops a running instance that holds no user.
+  // Stopped on two polls in a row is past the manager's 15s stop-waiter, so
+  // the stop is settled: start it again and restore the desired count the
+  // manager's sync may have lowered meanwhile. A few times only: a candidate
+  // stopped again and again has something stopping it on purpose.
+  const maxRestarts = 3
+  let restarts = 0
+  let stoppedPolls = 0
   await expect
     .poll(
       () => {
-        p.tick(`waiting for a premium ECS task on ${candidate}`)
+        const state = instanceState(candidate!)
+        expect(
+          state,
+          `${candidate} was terminated while it was being staged`,
+        ).not.toBe("gone")
+        stoppedPolls = state === "stopped" ? stoppedPolls + 1 : 0
+        if (stoppedPolls >= 2) {
+          expect(
+            restarts,
+            `${candidate} was stopped again after ${restarts} restarts`,
+          ).toBeLessThan(maxRestarts)
+          restarts++
+          p.step(`${candidate} was stopped again; restart ${restarts}`)
+          awsJson(`ec2 start-instances --instance-ids ${candidate}`)
+          raiseDesiredCount()
+          stoppedPolls = 0
+        }
+        p.tick(`waiting for a premium ECS task on ${candidate} (${state})`)
         return premiumTaskStatusOn(candidate!)
       },
       {

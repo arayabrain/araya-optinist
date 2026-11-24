@@ -23,6 +23,7 @@ from studio.app.common.core.subscription.constants import (
     PaymentStatus,
     StorageQuota,
     StorageSize,
+    StripeSubscriptionStatus,
     StripeWebhookEvent,
     SubscriptionCurrencyType,
     SubscriptionPlanIds,
@@ -349,7 +350,11 @@ class WebhookService:
 
             # 8. Create or update subscription
             subscription_user_id = CheckoutService.create_or_update_subscription(
-                db, user_id, plan_id, expiration_date
+                db,
+                user_id,
+                plan_id,
+                expiration_date,
+                trial_end=datetime_from_timestamp(trial_end) if trial_end else None,
             )
 
             # 9. Record purchase (optionally store session_id for reference)
@@ -1520,8 +1525,9 @@ class WebhookService:
         Upserts ``subscription_users`` (plan + expiration), syncs the storage
         quota, and invalidates the tier cache so the next ``/users/me`` call
         reflects the change. Acknowledges without a DB write when the
-        customer cannot be mapped or the event has no period end, so Stripe
-        does not retry.
+        customer cannot be mapped, the subscription is not active, trialing
+        or past_due (past_due keeps premium while Stripe retries), or the
+        event has no period end, so Stripe does not retry.
         """
         customer_id = subscription_data.get("customer")
         stripe_subscription_id = subscription_data.get("id")
@@ -1540,6 +1546,22 @@ class WebhookService:
             f"Webhook: Handling customer.subscription.{event_label} for "
             f"customer {customer_id} (subscription {stripe_subscription_id})"
         )
+        status = subscription_data.get("status")
+        if status not in (
+            StripeSubscriptionStatus.ACTIVE,
+            StripeSubscriptionStatus.TRIAL,
+            StripeSubscriptionStatus.PAST_DUE,
+        ):
+            logger.info(
+                f"Webhook: Subscription {stripe_subscription_id} is {status}; "
+                f"acknowledging subscription.{event_label} without DB change"
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "unpaid_status",
+                "message": f"Subscription is not being paid: {status}",
+            }
 
         # 1. Map Stripe customer -> local user account
         user_account = (
@@ -1560,13 +1582,14 @@ class WebhookService:
             }
         user_id = user_account.user_id
 
-        # 2. Derive expiration from the event payload (trial overrides period)
+        # 2. Derive expiration from the event payload
         trial_end = subscription_data.get("trial_end")
-        current_period_end = subscription_data.get("current_period_end")
-        if trial_end:
-            expiration_date = datetime_from_timestamp(trial_end)
-        elif current_period_end:
-            expiration_date = datetime_from_timestamp(current_period_end)
+        current_period_end = CheckoutService.subscription_period_end(subscription_data)
+        expiration_end = CheckoutService.stripe_expiration_end(
+            status, trial_end, current_period_end
+        )
+        if expiration_end:
+            expiration_date = datetime_from_timestamp(expiration_end)
         else:
             logger.warning(
                 f"Webhook: No period end in subscription {stripe_subscription_id}; "
@@ -1598,7 +1621,11 @@ class WebhookService:
 
         # 4. Upsert subscription_users (lock-safe, idempotent helper)
         CheckoutService.create_or_update_subscription(
-            db, user_id, plan_id, expiration_date
+            db,
+            user_id,
+            plan_id,
+            expiration_date,
+            trial_end=datetime_from_timestamp(trial_end) if trial_end else None,
         )
 
         # 5. Mirror cancel_at_period_end -> scheduled_downgrade.

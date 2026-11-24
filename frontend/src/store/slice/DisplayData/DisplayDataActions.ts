@@ -286,12 +286,12 @@ export const getImageData = createAsyncThunk<
 
 export const getCsvData = createAsyncThunk<
   { data: CsvData; meta?: PlotMetaData },
-  { path: string; workspaceId: number }
+  { path: string; workspaceId: number; uniqueId?: string }
 >(
   `${DISPLAY_DATA_SLICE_NAME}/getCsvData`,
-  async ({ path, workspaceId }, thunkAPI) => {
+  async ({ path, workspaceId, uniqueId }, thunkAPI) => {
     try {
-      const response = await getCsvDataApi(path, { workspaceId })
+      const response = await getCsvDataApi(path, { workspaceId, uniqueId })
       return response
     } catch (e) {
       return thunkAPI.rejectWithValue(extractErrorPayload(e))

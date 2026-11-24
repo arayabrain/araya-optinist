@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
 from studio.app.common.core.cloud.storage_tracking import (
+    StorageScanFailed,
+    get_accessible_workspace_ids,
     get_user_storage_usage,
     update_user_storage_usage,
 )
@@ -29,7 +31,7 @@ from studio.app.common.core.subscription.constants import (
 )
 from studio.app.common.core.users import crud_users
 from studio.app.common.core.utils.datetime_utils import get_current_datetime
-from studio.app.common.db.database import session_scope
+from studio.app.common.db.database import run_db_lookup, session_scope
 
 logger = AppLogger.get_logger()
 
@@ -68,17 +70,11 @@ class S3StorageMonitor:
         total_size = 0
 
         try:
-            # Get all workspaces the user has access to
-            from studio.app.common.core.workspace.workspace_services import (
-                WorkspaceService,
-            )
-            from studio.app.common.db.database import session_scope
+            workspace_ids = await run_db_lookup(get_accessible_workspace_ids, user_id)
+        except Exception as lookup_error:
+            raise StorageScanFailed(user_id) from lookup_error
 
-            with session_scope() as db:
-                workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(
-                    db, user_id
-                )
-
+        try:
             logger.info(f"Checking S3 storage for user {user_id} across all workspaces")
 
             # Create sync S3 client for boto3 operations
@@ -196,17 +192,11 @@ class S3StorageMonitor:
         total_size = 0
 
         try:
-            # Get all workspaces the user has access to
-            from studio.app.common.core.workspace.workspace_services import (
-                WorkspaceService,
-            )
-            from studio.app.common.db.database import session_scope
+            workspace_ids = await run_db_lookup(get_accessible_workspace_ids, user_id)
+        except Exception as lookup_error:
+            raise StorageScanFailed(user_id) from lookup_error
 
-            with session_scope() as db:
-                workspace_ids = WorkspaceService.get_user_accessible_workspace_ids(
-                    db, user_id
-                )
-
+        try:
             logger.info(
                 f"[Streaming] Checking S3 storage for user {user_id} "
                 f"across {len(workspace_ids)} workspaces"
