@@ -242,7 +242,7 @@ async function ensureDeployedAccount() {
 // never eligible however its assignment row is stamped - a silent vacuous pass.
 // LC-05 deletes the shared workspace mid-run, so the cleanup rows ask for one
 // themselves rather than depending on which siblings ran before them.
-async function ensureDeployedWorkspace() {
+async function ensureOwnedWorkspace() {
   // The job's own join predicate, not a proxy for it: GET /workspaces answers a
   // different question (it can list rows this join will not match), and a
   // mismatch here reads as "the grace period did not select the user" rather
@@ -253,6 +253,7 @@ async function ensureDeployedWorkspace() {
          WHERE user_id = ${userId} AND deleted = 0`,
     ).trim()
   if (ownedLive() !== "0") return
+  console.warn(`${USER.email} owns no live workspace; creating e2e-lifecycle`)
 
   const api = await request.newContext({ baseURL: apiUrl() })
   try {
@@ -1322,7 +1323,7 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     // Each eligibleUserIds() boots the studio app in the container.
     test.setTimeout(240_000)
     setPlan(1, "INTERVAL 1 MONTH")
-    if (!LOCAL) await ensureDeployedWorkspace()
+    await ensureOwnedWorkspace()
     seedFreeAssignment(true)
 
     // The grace period is 60 minutes, so half an hour out is still protected.
@@ -1347,7 +1348,7 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
     // Each eligibleUserIds() boots the studio app in the container.
     test.setTimeout(240_000)
     setPlan(1, "INTERVAL 1 MONTH")
-    if (!LOCAL) await ensureDeployedWorkspace()
+    await ensureOwnedWorkspace()
     seedFreeAssignment(true)
 
     // Past the grace period, but the count says a workflow is running. Deleting

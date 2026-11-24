@@ -286,7 +286,7 @@ class TestSuccessfulCheckoutWritesPremium:
     def test_expiration_comes_from_stripe_not_from_a_local_month(self):
         # The expiration is Stripe's current_period_end, not now + 1 month. A
         # local calculation would drift from what the customer was billed for.
-        period_end = 1795000000  # far-future unix timestamp
+        period_end = 4102444800  # 2100-01-01 UTC
         session_data = checkout_session(42)
         mock_db = Mock(spec=Session)
         mock_db.query.return_value.join.return_value.filter.return_value.first.return_value = (  # noqa: E501
@@ -482,7 +482,7 @@ class TestReactivationIsMirroredOntoTheRow:
     of the plan upsert, which is exactly the kind of thing a refactor drops.
     """
 
-    PERIOD_END = 1795000000  # far-future unix timestamp
+    PERIOD_END = 4102444800  # 2100-01-01 UTC
 
     def event(self, cancel_at_period_end):
         return {
@@ -709,7 +709,7 @@ class TestARenewalStillLandsAfterTheSubscriptionExpired:
     user who has just been charged is left on the free tier.
     """
 
-    PERIOD_END = 1795000000  # far-future unix timestamp
+    PERIOD_END = 4102444800  # 2100-01-01 UTC
 
     def invoice(self):
         return {
