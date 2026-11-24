@@ -1151,7 +1151,8 @@ class TestPublicDataviewPlacement:
         forwarding = {
             name
             for name, block in _listener_rule_blocks().items()
-            if _rule_forward_target(block) == "public_dataview"
+            if name not in REDIRECT_RULES
+            and _rule_forward_target(block) == "public_dataview"
         }
         assert forwarding, "no listener rule forwards to the public DataView tier"
         depends_on = re.search(r"depends_on\s*=\s*\[(.*?)\]", self.service, re.DOTALL)
@@ -1213,7 +1214,7 @@ class TestPublicDataviewAsgCapacity:
 
 
 class TestPublicDataviewAlarms:
-    """The tier's target group has its own unhealthy-host and latency alarms."""
+    """The tier has its own unhealthy-host, latency and root-disk alarms."""
 
     @pytest.mark.parametrize("alarm", ["tg_unhealthy_hosts", "alb_response_time_high"])
     def test_a_key_watches_the_public_dataview_target_group(self, alarm):
@@ -1228,6 +1229,19 @@ class TestPublicDataviewAlarms:
         )
         assert match, f"{alarm} has no public-dataview for_each key"
         assert match.group(1) == "public_dataview"
+
+    def test_the_root_disk_alarm_watches_its_hosts(self):
+        """Its hosts pull the same image as public's, onto a root volume of
+        the same size."""
+        block = resource_block(
+            read(MONITORING_TF), "aws_cloudwatch_metric_alarm", "root_disk_used_high"
+        )
+        assert re.search(
+            r'^\s*"public-dataview"\s*=\s*'
+            r"aws_autoscaling_group\.public_dataview\.name\s*$",
+            block,
+            re.MULTILINE,
+        )
 
 
 class TestPublicTiersOnTheDashboard:

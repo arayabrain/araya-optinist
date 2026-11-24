@@ -306,14 +306,14 @@ fi
 # Optional: force every service to re-pull :latest
 # ===========================================
 # Runs AFTER the push, so the force always resolves the digest we just pushed.
-# Cycles all tiers (main/premium/public/background), not just the main service;
-# ecs_rollout.sh is the same rollout terraform apply runs.
+# Cycles all tiers (main/premium/public/public DataView/background), not just
+# the main service; ecs_rollout.sh is the same rollout terraform apply runs.
 if [ "$DEPLOY" = true ]; then
     CLUSTER=$(terraform -chdir="$TERRAFORM_DIR" output -raw ecs_cluster_name)
     ROLLOUT_ARGS="--cluster $CLUSTER --region $REGION"
     # An output missing from an older state only leaves that group's host
     # health checks on during the rollout
-    for ASG_OUTPUT in asg_name public_asg_name; do
+    for ASG_OUTPUT in asg_name public_asg_name public_dataview_asg_name; do
         ASG=$(terraform -chdir="$TERRAFORM_DIR" output -raw "$ASG_OUTPUT" 2>/dev/null || echo "")
         if [ -n "$ASG" ]; then
             ROLLOUT_ARGS="$ROLLOUT_ARGS --asg $ASG"

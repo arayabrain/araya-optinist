@@ -6,6 +6,7 @@ the test. No real AWS calls are ever made.
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 

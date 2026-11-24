@@ -83,6 +83,23 @@ def check_block(tf: str, name: str) -> str:
     return match.group()
 
 
+def task_environment(tf_file: str, task_definition: str) -> str:
+    """Return the source of a task definition's environment: the definition
+    itself, or the public tiers' shared local when it reads that."""
+    block = resource_block(
+        read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
+    )
+    if "local.public_task_environment" not in block:
+        return block
+    shared = re.search(
+        r"^\s*public_task_environment\s*=\s*\[.*?^\s*\]",
+        read(TERRAFORM_DIR / "public_service.tf"),
+        re.DOTALL | re.MULTILINE,
+    )
+    assert shared, "local.public_task_environment not found in public_service.tf"
+    return shared.group()
+
+
 def attribute(source: str, name: str) -> str:
     """Return one ``<name> = <value>`` right-hand side, anchored at line start
     so ``healthy_threshold`` cannot match inside ``unhealthy_threshold``."""

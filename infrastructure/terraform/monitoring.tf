@@ -155,8 +155,9 @@ resource "aws_cloudwatch_metric_alarm" "ebs_queue_length_high" {
 # The agent collects only "/", so the ASG roll-up is the root filesystem.
 resource "aws_cloudwatch_metric_alarm" "root_disk_used_high" {
   for_each = {
-    free   = aws_autoscaling_group.main.name
-    public = aws_autoscaling_group.public.name
+    free              = aws_autoscaling_group.main.name
+    public            = aws_autoscaling_group.public.name
+    "public-dataview" = aws_autoscaling_group.public_dataview.name
   }
 
   alarm_name          = "${local.env_prefix}-${each.key}-root-disk-used-high"

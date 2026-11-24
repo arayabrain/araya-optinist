@@ -206,6 +206,7 @@ resource "null_resource" "deploy_to_ecs" {
     aws_ecs_service.autoscaling,
     aws_ecs_service.premium,
     aws_ecs_service.public,
+    aws_ecs_service.public_dataview,
     aws_ecs_service.background,
   ]
 
@@ -224,14 +225,15 @@ resource "null_resource" "deploy_to_ecs" {
       set -e
       echo "=== Starting ECS deployment ==="
 
-      # Every service in the cluster (main, premium, public, background), so
-      # all tiers re-pull the just-pushed :latest. The groups are the tiers
-      # whose ELB health check replaces a host
+      # Every service in the cluster (main, premium, public, public DataView,
+      # background), so all tiers re-pull the just-pushed :latest. The groups
+      # are the tiers whose ELB health check replaces a host
       bash ../scripts/ecs_rollout.sh \
         --cluster ${aws_ecs_cluster.main.name} \
         --region ${var.aws_region} \
         --asg ${aws_autoscaling_group.main.name} \
         --asg ${aws_autoscaling_group.public.name} \
+        --asg ${aws_autoscaling_group.public_dataview.name} \
         --hygiene-association ${aws_ssm_association.docker_hygiene.association_id} || {
         echo "deploy_to_ecs is marked tainted, so the next terraform apply forces a new"
         echo "deployment on every service again."

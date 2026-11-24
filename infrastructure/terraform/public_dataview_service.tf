@@ -321,6 +321,11 @@ output "public_dataview_service_name" {
   value       = aws_ecs_service.public_dataview.name
 }
 
+output "public_dataview_asg_name" {
+  description = "Name of the public DataView Auto Scaling group; ecr_build_push.sh --deploy suspends its host health checks during a rollout"
+  value       = aws_autoscaling_group.public_dataview.name
+}
+
 # wait_for_capacity_timeout=0 means `terraform apply` returns before targets
 # are healthy; until they are, public DataView answers 503.
 output "public_dataview_tg_health_check_command" {

@@ -12,7 +12,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from terraform_source import TERRAFORM_DIR, read, resource_block
+from terraform_source import TERRAFORM_DIR, read, resource_block, resource_blocks
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPTS = PROJECT_ROOT / "infrastructure" / "scripts"
@@ -515,6 +515,24 @@ exit "${ROLLOUT_EXIT:-0}"
 """
 
 
+def _terraform_sources() -> str:
+    return "\n".join(read(path) for path in sorted(TERRAFORM_DIR.glob("*.tf")))
+
+
+def _elb_checked_groups() -> list:
+    """Every Auto Scaling group whose ELB health check would replace a host
+    while its task restarts."""
+    groups = sorted(
+        name
+        for name, block in resource_blocks(
+            _terraform_sources(), "aws_autoscaling_group"
+        ).items()
+        if re.search(r'^\s*health_check_type\s*=\s*"ELB"', block, re.MULTILINE)
+    )
+    assert groups, "no ELB-checked Auto Scaling group found"
+    return groups
+
+
 class TestTerraformDeploy:
     def _block(self) -> str:
         return resource_block(
@@ -553,11 +571,11 @@ class TestTerraformDeploy:
         for service in services:
             assert f"aws_ecs_service.{service}" in depends_on.group(1), service
 
-    def test_passes_both_tier_groups_and_the_hygiene_association(self):
+    def test_passes_every_elb_checked_group_and_the_hygiene_association(self):
         block = self._block()
         assert "bash ../scripts/ecs_rollout.sh" in block
-        assert "--asg ${aws_autoscaling_group.main.name}" in block
-        assert "--asg ${aws_autoscaling_group.public.name}" in block
+        for group in _elb_checked_groups():
+            assert f"--asg ${{aws_autoscaling_group.{group}.name}}" in block, group
         assert (
             "--hygiene-association "
             "${aws_ssm_association.docker_hygiene.association_id}"
@@ -568,7 +586,7 @@ class TestTerraformDeploy:
         assert result.returncode == 0, result.stdout + result.stderr
         assert (tmp_path / "rollout.args").read_text().split() == [
             "--cluster", "tfvalue", "--region", "tfvalue",
-            "--asg", "tfvalue", "--asg", "tfvalue",
+            "--asg", "tfvalue", "--asg", "tfvalue", "--asg", "tfvalue",
             "--hygiene-association", "tfvalue",
         ]  # fmt: skip
         assert "DEPLOYMENT COMPLETE" in result.stdout
@@ -626,11 +644,15 @@ class TestScriptDeploy:
                 "ecs_cluster_name": "c",
                 "asg_name": "free-asg",
                 "public_asg_name": "public-asg",
+                "public_dataview_asg_name": "public-dataview-asg",
                 "docker_hygiene_association_id": "assoc-1",
             },
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert args == ["--cluster", "c", "--region", "r", *GROUPS, *HYGIENE]
+        assert args == [
+            "--cluster", "c", "--region", "r",
+            *GROUPS, "--asg", "public-dataview-asg", *HYGIENE,
+        ]  # fmt: skip
 
     def test_a_missing_output_drops_only_its_argument(self, tmp_path):
         result, args = self._run(
@@ -650,6 +672,10 @@ class TestScriptDeploy:
         [
             ("asg_name", "aws_autoscaling_group.main.name"),
             ("public_asg_name", "aws_autoscaling_group.public.name"),
+            (
+                "public_dataview_asg_name",
+                "aws_autoscaling_group.public_dataview.name",
+            ),
         ],
     )
     def test_the_groups_it_reads_are_terraform_outputs(self, output, resource):
@@ -659,3 +685,19 @@ class TestScriptDeploy:
             sources,
             re.MULTILINE,
         )
+
+    def test_reads_an_output_for_every_elb_checked_group(self):
+        loop = re.search(
+            r"^\s*for ASG_OUTPUT in ([^;]*);", ECR_BUILD_PUSH.read_text(), re.MULTILINE
+        )
+        assert loop, "ASG_OUTPUT loop not found"
+        sources = _terraform_sources()
+        for group in _elb_checked_groups():
+            output = re.search(
+                r'^output "(\w+)" \{[^}]*'
+                r"value\s*=\s*aws_autoscaling_group\.%s\.name\s*$" % group,
+                sources,
+                re.MULTILINE,
+            )
+            assert output, f"no output names aws_autoscaling_group.{group}"
+            assert output.group(1) in loop.group(1).split(), group

@@ -36,6 +36,7 @@ from terraform_source import (
     resource_block,
     resource_blocks,
     string_list,
+    task_environment,
     variable_block,
 )
 
@@ -470,23 +471,6 @@ class TestWorkflowTierSizingVariables:
         ]
 
 
-def _task_environment(tf_file: str, task_definition: str) -> str:
-    """Return the source of a task definition's environment: the definition
-    itself, or the public tiers' shared local when it reads that."""
-    block = resource_block(
-        read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
-    )
-    if "local.public_task_environment" not in block:
-        return block
-    shared = re.search(
-        r"^\s*public_task_environment\s*=\s*\[.*?^\s*\]",
-        read(TERRAFORM_DIR / "public_service.tf"),
-        re.DOTALL | re.MULTILINE,
-    )
-    assert shared, "local.public_task_environment not found in public_service.tf"
-    return shared.group()
-
-
 # Every task definition that starts cloud-startup.sh, as (file, name);
 # test_every_startup_task_definition_is_covered keeps the list complete.
 STARTUP_TASK_DEFINITIONS = [
@@ -515,7 +499,7 @@ class TestUvicornWorkers:
         full app process out of the memory the instance shares."""
         values = re.findall(
             r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"',
-            _task_environment(tf_file, task_definition),
+            task_environment(tf_file, task_definition),
         )
         assert values == [UVICORN_WORKERS[task_definition]]
 
