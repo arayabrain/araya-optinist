@@ -420,6 +420,7 @@ test.describe("Compute and routing", () => {
         Field: string
         PathPatternConfig?: { Values: string[] }
         HttpHeaderConfig?: { HttpHeaderName: string; Values: string[] }
+        HttpRequestMethodConfig?: { Values: string[] }
       }[]
       Actions: { TargetGroupArn?: string }[]
     }
@@ -435,11 +436,17 @@ test.describe("Compute and routing", () => {
       if (arn.includes(FREE_TG)) return "free"
       return arn.replace(/^.*targetgroup\//, "") || "no target group"
     }
+    const hasPath = (rule: Rule, path: string) =>
+      rule.Conditions.some((c) =>
+        (c.PathPatternConfig?.Values || []).includes(path),
+      )
+    // A method-gated rule carves single methods out of a path, so the path's
+    // own tier is the rule without a method condition.
     const byPath = (path: string) =>
-      rules.find((r) =>
-        r.Conditions.some((c) =>
-          (c.PathPatternConfig?.Values || []).includes(path),
-        ),
+      rules.find(
+        (r) =>
+          hasPath(r, path) &&
+          !r.Conditions.some((c) => c.Field === "http-request-method"),
       )
 
     // An authenticated request carries a Bearer token, and that alone is what
@@ -466,6 +473,22 @@ test.describe("Compute and routing", () => {
       tierOf(byPath("/api/public/dataview")!),
       "public dataview tier",
     ).toBe("public")
+
+    // Account deletion cancels Stripe subscriptions, and only the free tier
+    // holds the Stripe key: DELETE /users/me must win over the /users/me rule.
+    const deleteMe = rules.find(
+      (r) =>
+        hasPath(r, "/users/me") &&
+        r.Conditions.some((c) =>
+          (c.HttpRequestMethodConfig?.Values || []).includes("DELETE"),
+        ),
+    )
+    expect(deleteMe, "no DELETE /users/me rule on the listener").toBeTruthy()
+    expect(tierOf(deleteMe!), "DELETE /users/me tier").toBe("free")
+    expect(
+      Number(deleteMe!.Priority),
+      "DELETE /users/me must be evaluated before the /users/me rule",
+    ).toBeLessThan(Number(byPath("/users/me")!.Priority))
 
     // The Bearer rule is a catch-all for authed traffic, so every path family
     // that must escape it has to be evaluated first.
