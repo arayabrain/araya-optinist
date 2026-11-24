@@ -416,7 +416,7 @@ re-applying the same commit with none of them changed does not rebuild.
 
 **Pushing `:latest` does not deploy anything, and cycling one service does not deploy everywhere.** ECS resolves the image tag to a digest when a deployment is *created*, so existing tasks keep running the digest they started with. A `:latest` retag followed by a single `update-service` updates only that service and leaves every other service on the old image.
 
-The cluster runs several services (currently main, premium, public, and background). Discover them rather than typing the list, so a newly added service is never missed:
+The cluster runs several services (currently main, premium, public, public DataView and background). Discover them rather than typing the list, so a newly added service is never missed:
 
 ```bash
 CLUSTER=development-optinist-cloud-cluster
@@ -448,13 +448,15 @@ initialised):
 ```bash
 bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
   --asg <env>-optinist-asg --asg <env>-optinist-public-asg \
+  --asg <env>-optinist-public-dataview-asg \
   --hygiene-association "$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)"
 ```
 
-Free and public run one task per host, so each host stops its old task, waits out the target
-group's deregistration delay, then starts the new one. A rollout therefore pays that delay plus the
-image pull and start once for free (all its tasks at once) and once per half of the public hosts
-(public keeps at least half of them serving). The script keeps it from growing further:
+Free, public and public DataView run one task per host, so each host stops its old task, waits out
+the target group's deregistration delay, then starts the new one. A rollout therefore pays that
+delay plus the image pull and start once for free (all its tasks at once), once per half of the
+public hosts (public keeps at least half of them serving), and once for public DataView (on its
+default single host, its reads are down meanwhile). The script keeps it from growing further:
 
 - **A rollout already in progress finishes first** (up to 30 minutes, then the force goes ahead
   with a warning). A service counts as rolling while it has more than one deployment or its
@@ -484,11 +486,11 @@ image pull and start once for free (all its tasks at once) and once per half of 
 
 Ctrl-C, `kill` and closing the terminal still resume the health checks. A run killed with
 `kill -9`, or one whose credentials expired (the laptop sleeping), cannot; the next deploy takes
-its suspension over after 30 minutes. To clear it at once, check both groups and resume any it left
-suspended:
+its suspension over after 30 minutes. To clear it at once, check the three groups and resume any it
+left suspended:
 
 ```bash
-for ASG in <env>-optinist-asg <env>-optinist-public-asg; do
+for ASG in <env>-optinist-asg <env>-optinist-public-asg <env>-optinist-public-dataview-asg; do
   aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG" \
     --region "$REGION" --query 'AutoScalingGroups[0].SuspendedProcesses[].ProcessName'
 done
@@ -545,6 +547,7 @@ REGION=ap-northeast-1
 
 bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
   --asg development-optinist-asg --asg development-optinist-public-asg \
+  --asg development-optinist-public-dataview-asg \
   --hygiene-association "$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)"
 ```
 

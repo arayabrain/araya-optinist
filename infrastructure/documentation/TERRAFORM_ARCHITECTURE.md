@@ -365,7 +365,7 @@ Subnets are derived automatically via `cidrsubnet(var.vpc_cidr, 4, N)`:
 | Category           | Resources                                                                                    | Named As                                                           |
 | ------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | **Networking**     | VPC, 2 public + 2 private subnets, IGW, NAT instances, route tables                          | `${env}-optinist-cloud-*`                                          |
-| **Compute**        | ECS cluster, ASG, launch template, 4 ECS services (main, premium, public, background), EC2 premium instances | `${env}-optinist-cloud-*`                          |
+| **Compute**        | ECS cluster, ASG, launch template, 5 ECS services (main, premium, public, public DataView, background), EC2 premium instances | `${env}-optinist-cloud-*`                          |
 | **Load Balancing** | ALB, target groups, listeners                                                                | `${env}-optinist-lb`, `${env}-optinist-tg`                         |
 | **Database**       | RDS MySQL, RDS Proxy, subnet group                                                           | `${env}-optinist-rds-*`                                            |
 | **Storage**        | S3 bucket, EFS filesystem                                                                    | `${env}-optinist-app-storage`, `${env}-optinist-cloud-snmk-volume` |

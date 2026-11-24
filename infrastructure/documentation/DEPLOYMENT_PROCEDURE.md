@@ -68,7 +68,7 @@ The deploying user needs the following AWS permissions:
 
 - **ECR**: Push images (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:PutImage`, etc.)
 - **ECS**: List, read and update services (`ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `ecs:UpdateService`, etc.)
-- **Auto Scaling**: Hold the free and public groups' host health checks during a rollout (`autoscaling:DescribeAutoScalingGroups`, `autoscaling:SuspendProcesses`, `autoscaling:ResumeProcesses`)
+- **Auto Scaling**: Hold the free, public and public DataView groups' host health checks during a rollout (`autoscaling:DescribeAutoScalingGroups`, `autoscaling:SuspendProcesses`, `autoscaling:ResumeProcesses`)
 - **Elastic Load Balancing**: Wait for the restarted targets (`elasticloadbalancing:DescribeTargetHealth`)
 - **SSM**: Trigger the docker hygiene run after a deploy (`ssm:StartAssociationsOnce`)
 - **Secrets Manager**: Read secrets (granted automatically to the deployment role)
