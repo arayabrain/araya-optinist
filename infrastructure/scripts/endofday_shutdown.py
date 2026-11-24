@@ -211,10 +211,10 @@ def disable_capacity_provider_managed_scaling() -> bool:
         )
         return True
 
-    # Construct the auto-scaling-group-provider parameter
+    # Construct the auto-scaling-group-provider parameter. The update takes no
+    # ASG ARN: the provider keeps the group it was created with, and the CLI
+    # rejects the whole call on a field the update does not accept.
     asg_provider_config = (
-        "autoScalingGroupArn=arn:aws:autoscaling:ap-northeast-1:637423646530:"
-        "autoScalingGroup:*:autoScalingGroupName/subscr-optinist-asg,"
         "managedTerminationProtection=DISABLED,"
         "managedScaling={status=DISABLED,targetCapacity=90,"
         "minimumScalingStepSize=1,maximumScalingStepSize=1,"

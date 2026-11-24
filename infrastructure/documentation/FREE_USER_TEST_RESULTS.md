@@ -2,7 +2,7 @@
 
 **Date:** 2026-01-22
 **Actual SSM-enabled Instance:** i-0a97cc42ef0686564
-**ECS Task:** arn:aws:ecs:ap-northeast-1:637423646530:task/subscr-optinist-cloud-cluster/0cda495490c648649e8402fee193e384
+**ECS Task:** arn:aws:ecs:ap-northeast-1:<account-id>:task/subscr-optinist-cloud-cluster/0cda495490c648649e8402fee193e384
 
 **Infrastructure Changes Made:**
 - Upgraded all Lambda runtimes from Python 3.9 to Python 3.11 (free_manager, free_cleanup, premium_manager, common_user_manager, storage_reconciliation)
