@@ -100,11 +100,13 @@ Priority 10 is reserved for the maintenance page. While it is on it answers ever
 | Priority | Rule | Target | Match |
 |---|---|---|---|
 | 10 | maintenance page (only while on) | ALB fixed 503 response | `/*` (created and deleted by `infrastructure/scripts/maintenance_mode.sh`, not Terraform) |
+| 20 | `apex_to_www` (custom domain only, `compute_domain.tf`) | 301 to the same path and query on www | host = the apex, `GET`/`HEAD`, `Accept: *text/html*` (browser page loads only) |
 | 100-199 | premium dynamic rules | Premium instance | `X-Routing-ID` + `X-User-Tier` (Lambda-created) |
 | 200 | `sync_experiment_to_public` | Public | `/system-internal/sync-experiment/*` |
 | 210 | `sync_experiments_to_free` | Free | `/system-internal/sync-experiments/*` |
 | 280 | `visualizations_public_header` | Public DataView | `/api/visualizations/*` + `DATAVIEW_PUBLIC_REQUEST: true` |
 | 300 | `public_dataview_api` | Public DataView | `/api/public/dataview`, `/api/public/dataview/*` |
+| 304 | `account_deletion_to_free` | Free | `DELETE` on `/users/me` (account deletion cancels Stripe subscriptions; public has no Stripe key) |
 | 305 | `auth_to_public` | Public | `/auth/*` |
 | 306 | `users_me_to_public` | Public | `/users/me`, `/users/me/*` |
 | 307 | `log_report_to_public` | Public | `/log-report/*` |
@@ -120,7 +122,7 @@ Priority 10 is reserved for the maintenance page. While it is on it answers ever
 
 **Why public-dataview reads have their own tier:** the public DataView page needs no sign-in, so nothing bounds how many visitors call its API (the record list, thumbnails and output items). Served from public, those calls would slow every user's sign-in and `/users/me`. The public DataView tier runs the same public-mode task on its own instances and target group; the page shell and static files stay on public (see edge case 7 in `PUBLIC_INSTANCE_ARCHITECTURE.md`). A premium user's requests that carry routing headers still match their premium rule (100-199) first.
 
-**Why the default action is public:** open-ended SPA routes (e.g. `/workspaces/15`) cannot be enumerated as rules. A browser document request carries `Accept: text/html` and no `Authorization` header, so it misses every rule and falls through to the default action, which serves the static SPA shell from public via `SPARoutingMiddleware`. See `PUBLIC_INSTANCE_ARCHITECTURE.md`.
+**Why the default action is public:** open-ended SPA routes (e.g. `/workspaces/15`) cannot be enumerated as rules. A browser document request carries `Accept: text/html` and no `Authorization` header, so it misses every rule and falls through to the default action, which serves the static SPA shell from public via `SPARoutingMiddleware`. The exception is a document request on the apex, which priority 20 first redirects to www, where it falls through the same way. See `PUBLIC_INSTANCE_ARCHITECTURE.md`.
 
 ---
 

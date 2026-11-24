@@ -116,9 +116,10 @@ than adjusting a total by hand.
 | 11 AWS Monitoring            | 11      | 11        | 0      |
 | **Total**                    | **145** | **143**   | **2**  |
 
-43 rows across all 19 sheets cite an `@slow` e2e test, 23 of them here: sheet 03's
+44 rows across all 19 sheets cite an `@slow` e2e test, 24 of them here: sheet 03's
 BT-304..306 (the tutorial runs, `WF-04`..`WF-06`), BT-509 (`REC-07`, the NWB
-download), BT-403 (`VIS-02`, the ROI overlay), BT-406 (`DV-12`) and the whole of
+download), BT-403 (`VIS-02`, the ROI overlay), BT-406 (`DV-12`), BT-407
+(`VIS-05`/`VIS-06`, Edit ROI) and the whole of
 sheet 07 except BT-707, BT-708, BT-718 and BT-719. All of them need `RUN_SLOW=1`,
 which only the weekly `e2e.yml` sets; dispatch it against a branch with `gh workflow run e2e.yml --ref <branch>`.
 The common cause is one real workflow run: the sample data ships input files and
@@ -244,7 +245,7 @@ could both satisfy without the algorithm-nodes copy existing at all.
 | BT-404    | Play visualization image         | VIS-03                                                                         |
 | BT-405    | Add additional plot type         | VIS-04                                                                         |
 | BT-406    | Image thumbnail display          | DV-12                                                                          |
-| BT-407    | Run Edit ROI                     | VIS-05 (editor open + Cancel); VIS-06 `@slow` (the OK commit) |
+| BT-407    | Run Edit ROI                     | VIS-05 `@slow` (editor open + Cancel); VIS-06 `@slow` (the OK commit) |
 
 ### Notes
 
@@ -254,12 +255,13 @@ could both satisfy without the algorithm-nodes copy existing at all.
 `sample_data/tutorial` ships the input files plus workflow metadata
 (`experiment/workflow/snakemake.yaml`) only, with no computed node outputs, and
 the dataview lists success records only. So VIS-03/04 need no run, because they
-plot the shipped `sample_mouse2p_image.tiff`, but anything reading a node output
-does: VIS-02 and VIS-05 select `cell_roi` (a `suite2p_roi` output), and the
-dataview needs a success record plus thumbnails, which only a completed run
-writes. `ensureCompletedTutorialRun` mints that state once per run by rerunning
-the imported Tutorial1 by uid, which is why `06-dataview`'s Private Dataview
-group and `REC-07` are tagged `@slow`. Two gotchas the helper absorbs: loading a
+plot shipped inputs (`sample_mouse2p_image.tiff`, and in VIS-04 also
+`sample_mouse2p_behavior.csv`), but anything reading a node output does: VIS-02
+and VIS-05 select `cell_roi` (a `suite2p_roi` output), and the dataview needs a
+success record plus thumbnails, which only a completed run writes.
+`ensureCompletedTutorialRun` mints that state once per run by rerunning the
+imported Tutorial1 by uid, which is why `06-dataview`'s Private Dataview group,
+`REC-07` and `VIS-05` are tagged `@slow`. Two gotchas the helper absorbs: loading a
 finished experiment fires a phantom "Workflow finished" snackbar (it anchors on
 the run POST instead), and the success record is written shortly AFTER the
 finished signal (DV-12 reload-polls the grid).

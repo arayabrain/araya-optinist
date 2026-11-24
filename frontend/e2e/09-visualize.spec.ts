@@ -1,3 +1,6 @@
+import * as fs from "fs"
+import * as path from "path"
+
 import { test, expect, Page } from "@playwright/test"
 
 import {
@@ -8,18 +11,36 @@ import {
   gotoDashboard,
   openWorkspace,
   ensureTutorialRecords,
+  ensureCompletedTutorialRun,
   reproduceTutorial,
   runTutorial,
   startRun,
   awaitRunFinished,
   DATA_WS,
+  REPO_ROOT,
+  RUN_TEST_TIMEOUT_MS,
 } from "./helpers"
 
-// Visualize tab. VIS-01 asserts the sidebar info; VIS-02..05 drive the plot
-// editor against Tutorial1's node outputs. `sample_data/tutorial/output` ships
-// workflow YAML only, so those outputs come from a run earlier in the session,
-// not from the import. VIS-06 commits an ROI edit for real, so it mints its
-// own run first.
+// Visualize tab. VIS-01 asserts the sidebar info. VIS-03/04 plot shipped
+// inputs, which the sample import brings in. A node output exists only after a
+// run: `sample_data/tutorial/output` ships workflow YAML only, and global setup
+// wipes the workspace. So every test that reads one mints its run and is @slow.
+
+// beforeEach's own budget; a test that also runs a workflow adds it on top
+const SETUP_TIMEOUT_MS = 240_000
+
+// A shipped input file's shape, as `pd.read_csv(header=None)` reads it.
+// A plain comma split: for files without quoted fields, as the shipped ones are.
+function shippedCsvShape(name: string) {
+  const lines = fs
+    .readFileSync(
+      path.join(REPO_ROOT, "sample_data", "tutorial", "input", name),
+      "utf8",
+    )
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+  return { rows: lines.length, cols: lines[0].split(",").length }
+}
 
 // MUI standard Select: the label's FormControl wraps the select div. The
 // sidebar stacks one control group per plot box, so pick the box's group.
@@ -204,7 +225,7 @@ test.describe("Visualize", () => {
   test.use({ storageState: freeStorageState() })
 
   test.beforeEach(async ({ page }) => {
-    test.setTimeout(240_000)
+    test.setTimeout(SETUP_TIMEOUT_MS)
     skipWithoutCreds()
     await gotoDashboard(page)
     await openWorkspace(page, DATA_WS)
@@ -334,21 +355,34 @@ test.describe("Visualize", () => {
 
   test("VIS-04 - Add a second plot of a different type", async ({ page }) => {
     await addImagePlot(page)
-    // The next empty plot box gets a timeseries item
+    // The next empty plot box gets the behavior CSV: a shipped input like the
+    // TIFF, so no run is needed, and a CSV item renders as a data grid
+    const csvName = "sample_mouse2p_behavior.csv"
     await page
       .locator('main main button:has([data-testid="AddIcon"])')
       .first()
       .click()
-    await selectFromMui(page, "Select Item", "fluorescence", "last")
-    await expect(page.locator(".js-plotly-plot")).toHaveCount(2, {
-      timeout: 60_000,
-    })
+    const csvLoaded = page.waitForResponse(
+      (r) =>
+        r.request().method() === "GET" &&
+        /\/api\/visualizations\/csv\/.*sample_mouse2p_behavior\.csv(\?|$)/.test(
+          r.url(),
+        ),
+      { timeout: 60_000 },
+    )
+    await selectFromMui(page, "Select Item", csvName, "last")
+    expect((await csvLoaded).status(), "CSV data GET").toBe(200)
 
-    // Two plots is also what two image plots give. The image plot draws a
-    // plotly heatmap and the timeseries one does not, so exactly one of the two
-    // being a heatmap is where "a different type" is observable. (The
-    // timeseries traces stay out of _fullData until a curve is selected, so
-    // their own type is not assertable here.)
+    // The grid carries the whole file: one header row above every line, one
+    // column per field (the default item sets no header or index)
+    const { rows, cols } = shippedCsvShape(csvName)
+    const grid = page.locator("main main").getByRole("grid")
+    await expect(grid).toHaveCount(1, { timeout: 60_000 })
+    await expect(grid).toHaveAttribute("aria-colcount", String(cols))
+    await expect(grid).toHaveAttribute("aria-rowcount", String(rows + 1))
+
+    // The image box stays the only plotly figure, and it is a heatmap
+    await expect(page.locator(".js-plotly-plot")).toHaveCount(1)
     const heatmapPlots = () =>
       page.evaluate(
         () =>
@@ -363,9 +397,15 @@ test.describe("Visualize", () => {
     await expect.poll(heatmapPlots, { timeout: 60_000 }).toBe(1)
   })
 
-  test("VIS-05 - Edit ROI opens the ROI editor; Cancel exits", async ({
+  test("VIS-05 - Edit ROI opens the ROI editor; Cancel exits @slow", async ({
     page,
   }) => {
+    // `cell_roi` is a suite2p_roi output. The by-uid rerun computes it once per
+    // suite run, then takes seconds; reproducing afterwards loads the record's
+    // outputs the way a later test would see them.
+    test.setTimeout(SETUP_TIMEOUT_MS + RUN_TEST_TIMEOUT_MS)
+    await ensureCompletedTutorialRun(page, DATA_WS)
+    await reproduceTutorial(page, "Tutorial1")
     await addImagePlot(page)
     await selectFromMui(page, "Select Roi", "cell_roi")
     await page.getByText("Edit ROI", { exact: true }).click()

@@ -1,9 +1,11 @@
 # ALB listener rules for the multi-tier split. Lower priority wins.
 # 10:      maintenance page (scripts/maintenance_mode.sh, not Terraform)
+# 20:      apex page loads to www (compute_domain.tf, custom domain only)
 # 100-199: premium dynamic rules (created by premium-manager Lambda)
 # 200-312: public-bound (system-internal sync, /auth/*, /users/me/*,
-#          /log-report/*, assets); public DataView reads (p280, p300) go to
-#          the public DataView tier, apart from sign-in
+#          /log-report/*, assets), except 304 (DELETE /users/me -> free);
+#          public DataView reads (p280, p300) go to the public DataView tier,
+#          apart from sign-in
 # 315-320: free-bound (authenticated own-data, anonymous flows, Authorization catch-all)
 # default: public TG (see compute.tf)
 
@@ -15,6 +17,7 @@ locals {
     sync_experiments_to_free             = 210
     visualizations_public_header         = 280
     public_dataview_api                  = 300
+    account_deletion_to_free             = 304
     auth_to_public                       = 305
     users_me_to_public                   = 306
     log_report_to_public                 = 307
@@ -101,6 +104,29 @@ resource "aws_lb_listener_rule" "public_dataview_api" {
   action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.public_dataview.arn
+  }
+}
+
+# Account deletion cancels Stripe subscriptions; the public taskdef has no Stripe key.
+resource "aws_lb_listener_rule" "account_deletion_to_free" {
+  listener_arn = aws_lb_listener.autoscaling_https.arn
+  priority     = local.alb_priority.account_deletion_to_free
+
+  condition {
+    path_pattern {
+      values = ["/users/me"]
+    }
+  }
+
+  condition {
+    http_request_method {
+      values = ["DELETE"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.autoscaling.arn # free TG
   }
 }
 

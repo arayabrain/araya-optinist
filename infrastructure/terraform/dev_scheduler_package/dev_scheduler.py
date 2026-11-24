@@ -117,9 +117,9 @@ PROXY_REGISTER_POLL_INTERVAL = 10
 # task only through NAT (no ECS VPC endpoints); a task still RUNNING to ECS
 # keeps the managed-draining hook renewed until NAT is back next morning.
 # How much: ECS stops a load-balanced task only after its target group's
-# deregistration delay (the free target group declares none: the ALB default
-# 300 s), then the container stop (~110 s in #940's Test B), plus slack.
-# Pinned against compute.tf by test_dev_scheduler.py.
+# deregistration delay (free: local.free_tg_deregistration_delay, 300 s at
+# most), then the container stop (~110 s in #940's Test B), plus slack.
+# Pinned against main.tf by test_dev_scheduler.py.
 TASK_STOP_WAIT_SECONDS = 480
 TASK_STOP_POLL_INTERVAL = 10
 

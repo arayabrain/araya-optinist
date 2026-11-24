@@ -476,15 +476,26 @@ const InvoicesPage: FC = () => {
                         {subscription.plan_name || "Premium Plan"}
                       </PlanTitle>
                       <PlanType>Monthly</PlanType>
-                      <ExpirationText>
-                        Your subscription{" "}
-                        {subscription.is_expired
-                          ? "expired on"
-                          : subscription.scheduled_downgrade
-                            ? "will expire on"
-                            : "will renew on"}{" "}
-                        {formatDate(subscription.expiration)}
-                      </ExpirationText>
+                      {!subscription.is_expired &&
+                      !subscription.scheduled_downgrade &&
+                      subscription.is_trial &&
+                      subscription.trial_end ? (
+                        <ExpirationText>
+                          Your free trial ends on{" "}
+                          {formatDate(subscription.trial_end)}, when your first
+                          payment will be taken.
+                        </ExpirationText>
+                      ) : (
+                        <ExpirationText>
+                          Your subscription{" "}
+                          {subscription.is_expired
+                            ? "expired on"
+                            : subscription.scheduled_downgrade
+                              ? "will expire on"
+                              : "will renew on"}{" "}
+                          {formatDate(subscription.expiration)}
+                        </ExpirationText>
+                      )}
                     </>
                   ) : (
                     <>

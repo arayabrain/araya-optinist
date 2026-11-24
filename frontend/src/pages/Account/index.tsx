@@ -337,6 +337,16 @@ const Account = () => {
       )
     }
 
+    // The trial end is the first charge, not a renewal
+    if (userSubscription.is_trial && userSubscription.trial_end) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+          (Free trial ends on{" "}
+          {new Date(userSubscription.trial_end).toLocaleDateString()})
+        </Typography>
+      )
+    }
+
     // Show expiration date for all active paid subscriptions (not FREE tier)
     if (userSubscription.status === SubscriptionUserStatus.SUBSCRIBED) {
       return (

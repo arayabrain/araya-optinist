@@ -2,6 +2,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import stripe
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import Session
@@ -1201,6 +1202,317 @@ class TestSubscriptionLifecycleWebhooks:
         assert upsert_args[2] == SubscriptionPlanIds.PREMIUM
         mock_db.commit.assert_called_once()
         mock_invalidate.assert_called_once_with("user_uid_42")
+
+    def test_subscription_created_reads_item_period_end(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """API basil carries the period end on items only, not on the subscription."""
+        subscription_event.pop("current_period_end")
+        subscription_event["items"] = {
+            "data": [
+                {"current_period_end": 1900000000},
+                {"current_period_end": 2000000000},
+            ]
+        }
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert result["success"] is True
+        assert "skipped" not in result
+        assert mock_upsert.call_args[0][3].timestamp() == 2000000000
+
+    def test_subscription_period_end_shapes(self):
+        period_end = CheckoutService.subscription_period_end
+        assert period_end({"items": {"data": [{"current_period_end": 5}]}}) == 5
+        assert period_end({"current_period_end": 7}) == 7
+        assert period_end({"items": {"data": []}}) is None
+
+    def test_recovery_reads_item_period_end_from_sdk_object(self, mock_db):
+        """Recovery reads a basil SDK subscription with no top-level period end."""
+        sub = stripe.Subscription.construct_from(
+            {
+                "id": "sub_basil",
+                "status": "active",
+                "trial_end": None,
+                "metadata": {},
+                "default_payment_method": "pm_test",
+                "items": {
+                    "object": "list",
+                    "data": [{"current_period_end": 2000000000}],
+                },
+            },
+            "sk_test",
+        )
+        with patch("stripe.Subscription.list", return_value=Mock(data=[sub])), patch(
+            "stripe.Customer.modify"
+        ), patch.object(
+            CheckoutService, "get_or_create_stripe_provider", return_value=1
+        ), patch.object(
+            CheckoutService, "create_or_update_user_account"
+        ), patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert:
+            recovered = CheckoutService.recover_existing_stripe_subscription(
+                mock_db, 42, "cus_test123", SubscriptionPlanIds.PREMIUM
+            )
+
+        mock_upsert.assert_called_once()
+        assert recovered is True
+        assert mock_upsert.call_args[0][3].timestamp() == 2000000000
+
+    def test_trialing_subscription_is_synced(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A trialing subscription, the usual first `created` event, writes premium."""
+        subscription_event["status"] = "trialing"
+        subscription_event["trial_end"] = 1900000000
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_created(
+                mock_db, subscription_event
+            )
+
+        assert "skipped" not in result
+        assert mock_upsert.call_args[0][3].timestamp() == 1900000000
+
+    @pytest.mark.parametrize(
+        "handler, status",
+        [
+            (WebhookService.handle_subscription_created, "incomplete"),
+            (WebhookService.handle_subscription_updated, "incomplete_expired"),
+            (WebhookService.handle_subscription_updated, "unpaid"),
+            (WebhookService.handle_subscription_updated, "paused"),
+        ],
+    )
+    def test_unpaid_subscription_grants_nothing(
+        self, mock_db, subscription_event, handler, status
+    ):
+        """A subscription nobody is paying for must not grant premium."""
+        subscription_event.pop("current_period_end")
+        subscription_event["items"] = {"data": [{"current_period_end": 2000000000}]}
+        subscription_event["status"] = status
+
+        with patch.object(CheckoutService, "create_or_update_subscription") as upsert:
+            result = handler(mock_db, subscription_event)
+
+        assert result["skipped"] is True
+        upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
+
+    @staticmethod
+    def _converted_trial_times():
+        """A trial end two months back and a period end three weeks ahead."""
+        now = get_current_datetime()
+        return (
+            int((now - timedelta(days=60)).timestamp()),
+            int((now + timedelta(days=20)).timestamp()),
+        )
+
+    def test_cancel_after_trial_keeps_premium_to_period_end(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A converted trial that schedules a cancel stores the period end."""
+        trial_end, period_end = self._converted_trial_times()
+        subscription_event.pop("current_period_end")
+        subscription_event["items"] = {"data": [{"current_period_end": period_end}]}
+        subscription_event["trial_end"] = trial_end
+        subscription_event["cancel_at_period_end"] = True
+
+        mock_subscription = Mock(scheduled_downgrade=False)
+        mock_storage = Mock(storage_quota_bytes=214748364800)
+        mock_db.query.side_effect = [
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_user_account))
+                )
+            ),
+            Mock(
+                filter=Mock(
+                    return_value=Mock(first=Mock(return_value=mock_subscription))
+                )
+            ),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_storage)))),
+            Mock(filter=Mock(return_value=Mock(first=Mock(return_value=mock_user)))),
+        ]
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert mock_upsert.call_args[0][3].timestamp() == period_end
+        assert mock_subscription.scheduled_downgrade is True
+        assert result["scheduled_downgrade"] is True
+
+    def test_failed_first_charge_after_trial_keeps_premium_while_retried(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """A failed first charge gets the past_due grace a failed renewal gets."""
+        now = get_current_datetime()
+        trial_end = int((now - timedelta(hours=1)).timestamp())
+        period_end = int((now + timedelta(days=30)).timestamp())
+        subscription_event.pop("current_period_end")
+        subscription_event["items"] = {"data": [{"current_period_end": period_end}]}
+        subscription_event["trial_end"] = trial_end
+        subscription_event["status"] = "past_due"
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription", return_value=99
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            WebhookService.handle_subscription_updated(mock_db, subscription_event)
+
+        assert mock_upsert.call_args[0][3].timestamp() == period_end
+
+    def test_converted_trial_without_period_end_writes_nothing(
+        self, mock_db, mock_user_account, mock_user, subscription_event
+    ):
+        """An ended trial is no expiration; with no period end nothing is written."""
+        trial_end, _ = self._converted_trial_times()
+        subscription_event.pop("current_period_end")
+        subscription_event["trial_end"] = trial_end
+        self._setup_query_chain(mock_db, mock_user_account, mock_user)
+
+        with patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert, patch(
+            "studio.app.common.core.subscription.webhook_service."
+            "invalidate_user_tier_cache"
+        ):
+            result = WebhookService.handle_subscription_updated(
+                mock_db, subscription_event
+            )
+
+        assert result.get("reason") == "missing_expiration"
+        mock_upsert.assert_not_called()
+        mock_db.commit.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "status, trial_days, period_days, expected",
+        [
+            ("trialing", 10, 40, "trial"),
+            ("trialing", -1, 29, "trial"),
+            ("active", 10, 40, "period"),
+            ("active", -60, 20, "period"),
+            ("past_due", -60, 20, "period"),
+            ("active", None, 20, "period"),
+            ("active", -60, None, None),
+        ],
+    )
+    def test_stripe_expiration_end_rule(
+        self, status, trial_days, period_days, expected
+    ):
+        """Trial end only while the status is trialing, whatever the clock says."""
+        now = get_current_datetime()
+
+        def ts(days):
+            if days is None:
+                return None
+            return int((now + timedelta(days=days)).timestamp())
+
+        trial_end, period_end = ts(trial_days), ts(period_days)
+        want = {"trial": trial_end, "period": period_end}.get(expected)
+        assert (
+            CheckoutService.stripe_expiration_end(status, trial_end, period_end) == want
+        )
+
+    def test_recovery_after_trial_converts_stores_period_end(self, mock_db):
+        """Missed-webhook recovery of a converted trial stores the period end."""
+        trial_end, period_end = self._converted_trial_times()
+        sub = stripe.Subscription.construct_from(
+            {
+                "id": "sub_converted",
+                "status": "active",
+                "trial_end": trial_end,
+                "metadata": {},
+                "default_payment_method": "pm_test",
+                "items": {
+                    "object": "list",
+                    "data": [{"current_period_end": period_end}],
+                },
+            },
+            "sk_test",
+        )
+        with patch("stripe.Subscription.list", return_value=Mock(data=[sub])), patch(
+            "stripe.Customer.modify"
+        ), patch.object(
+            CheckoutService, "get_or_create_stripe_provider", return_value=1
+        ), patch.object(
+            CheckoutService, "create_or_update_user_account"
+        ), patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert:
+            recovered = CheckoutService.recover_existing_stripe_subscription(
+                mock_db, 42, "cus_test123", SubscriptionPlanIds.PREMIUM
+            )
+
+        assert recovered is True
+        assert mock_upsert.call_args[0][3].timestamp() == period_end
+
+    def test_recovery_of_a_running_trial_stores_trial_end(self, mock_db):
+        """Recovery of a trialing subscription stores its trial end.
+
+        The two ends differ so that the stored value shows which one was read.
+        """
+        now = get_current_datetime()
+        trial_end = int((now + timedelta(days=10)).timestamp())
+        period_end = int((now + timedelta(days=40)).timestamp())
+        sub = stripe.Subscription.construct_from(
+            {
+                "id": "sub_trialing",
+                "status": "trialing",
+                "trial_end": trial_end,
+                "metadata": {},
+                "default_payment_method": "pm_test",
+                "items": {
+                    "object": "list",
+                    "data": [{"current_period_end": period_end}],
+                },
+            },
+            "sk_test",
+        )
+
+        def listed(**kwargs):
+            return Mock(data=[sub] if kwargs["status"] == "trialing" else [])
+
+        with patch("stripe.Subscription.list", side_effect=listed), patch(
+            "stripe.Customer.modify"
+        ), patch.object(
+            CheckoutService, "get_or_create_stripe_provider", return_value=1
+        ), patch.object(
+            CheckoutService, "create_or_update_user_account"
+        ), patch.object(
+            CheckoutService, "create_or_update_subscription"
+        ) as mock_upsert:
+            recovered = CheckoutService.recover_existing_stripe_subscription(
+                mock_db, 42, "cus_test123", SubscriptionPlanIds.PREMIUM
+            )
+
+        assert recovered is True
+        assert mock_upsert.call_args[0][3].timestamp() == trial_end
 
     @pytest.mark.asyncio
     async def test_dispatch_created_routes_to_handler(

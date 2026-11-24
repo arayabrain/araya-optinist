@@ -67,9 +67,11 @@ USER_SUBSCRIPTION_REQUIRED_FIELDS = {
     "status": int,
     "plan_name": str,
     "plan_price": int,
+    "is_trial": bool,
 }
 
 USER_SUBSCRIPTION_OPTIONAL_FIELDS = {
+    "trial_end": (datetime, str),
     "created_at": (datetime, str),
     "updated_at": (datetime, str),
 }
@@ -347,6 +349,43 @@ def test_contract_user_subscription_scheduled_downgrade():
     result = subscription.dict()
 
     assert result["scheduled_downgrade"] is True
+
+
+def test_contract_user_subscription_trial():
+    """
+    Contract test: A running trial carries is_trial and the first-charge date;
+    a response built without them reads as no trial.
+    """
+    trial_end = datetime(2027, 1, 15, tzinfo=timezone.utc)
+    fields = dict(
+        id=1,
+        plan_id=2,
+        user_id=100,
+        expiration=trial_end,
+        is_expired=False,
+        scheduled_downgrade=False,
+        plan_name="Premium",
+        plan_price=2000,
+        status=2,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    result = UserSubscriptionResponse(
+        **fields, trial_end=trial_end, is_trial=True
+    ).dict()
+    validate_contract(
+        result,
+        USER_SUBSCRIPTION_REQUIRED_FIELDS,
+        USER_SUBSCRIPTION_OPTIONAL_FIELDS,
+        context="UserSubscriptionResponse (trial)",
+    )
+    assert result["is_trial"] is True
+    assert result["trial_end"] == trial_end
+
+    without = UserSubscriptionResponse(**fields).dict()
+    assert without["is_trial"] is False
+    assert without["trial_end"] is None
 
 
 # ============================================================================

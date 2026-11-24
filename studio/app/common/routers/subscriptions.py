@@ -23,6 +23,7 @@ from studio.app.common.core.subscription.subscription_service import Subscriptio
 from studio.app.common.core.subscription.webhook_service import WebhookService
 from studio.app.common.core.utils.datetime_utils import (
     datetime_from_timestamp,
+    ensure_utc,
     get_current_datetime,
     get_current_timestamp,
 )
@@ -178,12 +179,14 @@ async def get_user_subscription(
             if current_time.tzinfo is None:
                 current_time = current_time.replace(tzinfo=timezone.utc)
 
+            trial_end = ensure_utc(sub_data.trial_end)
             subscription_dict = {
                 **sub_data.dict(),
                 "plan_name": plan_data.name,
                 "plan_price": plan_data.price,
                 "is_expired": expiration_time < current_time,
                 "status": subscription_status,
+                "is_trial": trial_end is not None and trial_end > current_time,
             }
             subscription_response = UserSubscriptionResponse(**subscription_dict)
             logger.debug(f"Subscription response: {subscription_response}")

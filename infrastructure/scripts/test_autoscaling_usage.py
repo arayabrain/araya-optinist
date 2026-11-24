@@ -196,11 +196,11 @@ class AutoscalingUsageTest:
                 self.config.api_base_url = outputs["domain_url"]["value"]
             else:
                 logging.warning("domain_url not found in Terraform outputs")
-                self.config.api_base_url = "https://araya-optinist.com"
+                self.config.api_base_url = "https://www.araya-optinist.com"
 
         except Exception as e:
             logging.warning(f"Could not load Terraform outputs: {e}")
-            self.config.api_base_url = "https://araya-optinist.com"
+            self.config.api_base_url = "https://www.araya-optinist.com"
 
     def load_tokens(self) -> bool:
         """Load authentication tokens, generating if needed."""

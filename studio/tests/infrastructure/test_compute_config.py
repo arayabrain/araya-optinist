@@ -31,6 +31,7 @@ from terraform_source import (
     TERRAFORM_DIR,
     attribute,
     identifier_list,
+    per_environment,
     read,
     resource_block,
     resource_blocks,
@@ -596,3 +597,23 @@ class TestServiceHealthCheckGrace:
             f"grace {grace} s < database wait {wait} s "
             f"+ margin {self.STARTUP_MARGIN_SECONDS} s"
         )
+
+
+class TestFreeTargetGroupDrain:
+    """One free task per host: a rollout or scale-in waits out the
+    deregistration delay host by host before the next task can start."""
+
+    def test_drains_per_environment(self):
+        target_group = resource_block(
+            read(COMPUTE_TF), "aws_lb_target_group", "autoscaling"
+        )
+        assert (
+            attribute(target_group, "deregistration_delay")
+            == "local.free_tg_deregistration_delay"
+        )
+        # Production keeps the ALB default it always had; development drains
+        # for 60 s
+        delay = per_environment(
+            attribute(read(MAIN_TF), "free_tg_deregistration_delay")
+        )
+        assert delay == {"production": 300, "development": 60}

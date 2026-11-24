@@ -1481,10 +1481,10 @@ def test_run_gate_blocks_overdue_user_over_effective_quota():
     overdue_expiration = get_current_datetime() - timedelta(days=grace + 5)
 
     with patch(
-        "studio.app.common.routers.run.get_current_user_storage_usage",
+        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage",
         new=AsyncMock(return_value=used),
     ), patch(
-        "studio.app.common.routers.run.get_user_storage_usage",
+        "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage",
         return_value={"storage_quota_bytes": PREMIUM_QUOTA_BYTES},
     ), patch(
         "studio.app.common.core.cloud.cloud_utils.session_scope"
@@ -1506,10 +1506,10 @@ def test_run_gate_allows_active_user_under_raw_quota():
     active_expiration = get_current_datetime() + timedelta(days=30)
 
     with patch(
-        "studio.app.common.routers.run.get_current_user_storage_usage",
+        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage",
         new=AsyncMock(return_value=50 * StorageSize.GB),
     ), patch(
-        "studio.app.common.routers.run.get_user_storage_usage",
+        "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage",
         return_value={"storage_quota_bytes": PREMIUM_QUOTA_BYTES},
     ), patch(
         "studio.app.common.core.cloud.cloud_utils.session_scope"
@@ -1577,10 +1577,10 @@ def test_upload_gate_blocks_overdue_user_over_effective_quota():
     overdue_expiration = get_current_datetime() - timedelta(days=grace + 5)
 
     with patch(
-        "studio.app.common.routers.files.get_current_user_storage_usage",
+        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage",
         new=AsyncMock(return_value=used),
     ), patch(
-        "studio.app.common.routers.files.get_user_storage_usage",
+        "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage",
         return_value={"storage_quota_bytes": PREMIUM_QUOTA_BYTES},
     ), patch(
         "studio.app.common.core.cloud.cloud_utils.session_scope"
@@ -1603,10 +1603,10 @@ def test_upload_gate_allows_active_user_under_raw_quota():
     active_expiration = get_current_datetime() + timedelta(days=30)
 
     with patch(
-        "studio.app.common.routers.files.get_current_user_storage_usage",
+        "studio.app.common.core.cloud.cloud_utils.get_current_user_storage_usage",
         new=AsyncMock(return_value=50 * StorageSize.GB),
     ), patch(
-        "studio.app.common.routers.files.get_user_storage_usage",
+        "studio.app.common.core.cloud.cloud_utils.get_user_storage_usage",
         return_value={"storage_quota_bytes": PREMIUM_QUOTA_BYTES},
     ), patch(
         "studio.app.common.core.cloud.cloud_utils.session_scope"

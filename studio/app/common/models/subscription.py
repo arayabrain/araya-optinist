@@ -103,6 +103,12 @@ class UserSubscription(SQLModel, table=True):
         )
     )
     expiration: datetime = Field(sa_column=Column(DateTime, nullable=False))
+    # Stripe subscription's trial end, as last copied by a webhook; the trial is
+    # running only while it is in the future. NULL: no trial.
+    trial_end: Optional[datetime] = Field(
+        sa_column=Column(DateTime, nullable=True),
+        default=None,
+    )
     scheduled_downgrade: bool = Field(
         sa_column=Column(Boolean, nullable=False, default=False),
         description="True if a downgrade is scheduled after the current period",

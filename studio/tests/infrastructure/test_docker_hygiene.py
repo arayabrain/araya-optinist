@@ -2,9 +2,9 @@
 filling (infrastructure/scripts/docker_hygiene.sh and its wiring).
 
 The script runs as root on every host, so it is checked as text and run with
-stub docker / curl / df commands on PATH. The terraform association, the two
-deploy hooks and the ECS agent knobs are checked as text, like the other
-configuration tests.
+stub docker / curl / df commands on PATH. The terraform association and the
+ECS agent knobs are checked as text, like the other configuration tests. The
+post-deploy trigger lives in ecs_rollout.sh (test_ecs_rollout.py).
 """
 
 import os
@@ -26,7 +26,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPTS = PROJECT_ROOT / "infrastructure" / "scripts"
 HYGIENE = SCRIPTS / "docker_hygiene.sh"
 USER_DATA = SCRIPTS / "ecs-user-data.sh"
-ECR_BUILD_PUSH = SCRIPTS / "ecr_build_push.sh"
 DEPLOYMENT_TF = TERRAFORM_DIR / "deployment.tf"
 
 TEMPLATES = ["ecs", "premium", "background", "public", "public_dataview"]
@@ -214,16 +213,6 @@ class TestTerraform:
             re.DOTALL | re.MULTILINE,
         )
 
-    def test_deploy_triggers_hygiene_after_services_are_stable(self):
-        block = resource_block(read(DEPLOYMENT_TF), "null_resource", "deploy_to_ecs")
-        stable = block.index("wait services-stable")
-        hook = block.index("start-associations-once")
-        assert stable < hook
-        assert "aws_ssm_association.docker_hygiene.association_id" in block
-        assert re.search(
-            r"start-associations-once.*?\|\| echo", block[hook - 40 :], re.DOTALL
-        )
-
 
 class TestUserData:
     def test_agent_cleanup_knobs(self):
@@ -235,41 +224,3 @@ class TestUserData:
             "echo ECS_NUM_IMAGES_DELETE_PER_CYCLE=10 >> /etc/ecs/ecs.config",
         ]:
             assert line in statements, line
-
-
-class TestScriptDeploy:
-    """`ecr_build_push.sh --deploy` cycles every service without Terraform, so
-    it triggers the same hygiene run, and keeps working before the association
-    exists."""
-
-    def _deploy_block(self) -> str:
-        source = ECR_BUILD_PUSH.read_text()
-        match = re.search(
-            r'^if \[ "\$DEPLOY" = true \]; then$.*?^fi$',
-            source,
-            re.DOTALL | re.MULTILINE,
-        )
-        assert match, "DEPLOY block not found"
-        return match.group()
-
-    def test_waits_then_triggers_hygiene_inside_the_deploy_block(self):
-        block = self._deploy_block()
-        loop = block.index("--force-new-deployment")
-        stable = block.index("wait services-stable")
-        hook = block.index("start-associations-once")
-        assert loop < stable < hook
-
-    def test_both_steps_only_warn_on_failure(self):
-        block = self._deploy_block()
-        assert re.search(r"wait services-stable[^\n]*\n\s*\|\| echo", block)
-        assert re.search(r"start-associations-once[^\n]*\n\s*\|\| echo", block)
-
-    def test_hygiene_call_is_guarded_by_the_output(self):
-        block = self._deploy_block()
-        assert (
-            'output -raw docker_hygiene_association_id 2>/dev/null || echo ""' in block
-        )
-        assert 'if [ -n "$HYGIENE_ID" ]; then' in block
-        assert block.index('if [ -n "$HYGIENE_ID" ]') < block.index(
-            "start-associations-once"
-        )

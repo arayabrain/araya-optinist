@@ -17,8 +17,10 @@ GIB = 1024**3
 def _stubs(quota_exceeded=False):
     with patch.object(
         run, "get_current_user_storage_usage", new=AsyncMock(return_value=10)
-    ), patch.object(run, "get_user_storage_usage"), patch.object(
-        run, "get_effective_quota_bytes", return_value=5 if quota_exceeded else 100
+    ), patch.object(
+        run,
+        "get_quota_usage_percent",
+        new=AsyncMock(return_value=200.0 if quota_exceeded else 10.0),
     ), patch.object(
         run, "ensure_structure_caches", new=AsyncMock()
     ), patch.object(

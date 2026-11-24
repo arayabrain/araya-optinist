@@ -32,6 +32,16 @@ export const PREMIUM_SUBSCRIPTION = {
   status: SubscriptionUserStatus.SUBSCRIBED,
   plan_name: "Premium",
   plan_price: 10,
+  is_trial: false,
+  trial_end: null,
+}
+
+// A first checkout: the trial end is the first charge and the stored expiration
+export const TRIAL_SUBSCRIPTION = {
+  ...PREMIUM_SUBSCRIPTION,
+  expiration: "2027-01-15T00:00:00",
+  is_trial: true,
+  trial_end: "2027-01-15T00:00:00",
 }
 
 export const createAccountStore = ({

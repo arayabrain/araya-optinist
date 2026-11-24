@@ -6,12 +6,17 @@ the test. No real AWS calls are ever made.
 """
 
 import json
-import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from terraform_source import TERRAFORM_DIR, read, resource_block
+from terraform_source import (
+    TERRAFORM_DIR,
+    attribute,
+    per_environment,
+    read,
+    resource_block,
+)
 
 # Env vars dev_scheduler reads. Set as a module-level dict so every fixture
 # patch starts from the same baseline; individual tests override as needed.
@@ -427,8 +432,18 @@ class TestWaitForTasksStopped:
         tg = resource_block(
             read(TERRAFORM_DIR / "compute.tf"), "aws_lb_target_group", "autoscaling"
         )
-        declared = re.search(r"^\s*deregistration_delay\s*=\s*(\d+)", tg, re.M)
-        delay = int(declared.group(1)) if declared else 300  # ALB default
+        assert (
+            attribute(tg, "deregistration_delay")
+            == "local.free_tg_deregistration_delay"
+        )
+        # Either environment's, though the schedule runs on development only
+        delay = max(
+            per_environment(
+                attribute(
+                    read(TERRAFORM_DIR / "main.tf"), "free_tg_deregistration_delay"
+                )
+            ).values()
+        )
         assert module.TASK_STOP_WAIT_SECONDS >= delay + 120
 
 

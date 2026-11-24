@@ -162,7 +162,7 @@ The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_im
 **Problem:** A user opens the app while the free tier is down; login and the post-login bootstrap calls would 503.
 
 **Solution:** Auth and bootstrap routes are served from public:
-- `/auth/*` and `/users/me/*` route to the public TG (ALB priorities 305, 306).
+- `/auth/*` and `/users/me/*` route to the public TG (ALB priorities 305, 306), except `DELETE /users/me`, which cancels Stripe subscriptions and goes to the free TG (304).
 - The user logs in and the SPA bootstraps; premium users then provision via the normal assignment cascade.
 
 ### 2. SPA Document Request Lands on Public
@@ -267,9 +267,9 @@ The ASG acts only on the target state `unhealthy`; `initial`, `draining` and `un
 |---|---|---|
 | desired | `AWS/AutoScaling` `GroupDesiredCapacity` (`Minimum`) | One task per host. Container Insights publishes no `DesiredTaskCount` while no task runs, so the tier losing its last task would read 0; the ASG publishes an explicit 0 when the dev schedule stops it |
 | healthy | `AWS/ApplicationELB` `HealthyHostCount` (`Minimum`, `FILL` 0) | A wedged host keeps `RunningTaskCount` at desired; a deregistered target leaves a data gap, read as 0 |
-| deploys | `ECS/ContainerInsights` `DeploymentCount` (`Maximum`) | A public rollout replaces its two tasks one at a time and is short a target for about 28 of 30 min, so the alarm is off while it exceeds 1 |
+| deploys | `ECS/ContainerInsights` `DeploymentCount` (`Maximum`) | A public rollout replaces its two tasks one at a time and is short a target for about 28 of 30 min with production's drains, so the alarm is off while it exceeds 1 |
 
-It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 35 of 40 on public and public DataView (the same host shape and production drain), which outlasts each tier's longest normal gap outside a deployment. On free that is a single-instance refresh or a slow morning start, about 17 min. On public it is a host replacement, about 25 min on dev: the task waits out its 600 s drain, then the terminating instance's own 600 s drain, before it runs on the new host. A deployment that never finishes silences it; `tg-unhealthy-hosts` still fires if that deployment's target is unhealthy. Runbook: `MAINTENANCE_PROCEDURES.md`, *ALB Alarms*.
+It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 35 of 40 on public and public DataView (the same host shape and production drain), which outlasts each tier's longest normal gap outside a deployment. On free that is a single-instance refresh or a slow morning start, about 17 min. On public it is a host replacement, about 25 min with production's drains (measured on dev before its drain was shortened): the task waits out its 600 s drain, then the terminating instance's own 600 s drain, before it runs on the new host. Development drains for 60 s, which only widens the margin. A deployment that never finishes silences it; `tg-unhealthy-hosts` still fires if that deployment's target is unhealthy. Runbook: `MAINTENANCE_PROCEDURES.md`, *ALB Alarms*.
 
 **Revisit the decision for a tier** if warm-host task restart to first healthy target has a p95 above about 60 s on public or about 240 s on free, or a prod instance replacement is traced to a slow restart. Options then: widen that tier's target group window (for example public `unhealthy_threshold` 3 to 5), make the restart faster, or build `EC2` with automated recovery as its own change.
 
@@ -311,7 +311,7 @@ Stripe variables are intentionally omitted because the subscriptions router is g
 
 | Resource | Terraform | Notes |
 |---|---|---|
-| Target group | `aws_lb_target_group.public` | `/health` check, 600s deregistration delay |
+| Target group | `aws_lb_target_group.public` | `/health` check, deregistration delay 600 s on production (the listener idle timeout), 60 s on development |
 | Launch template | `aws_launch_template.public` | `var.public_instance_type`, 30 GB gp3 root |
 | Auto Scaling Group | `aws_autoscaling_group.public` | ELB health check, 900s grace, `OldestInstance` policy, `GroupDesiredCapacity` metric for the serving alarm |
 | Task definition | `aws_ecs_task_definition.public` | EC2/bridge, EFS published-data mounts (output + input cache) |
