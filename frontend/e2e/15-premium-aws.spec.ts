@@ -1474,7 +1474,8 @@ test("PREM-10 - Terminating a premium instance reconciles its database row away 
   skipUnlessOptedIn(rows)
   const sqlReason = sqlSkipReason()
   test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
-  test.setTimeout(20 * 60_000)
+  // The polls below (8 + 10 + 5 min) and the closing sweep's 5-min call
+  test.setTimeout(30 * 60_000)
 
   const baseIds = basePremiumInstanceIds()
   const idList = baseIds.map((id) => `'${id}'`).join(",")
