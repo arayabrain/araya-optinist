@@ -16,6 +16,7 @@ import {
   apiUrl,
   awaitRunFinished,
   awsJson,
+  basePremiumInstanceIds,
   cloudwatchHas,
   expectPremiumTargetGroupGone,
   importSampleData,
@@ -1463,9 +1464,11 @@ test("PREM-09 - The premium subscription row is real in the deployed RDS @slow",
 // TestReconcileInstanceStates drives the reconcile transaction directly, so
 // what stays unproven is everything around it - that terminating a real EC2
 // reaches the Cleanup Lambda through the EventBridge rule at all, and that the
-// row really disappears. The standby is the only premium instance owned by
-// nobody, so it is the only one this may destroy; the sweep at the end buys
-// back the one it consumed.
+// row really disappears. A standby is the only premium instance owned by
+// nobody, so it is the only kind this may destroy - but not a base instance:
+// those are termination-protected, and the pool usually heals to one as its
+// standby. The sweep at the end re-adopts the base and buys back the one
+// consumed.
 test("PREM-10 - Terminating a premium instance reconciles its database row away @slow", async () => {
   const rows = "6226"
   skipUnlessOptedIn(rows)
@@ -1473,30 +1476,66 @@ test("PREM-10 - Terminating a premium instance reconciles its database row away 
   test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
   test.setTimeout(20 * 60_000)
 
-  const instanceId = runSql(
-    `SELECT instance_id FROM premium_user_assignments
-       WHERE user_id IS NULL AND is_standby = 1 AND status = 'active'
-       ORDER BY id DESC LIMIT 1;`,
-  )
-  test.skip(
-    !/^i-[0-9a-f]+$/.test(instanceId),
-    `rows ${rows}: no unowned standby row to reconcile ("${instanceId}") - ` +
-      `terminating an instance a user holds is not this test's to do`,
-  )
-  const rowsFor = () =>
+  const baseIds = basePremiumInstanceIds()
+  const idList = baseIds.map((id) => `'${id}'`).join(",")
+  const terminableStandby = () =>
     runSql(
-      `SELECT COUNT(*) FROM premium_user_assignments
-         WHERE instance_id = '${instanceId}';`,
+      `SELECT instance_id FROM premium_user_assignments
+         WHERE user_id IS NULL AND is_standby = 1 AND status = 'active'
+         ${baseIds.length ? `AND instance_id NOT IN (${idList})` : ""}
+         ORDER BY id DESC LIMIT 1;`,
     )
-  expect(
-    rowsFor(),
-    `the database must start out holding a row for standby ${instanceId}, ` +
-      `or its disappearance proves nothing`,
-  ).toBe("1")
-
-  const since = Date.now() - 5_000
-  awsJson(`ec2 terminate-instances --instance-ids ${instanceId}`)
+  let instanceId = terminableStandby()
+  let mutated = false
   try {
+    if (!instanceId && baseIds.length) {
+      // No standby outside the bases. create_standby refuses while the pool is
+      // full, so a base's standby row goes first; the sweep re-adopts the base.
+      mutated = true
+      runSqlWriteOnDev(
+        `DELETE FROM premium_user_assignments WHERE is_standby = 1
+           AND user_id IS NULL AND instance_id IN (${idList})`,
+      )
+      // Async: the Lambda returns only once its new instance has stopped,
+      // which outlasts awsJson's 60s timeout
+      awsJson(
+        `lambda invoke --function-name development-premium-manager ` +
+          `--invocation-type Event --cli-binary-format raw-in-base64-out ` +
+          `--payload '{"action":"create_standby"}' /dev/null`,
+      )
+      await expect
+        .poll(
+          () => {
+            instanceId = terminableStandby()
+            return instanceId
+          },
+          {
+            timeout: 8 * 60_000,
+            intervals: [20_000],
+            message: "create_standby never registered a non-base standby",
+          },
+        )
+        .toMatch(/^i-[0-9a-f]+$/)
+    }
+    test.skip(
+      !/^i-[0-9a-f]+$/.test(instanceId),
+      `rows ${rows}: no unowned standby row to reconcile ("${instanceId}") - ` +
+        `terminating an instance a user holds is not this test's to do`,
+    )
+    const rowsFor = () =>
+      runSql(
+        `SELECT COUNT(*) FROM premium_user_assignments
+           WHERE instance_id = '${instanceId}';`,
+      )
+    expect(
+      rowsFor(),
+      `the database must start out holding a row for standby ${instanceId}, ` +
+        `or its disappearance proves nothing`,
+    ).toBe("1")
+
+    const since = Date.now() - 5_000
+    mutated = true
+    awsJson(`ec2 terminate-instances --instance-ids ${instanceId}`)
     // The event-driven path, not the hourly walk: this line only comes from
     // the reconcile_instance action the EventBridge rule delivers.
     await expect
@@ -1524,7 +1563,7 @@ test("PREM-10 - Terminating a premium instance reconciles its database row away 
       })
       .toBe("0")
   } finally {
-    invokeMonitoringSweep()
+    if (mutated) invokeMonitoringSweep()
   }
 })
 
