@@ -809,6 +809,9 @@ test.describe.serial("Subscription/storage warning lifecycle", () => {
   test("LC-18 - Expired premium in grace and over quota: combined warning", async ({
     page,
   }) => {
+    // Before the listener below: a skip raised while it is pending ends the
+    // test as a waitForResponse error, not a skip
+    needsStorageState()
     // Not the sibling `/limit-warning/check`, which returns a different shape
     const warningSeen = page.waitForResponse((r) =>
       r.url().endsWith("/storage-limit-alerts/limit-warning"),

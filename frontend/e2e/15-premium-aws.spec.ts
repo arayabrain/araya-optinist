@@ -16,6 +16,7 @@ import {
   apiUrl,
   awaitRunFinished,
   awsJson,
+  basePremiumInstanceIds,
   cloudwatchHas,
   expectPremiumTargetGroupGone,
   importSampleData,
@@ -1463,40 +1464,79 @@ test("PREM-09 - The premium subscription row is real in the deployed RDS @slow",
 // TestReconcileInstanceStates drives the reconcile transaction directly, so
 // what stays unproven is everything around it - that terminating a real EC2
 // reaches the Cleanup Lambda through the EventBridge rule at all, and that the
-// row really disappears. The standby is the only premium instance owned by
-// nobody, so it is the only one this may destroy; the sweep at the end buys
-// back the one it consumed.
+// row really disappears. A standby is the only premium instance owned by
+// nobody, so it is the only kind this may destroy - but not a base instance:
+// those are termination-protected, and the pool usually heals to one as its
+// standby. The sweep at the end re-adopts the base and buys back the one
+// consumed.
 test("PREM-10 - Terminating a premium instance reconciles its database row away @slow", async () => {
   const rows = "6226"
   skipUnlessOptedIn(rows)
   const sqlReason = sqlSkipReason()
   test.skip(!!sqlReason, `rows ${rows}: ${sqlReason}`)
-  test.setTimeout(20 * 60_000)
+  // The polls below (8 + 10 + 5 min) and the closing sweep's 5-min call
+  test.setTimeout(30 * 60_000)
 
-  const instanceId = runSql(
-    `SELECT instance_id FROM premium_user_assignments
-       WHERE user_id IS NULL AND is_standby = 1 AND status = 'active'
-       ORDER BY id DESC LIMIT 1;`,
-  )
-  test.skip(
-    !/^i-[0-9a-f]+$/.test(instanceId),
-    `rows ${rows}: no unowned standby row to reconcile ("${instanceId}") - ` +
-      `terminating an instance a user holds is not this test's to do`,
-  )
-  const rowsFor = () =>
+  const baseIds = basePremiumInstanceIds()
+  const idList = baseIds.map((id) => `'${id}'`).join(",")
+  const terminableStandby = () =>
     runSql(
-      `SELECT COUNT(*) FROM premium_user_assignments
-         WHERE instance_id = '${instanceId}';`,
+      `SELECT instance_id FROM premium_user_assignments
+         WHERE user_id IS NULL AND is_standby = 1 AND status = 'active'
+         ${baseIds.length ? `AND instance_id NOT IN (${idList})` : ""}
+         ORDER BY id DESC LIMIT 1;`,
     )
-  expect(
-    rowsFor(),
-    `the database must start out holding a row for standby ${instanceId}, ` +
-      `or its disappearance proves nothing`,
-  ).toBe("1")
-
-  const since = Date.now() - 5_000
-  awsJson(`ec2 terminate-instances --instance-ids ${instanceId}`)
+  let instanceId = terminableStandby()
+  let mutated = false
   try {
+    if (!instanceId && baseIds.length) {
+      // No standby outside the bases. create_standby refuses while the pool is
+      // full, so a base's standby row goes first; the sweep re-adopts the base.
+      mutated = true
+      runSqlWriteOnDev(
+        `DELETE FROM premium_user_assignments WHERE is_standby = 1
+           AND user_id IS NULL AND instance_id IN (${idList})`,
+      )
+      // Async: the Lambda returns only once its new instance has stopped,
+      // which outlasts awsJson's 60s timeout
+      awsJson(
+        `lambda invoke --function-name development-premium-manager ` +
+          `--invocation-type Event --cli-binary-format raw-in-base64-out ` +
+          `--payload '{"action":"create_standby"}' /dev/null`,
+      )
+      await expect
+        .poll(
+          () => {
+            instanceId = terminableStandby()
+            return instanceId
+          },
+          {
+            timeout: 8 * 60_000,
+            intervals: [20_000],
+            message: "create_standby never registered a non-base standby",
+          },
+        )
+        .toMatch(/^i-[0-9a-f]+$/)
+    }
+    test.skip(
+      !/^i-[0-9a-f]+$/.test(instanceId),
+      `rows ${rows}: no unowned standby row to reconcile ("${instanceId}") - ` +
+        `terminating an instance a user holds is not this test's to do`,
+    )
+    const rowsFor = () =>
+      runSql(
+        `SELECT COUNT(*) FROM premium_user_assignments
+           WHERE instance_id = '${instanceId}';`,
+      )
+    expect(
+      rowsFor(),
+      `the database must start out holding a row for standby ${instanceId}, ` +
+        `or its disappearance proves nothing`,
+    ).toBe("1")
+
+    const since = Date.now() - 5_000
+    mutated = true
+    awsJson(`ec2 terminate-instances --instance-ids ${instanceId}`)
     // The event-driven path, not the hourly walk: this line only comes from
     // the reconcile_instance action the EventBridge rule delivers.
     await expect
@@ -1524,7 +1564,7 @@ test("PREM-10 - Terminating a premium instance reconciles its database row away 
       })
       .toBe("0")
   } finally {
-    invokeMonitoringSweep()
+    if (mutated) invokeMonitoringSweep()
   }
 })
 
@@ -2750,10 +2790,13 @@ test("PREM-23 - Adoption of a pool-stranded assignment migrates inline to a dedi
 //
 // The ladder needs no help to advance. Arming re-enables premium routing and
 // then logs instance_probe_armed through the shared axios instance, so that
-// telemetry POST is itself the probe: it 502s off the blocked instance,
-// consumes the probe immediately, and still reaches CloudWatch through the
-// interceptor's free-tier retry. So a failure timestamp always sits right
-// after its arm, and the delay between them is not what this measures.
+// telemetry POST is the probe unless another premium-routed request gets
+// there first: it 502s off the blocked instance and consumes the probe
+// immediately. So a failure timestamp always sits right after its arm, and
+// the delay between them is not what this measures. The armed line itself
+// reaches CloudWatch only through the interceptor's free-tier retry, which is
+// best-effort telemetry: a run has lost one, so rungs are read by their
+// failed_probes count (see expectFirstLadderDoubling).
 //
 // Deliberately partial (the sheet cell says so): failures 3..5 to the 300s
 // cap are ~11 more minutes of real waiting inside the 15-minute iptables
@@ -2765,6 +2808,110 @@ test("PREM-23 - Adoption of a pool-stranded assignment migrates inline to a dedi
 // variant of the snackbar and reaching terminal organically is the wait this
 // test refuses.
 // ---------------------------------------------------------------------------
+
+// The probe-ladder events of one kind for one user since a moment, each with
+// the failed_probes count it carries, sorted across the three tier groups
+// (see uiEventCount).
+function probeLadderEvents(
+  userId: number,
+  event: "instance_probe_armed" | "instance_probe_failure",
+  sinceMs: number,
+): { ts: number; failedProbes: number }[] {
+  const events: { ts: number; failedProbes: number }[] = []
+  for (const group of [FREE_LOG_GROUP, PUBLIC_LOG_GROUP, PREMIUM_LOG_GROUP]) {
+    const lines = awsJson<[number, string][]>(
+      `logs filter-log-events --log-group-name ${group} ` +
+        `--start-time ${sinceMs} ` +
+        `--filter-pattern '"Premium UI event: user=${userId} " "event=${event} "' ` +
+        `--query 'events[].[timestamp,message]'`,
+    )
+    for (const [ts, message] of lines) {
+      const count = /'failed_probes': (\d+)/.exec(message)
+      if (count) events.push({ ts, failedProbes: Number(count[1]) })
+    }
+  }
+  return events.sort((a, b) => a.ts - b.ts)
+}
+
+// Rung n of the ladder is its n-th armed probe, timed by its armed line
+// (failed_probes n - 1) or, when that line never reached CloudWatch, by the
+// failure the same probe logs (failed_probes n) within milliseconds. Found by
+// that count, not by position, so a lost line cannot move a later rung into
+// its place.
+async function expectFirstLadderDoubling(userId: number, sinceMs: number) {
+  const read = () => {
+    const armed = probeLadderEvents(userId, "instance_probe_armed", sinceMs)
+    const failures = probeLadderEvents(
+      userId,
+      "instance_probe_failure",
+      sinceMs,
+    )
+    const failure = (n: number) =>
+      failures.find((e) => e.failedProbes === n)?.ts
+    const rung = (n: number) => {
+      const arm = armed.find((e) => e.failedProbes === n - 1)?.ts
+      if (arm !== undefined) return { at: arm, from: "armed" }
+      const fail = failure(n)
+      return fail === undefined ? undefined : { at: fail, from: "failure" }
+    }
+    return { failure, rung }
+  }
+  // Waits for every line the measurement reads: each is its own POST, so
+  // they can reach CloudWatch out of order. Rung 1 follows from failure 1.
+  let ladder: ReturnType<typeof read> | undefined
+  await expect
+    .poll(
+      () => {
+        ladder = read()
+        if (!ladder.rung(2)) return "the machine never armed a second probe"
+        if (ladder.failure(1) === undefined)
+          return "the first armed probe was never consumed as a failure"
+        return "ready"
+      },
+      {
+        timeout: 5 * 60_000,
+        intervals: [10_000],
+        message: "the first doubling cannot be measured",
+      },
+    )
+    .toBe("ready")
+  const { failure, rung } = ladder!
+
+  const flips = uiEventTimestamps(userId, "instance_unreachable", sinceMs)
+  expect(flips, "exactly one detection event anchors the ladder").toHaveLength(
+    1,
+  )
+  const failure1 = failure(1)!
+  const rung1 = rung(1)!
+  const rung2 = rung(2)!
+  // The sheet's wall-clock claim, with a +/-20% band around each delay:
+  // detection -> arm 1 is INITIAL_PROBE_DELAY_MS...
+  const gap1 = rung1.at - flips[0]
+  const gap2 = rung2.at - failure1
+  console.log(
+    `[15-premium-aws] PREM-24 measured ladder: detection -> arm1 ` +
+      `${gap1}ms (expect ~30000, ${rung1.from} line), failure1 -> arm2 ` +
+      `${gap2}ms (expect ~60000, ${rung2.from} line)`,
+  )
+  expect(
+    gap1,
+    `detection -> first armed probe was ${gap1}ms, outside 30s +/-20%`,
+  ).toBeGreaterThanOrEqual(24_000)
+  expect(
+    gap1,
+    `detection -> first armed probe was ${gap1}ms, outside 30s +/-20%`,
+  ).toBeLessThanOrEqual(36_000)
+  // ...and failure 1 -> arm 2 is its first doubling. Asserting the doubled
+  // band where 30s is expected is this test's named mutation check: red.
+  expect(
+    gap2,
+    `first failure -> second armed probe was ${gap2}ms, outside 60s +/-20%`,
+  ).toBeGreaterThanOrEqual(48_000)
+  expect(
+    gap2,
+    `first failure -> second armed probe was ${gap2}ms, outside 60s +/-20%`,
+  ).toBeLessThanOrEqual(72_000)
+}
 
 test("PREM-24 - The probe ladder's first doubling is real wall-clock; terminal Retry recovers @slow", async ({
   page,
@@ -2834,58 +2981,8 @@ test("PREM-24 - The probe ladder's first doubling is real wall-clock; terminal R
       )
       .toBe(true)
 
-    // The ladder advances on its own (see the header): each arm's own telemetry
-    // POST is the probe that fails it. Just wait for the second arm.
-    await expect
-      .poll(
-        () => uiEventTimestamps(userId, "instance_probe_armed", t0).length,
-        {
-          timeout: 5 * 60_000,
-          intervals: [10_000],
-          message:
-            "the machine never armed two probes - the first doubling cannot be measured",
-        },
-      )
-      .toBeGreaterThanOrEqual(2)
-
-    const flips = uiEventTimestamps(userId, "instance_unreachable", t0)
-    const armed = uiEventTimestamps(userId, "instance_probe_armed", t0)
-    const failures = uiEventTimestamps(userId, "instance_probe_failure", t0)
-    expect(
-      flips,
-      "exactly one detection event anchors the ladder",
-    ).toHaveLength(1)
-    expect(
-      failures.length,
-      "the first armed probe was never consumed as a failure",
-    ).toBeGreaterThanOrEqual(1)
-    // The sheet's wall-clock claim, with a +/-20% band around each delay:
-    // detection -> arm 1 is INITIAL_PROBE_DELAY_MS...
-    const gap1 = armed[0] - flips[0]
-    console.log(
-      `[15-premium-aws] PREM-24 measured ladder: detection -> arm1 ` +
-        `${gap1}ms (expect ~30000), failure1 -> arm2 ` +
-        `${armed[1] - failures[0]}ms (expect ~60000)`,
-    )
-    expect(
-      gap1,
-      `detection -> first armed probe was ${gap1}ms, outside 30s +/-20%`,
-    ).toBeGreaterThanOrEqual(24_000)
-    expect(
-      gap1,
-      `detection -> first armed probe was ${gap1}ms, outside 30s +/-20%`,
-    ).toBeLessThanOrEqual(36_000)
-    // ...and failure 1 -> arm 2 is its first doubling. Asserting the doubled
-    // band where 30s is expected is this test's named mutation check: red.
-    const gap2 = armed[1] - failures[0]
-    expect(
-      gap2,
-      `first failure -> second armed probe was ${gap2}ms, outside 60s +/-20%`,
-    ).toBeGreaterThanOrEqual(48_000)
-    expect(
-      gap2,
-      `first failure -> second armed probe was ${gap2}ms, outside 60s +/-20%`,
-    ).toBeLessThanOrEqual(72_000)
+    // The ladder advances on its own (see the header).
+    await expectFirstLadderDoubling(userId, t0)
 
     // Terminal + Retry, staged through the app's own snapshot contract while
     // the block still holds, so nothing can heal the machine before the

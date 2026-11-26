@@ -420,6 +420,7 @@ test.describe("Compute and routing", () => {
         Field: string
         PathPatternConfig?: { Values: string[] }
         HttpHeaderConfig?: { HttpHeaderName: string; Values: string[] }
+        HttpRequestMethodConfig?: { Values: string[] }
       }[]
       Actions: { TargetGroupArn?: string }[]
     }
@@ -435,12 +436,17 @@ test.describe("Compute and routing", () => {
       if (arn.includes(FREE_TG)) return "free"
       return arn.replace(/^.*targetgroup\//, "") || "no target group"
     }
-    const byPath = (path: string) =>
-      rules.find((r) =>
-        r.Conditions.some((c) =>
-          (c.PathPatternConfig?.Values || []).includes(path),
-        ),
+    const hasPath = (rule: Rule, path: string) =>
+      rule.Conditions.some((c) =>
+        (c.PathPatternConfig?.Values || []).includes(path),
       )
+    const methodsOf = (rule: Rule) =>
+      rule.Conditions.find((c) => c.Field === "http-request-method")
+        ?.HttpRequestMethodConfig?.Values || []
+    // A method-gated rule carves single methods out of a path, so the path's
+    // own tier is the rule without a method condition.
+    const byPath = (path: string) =>
+      rules.find((r) => hasPath(r, path) && !methodsOf(r).length)
 
     // An authenticated request carries a Bearer token, and that alone is what
     // sends it to the tier holding the user's workspace files.
@@ -466,6 +472,26 @@ test.describe("Compute and routing", () => {
       tierOf(byPath("/api/public/dataview")!),
       "public dataview tier",
     ).toBe("public")
+
+    // Account deletion cancels Stripe subscriptions, and only the free tier
+    // holds the Stripe key: DELETE /users/me must win over the /users/me rule.
+    const deleteMe = rules.find(
+      (r) => hasPath(r, "/users/me") && methodsOf(r).includes("DELETE"),
+    )
+    expect(deleteMe, "no DELETE /users/me rule on the listener").toBeTruthy()
+    // byPath skips method-gated rules, so any other method carved out of
+    // /users/me would leave the public tier unchecked for it.
+    expect(
+      rules
+        .filter((r) => hasPath(r, "/users/me") && methodsOf(r).length)
+        .map(methodsOf),
+      "methods carved out of /users/me",
+    ).toEqual([["DELETE"]])
+    expect(tierOf(deleteMe!), "DELETE /users/me tier").toBe("free")
+    expect(
+      Number(deleteMe!.Priority),
+      "DELETE /users/me must be evaluated before the /users/me rule",
+    ).toBeLessThan(Number(byPath("/users/me")!.Priority))
 
     // The Bearer rule is a catch-all for authed traffic, so every path family
     // that must escape it has to be evaluated first.
