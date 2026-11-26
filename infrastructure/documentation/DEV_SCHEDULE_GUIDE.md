@@ -28,7 +28,7 @@ RDS Proxy target once the database is available) and to enable the delayed scali
 | Free tier ASG | Set min=1, desired=1 | Set min=0, desired=0 |
 | Public tier ASG | Restore min/desired from tfvars | Set min=0, desired=0 |
 | ECS services (free, premium, background) | `desired_count=1` | `desired_count=0`, then wait for their tasks to stop |
-| Public ECS service | `desired_count` from tfvars | `desired_count=0` |
+| Public ECS service | `desired_count` from tfvars | `desired_count=0`, then wait for its tasks to stop |
 | Lambda schedules (5 rules) | Enable | Disable |
 | CloudWatch alarm actions | Enable | Disable |
 
@@ -38,11 +38,12 @@ The **ALB stays running** at all times (cannot be stopped; fixed cost ~$16-22/mo
 
 The stop sets the ECS services to 0 and then waits — up to 8 minutes; typically 6-7 when the free
 target group drained for 300 s, less at development's 60 s — for their tasks to stop, before it
-terminates the free tier ASG and stops NAT. The free task stops only after its target group's
+terminates the free and public tier ASGs and stops NAT. The public service's tasks are waited for
+with the others. A free or public task stops only after its target group's
 deregistration delay, and the ECS agent can report it stopped only through
 NAT (there are no ECS VPC endpoints). Stopping NAT first leaves the task `RUNNING` as far as ECS
-knows, and ECS managed draining then holds the free instance in `Terminating:Wait` until NAT is back
-the next morning. A wait that times out is logged in the stop results (`ecs_tasks_stopped`) and the
+knows, and ECS managed draining then holds the free instance or the public host in
+`Terminating:Wait` until NAT is back the next morning. A wait that times out is logged in the stop results (`ecs_tasks_stopped`) and the
 stop carries on.
 
 ### Important: RDS is destroyed during off-hours
@@ -236,9 +237,9 @@ is restored with the same identifier and configuration).
 ### Do not apply while the environment is stopped
 
 Plan only during off-hours. An apply would create the RDS instance the stop destroyed, and
-it sets the background ECS service back to `1` and the public one to its tfvars count while
-their instances are stopped, so their tasks fail placement until the next start. The free
-and premium services ignore `desired_count`, so the stop's zeros stand for them.
+it sets the background ECS service back to `1` while its instance is stopped, so its task
+fails placement until the next start. The free, premium and public services ignore
+`desired_count`, so the stop's zeros stand for them.
 
 ### Lambda schedules are disabled after a stop
 

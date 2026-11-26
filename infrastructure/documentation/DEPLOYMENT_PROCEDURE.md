@@ -479,7 +479,7 @@ A parallel staging infrastructure (`staging-araya-optinist`) will be available f
    - Run manual staging cases against staging environment
    - Verify all functionality works as expected
 
-3. **Destroy after testing:**
+3. **Destroy after testing:** first set `prevent_destroy = false` on `aws_ecs_service.public` in the working copy (`INFRA_DEPLOYMENT_PROCEDURE.md`, *Destroying Environments*), then:
    ```bash
    terraform destroy
    ```

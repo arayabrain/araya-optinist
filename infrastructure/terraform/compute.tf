@@ -558,10 +558,15 @@ resource "aws_ecs_capacity_provider" "main" {
 }
 
 # ECS Cluster Capacity Providers
+# The list is not in ignore_changes: a provider added here must reach existing
+# clusters. The default strategy stays the free tier's
 resource "aws_ecs_cluster_capacity_providers" "main" {
   cluster_name = aws_ecs_cluster.main.name
 
-  capacity_providers = [aws_ecs_capacity_provider.main.name]
+  capacity_providers = [
+    aws_ecs_capacity_provider.main.name,
+    aws_ecs_capacity_provider.public.name,
+  ]
 
   default_capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.main.name
@@ -579,7 +584,6 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
   lifecycle {
     create_before_destroy = false
     prevent_destroy       = false
-    ignore_changes        = [capacity_providers]
   }
 }
 

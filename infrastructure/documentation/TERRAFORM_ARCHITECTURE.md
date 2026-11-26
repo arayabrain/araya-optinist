@@ -80,6 +80,8 @@ When you run `terraform destroy`, only the AWS resources managed by Terraform ar
 | Security groups                          |                                                               |
 | Route53/ACM (production only)            |                                                               |
 
+**Before a destroy**: `aws_ecs_service.public` has `prevent_destroy = true`, so `terraform destroy` stops at plan until it is set to `false` in the working copy (`INFRA_DEPLOYMENT_PROCEDURE.md`, *Destroying Environments*).
+
 **Important**: The S3 tfstate bucket is **never destroyed** by `terraform destroy`. It is kept permanently so you can track state history and re-create the environment. If you ever need to remove it, do so manually with `aws s3 rb s3://development-optinist-for-cloud-tfstate --force`.
 
 ---

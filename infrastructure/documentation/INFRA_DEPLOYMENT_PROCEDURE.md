@@ -230,6 +230,8 @@ The `-reconfigure` flag tells Terraform to switch backends without migrating sta
 
 ## Destroying Environments
 
+> **Before either destroy:** set `prevent_destroy = false` in the `lifecycle` block of `aws_ecs_service.public` (`public_service.tf`), in the working copy only. With it `true`, the plan stops at "Instance cannot be destroyed". It keeps an apply from replacing the public service (`PUBLIC_INSTANCE_ARCHITECTURE.md`, *Host Count*), and a lifecycle argument cannot take a variable.
+
 ### Destroying Development
 
 ```bash

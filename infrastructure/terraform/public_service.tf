@@ -108,6 +108,8 @@ resource "aws_autoscaling_group" "public" {
   health_check_grace_period = 900
   default_cooldown          = 300
 
+  # The floor and the ceiling. aws_ecs_capacity_provider.public sets desired
+  # in between, one host per public task
   min_size         = var.public_asg_min_size
   max_size         = var.public_asg_max_size
   desired_capacity = var.public_asg_desired_capacity
@@ -119,7 +121,11 @@ resource "aws_autoscaling_group" "public" {
 
   # force_delete=false so ASG-level removals respect the TG deregistration_delay
   # (in-flight streaming responses get the drain set above, 600 s on production).
-  force_delete              = false
+  force_delete = false
+  # Managed termination protection: ECS lifts it only from a host with no
+  # task, so a scale-in removes emptied hosts. A health replacement ignores it
+  protect_from_scale_in = true
+  # Applies only among unprotected hosts
   termination_policies      = ["OldestInstance"]
   wait_for_capacity_timeout = "0"
 
@@ -138,9 +144,42 @@ resource "aws_autoscaling_group" "public" {
     propagate_at_launch = true
   }
 
+  # Lets the ECS service-linked role complete the managed-draining hook; ECS
+  # adds it when the provider is attached, and an apply that does not declare
+  # it removes it (see aws_autoscaling_group.main)
+  tag {
+    key                 = "AmazonECSManaged"
+    value               = "true"
+    propagate_at_launch = true
+  }
+
   lifecycle {
     create_before_destroy = true
     ignore_changes        = [desired_capacity]
+  }
+}
+
+# ECS owns the public host count: managed scaling keeps one host per public
+# task (static host port), so the service's desired count is the one value.
+# A provider takes one ASG; the free ASG's is aws_ecs_capacity_provider.main
+resource "aws_ecs_capacity_provider" "public" {
+  name = "${local.env_prefix}-public-capacity-provider"
+
+  auto_scaling_group_provider {
+    auto_scaling_group_arn         = aws_autoscaling_group.public.arn
+    managed_draining               = "ENABLED"
+    managed_termination_protection = "ENABLED"
+
+    managed_scaling {
+      status                 = "ENABLED"
+      target_capacity        = 100 # no spare host
+      instance_warmup_period = 300
+    }
+  }
+
+  tags = {
+    Name = "${local.env_prefix}-public-capacity-provider"
+    Tier = "public"
   }
 }
 
@@ -315,12 +354,16 @@ resource "aws_ecs_service" "public" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.public.arn
   desired_count   = var.public_asg_desired_capacity
-  # min_healthy=50 keeps one serving. max 200 because AZ rebalancing rejects <= 100
+  # min_healthy=50 keeps one serving. max 200 because AZ rebalancing rejects
+  # <= 100; a rollout's extra task waits in PROVISIONING and can add a host
   deployment_maximum_percent         = 200
   deployment_minimum_healthy_percent = 50
 
-  # Direct EC2 launch_type; the shared capacity provider is bound to the free ASG.
-  launch_type = "EC2"
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.public.name
+    weight            = 1
+    base              = 0
+  }
 
   enable_execute_command = true
 
@@ -341,13 +384,23 @@ resource "aws_ecs_service" "public" {
   health_check_grace_period_seconds = 900
 
   depends_on = [
-    aws_autoscaling_group.public,
+    aws_ecs_cluster_capacity_providers.main,
     aws_db_instance.main,
   ]
 
   tags = {
     Name = "${var.environment}-public-optinist-cloud-service"
     Tier = "public"
+  }
+
+  lifecycle {
+    # A replacement stops every public task at once. Terraform replaces a
+    # service that moves off launch_type, so an existing one is switched with
+    # update-service first (PUBLIC_INSTANCE_ARCHITECTURE.md, Host Count)
+    prevent_destroy = true
+    # desired_count above is the creation value only; the count is changed
+    # with update-service, and an apply must not undo a raise
+    ignore_changes = [desired_count]
   }
 }
 
