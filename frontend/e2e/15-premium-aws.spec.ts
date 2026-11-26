@@ -2856,38 +2856,38 @@ async function expectFirstLadderDoubling(userId: number, sinceMs: number) {
     }
     return { failure, rung }
   }
+  // Waits for every line the measurement reads: each is its own POST, so
+  // they can reach CloudWatch out of order. Rung 1 follows from failure 1.
   let ladder: ReturnType<typeof read> | undefined
   await expect
     .poll(
       () => {
         ladder = read()
-        return !!ladder.rung(2)
+        if (!ladder.rung(2)) return "the machine never armed a second probe"
+        if (ladder.failure(1) === undefined)
+          return "the first armed probe was never consumed as a failure"
+        return "ready"
       },
       {
         timeout: 5 * 60_000,
         intervals: [10_000],
-        message:
-          "the machine never armed two probes - the first doubling cannot be measured",
+        message: "the first doubling cannot be measured",
       },
     )
-    .toBe(true)
+    .toBe("ready")
   const { failure, rung } = ladder!
 
   const flips = uiEventTimestamps(userId, "instance_unreachable", sinceMs)
   expect(flips, "exactly one detection event anchors the ladder").toHaveLength(
     1,
   )
-  const failure1 = failure(1)
-  expect(
-    failure1,
-    "the first armed probe was never consumed as a failure",
-  ).toBeDefined()
+  const failure1 = failure(1)!
   const rung1 = rung(1)!
   const rung2 = rung(2)!
   // The sheet's wall-clock claim, with a +/-20% band around each delay:
   // detection -> arm 1 is INITIAL_PROBE_DELAY_MS...
   const gap1 = rung1.at - flips[0]
-  const gap2 = rung2.at - failure1!
+  const gap2 = rung2.at - failure1
   console.log(
     `[15-premium-aws] PREM-24 measured ladder: detection -> arm1 ` +
       `${gap1}ms (expect ~30000, ${rung1.from} line), failure1 -> arm2 ` +
