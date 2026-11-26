@@ -25,6 +25,7 @@ from terraform_source import (
     identifier_list,
     read,
     resource_block,
+    task_environment,
 )
 
 MAIN_TF = TERRAFORM_DIR / "main.tf"
@@ -39,9 +40,10 @@ TASK_DEFINITIONS = {
     "autoscaling": "compute.tf",
     "premium": "compute.tf",
     "public": "public_service.tf",
+    "public_dataview": "public_dataview_service.tf",
     "background": "background_service.tf",
 }
-# The public tier gates the subscriptions router out and gets no Stripe vars
+# The public tiers gate the subscriptions router out and get no Stripe vars
 STRIPE_TASK_DEFINITIONS = ("autoscaling", "premium", "background")
 
 
@@ -81,9 +83,8 @@ def _env_values(task_definition: str, name: str) -> list:
     )
 
 
-def _task_definition(name: str) -> str:
-    tf = read(TERRAFORM_DIR / TASK_DEFINITIONS[name])
-    return resource_block(tf, "aws_ecs_task_definition", name)
+def _task_environment(name: str) -> str:
+    return task_environment(TASK_DEFINITIONS[name], name)
 
 
 def _canonical_origin() -> tuple:
@@ -185,13 +186,13 @@ class TestCanonicalOrigin:
         """The origin /auth trusts for the refresh cookie (the public tier
         serves /auth), and links the app builds to itself. Unset, it falls
         back to localhost."""
-        values = _env_values(_task_definition(name), "FRONTEND_URL")
+        values = _env_values(_task_environment(name), "FRONTEND_URL")
         assert values == ["local.canonical_origin"]
 
     @pytest.mark.parametrize("name", STRIPE_TASK_DEFINITIONS)
     def test_stripe_checkout_returns_to_it(self, name):
         """A checkout that returns to another host finds no session there."""
-        values = _env_values(_task_definition(name), "STRIPE_CALLBACK_URL")
+        values = _env_values(_task_environment(name), "STRIPE_CALLBACK_URL")
         assert values == ["local.canonical_origin"]
 
 
@@ -209,5 +210,5 @@ class TestCorsOrigins:
 
     @pytest.mark.parametrize("name", sorted(TASK_DEFINITIONS))
     def test_every_service_reads_it(self, name):
-        values = _env_values(_task_definition(name), "CORS_ORIGINS")
+        values = _env_values(_task_environment(name), "CORS_ORIGINS")
         assert values == ["local.cors_origins"]

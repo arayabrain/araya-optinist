@@ -147,6 +147,12 @@ resource "aws_lambda_function" "dev_scheduler" {
       PUBLIC_ASG_MAX_SIZE         = tostring(var.public_asg_max_size)
       PUBLIC_ASG_DESIRED_CAPACITY = tostring(var.public_asg_desired_capacity)
       PUBLIC_ECS_SERVICE_NAME     = aws_ecs_service.public.name
+
+      PUBLIC_DATAVIEW_ASG_NAME             = aws_autoscaling_group.public_dataview.name
+      PUBLIC_DATAVIEW_ASG_MIN_SIZE         = tostring(var.public_dataview_asg_min_size)
+      PUBLIC_DATAVIEW_ASG_MAX_SIZE         = tostring(var.public_dataview_asg_max_size)
+      PUBLIC_DATAVIEW_ASG_DESIRED_CAPACITY = tostring(var.public_dataview_asg_desired_capacity)
+      PUBLIC_DATAVIEW_ECS_SERVICE_NAME     = aws_ecs_service.public_dataview.name
     }
   }
 
@@ -305,6 +311,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
         Resource = [
           aws_autoscaling_group.main.arn,
           aws_autoscaling_group.public.arn,
+          aws_autoscaling_group.public_dataview.arn,
         ]
       },
       # EventBridge rule enable/disable (scoped to environment prefix)
@@ -350,6 +357,7 @@ resource "aws_iam_role_policy" "dev_scheduler_permissions" {
           aws_ecs_service.premium.id,
           aws_ecs_service.background.id,
           aws_ecs_service.public.id,
+          aws_ecs_service.public_dataview.id,
         ]
       },
       # On stop, list the services' tasks before scaling down, then wait for

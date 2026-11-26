@@ -6,6 +6,7 @@ import {
   AWS_REGION,
   CLOUDWATCH_POLL,
   PREMIUM_USER,
+  PUBLIC_DATAVIEW_LOG_GROUP,
   PUBLIC_LOG_GROUP,
   apiHeaders,
   apiLogin,
@@ -43,6 +44,8 @@ import {
 const CLUSTER = "development-optinist-cloud-cluster"
 const FREE_SERVICE = "development-optinist-cloud-service"
 const PUBLIC_SERVICE = "development-public-optinist-cloud-service"
+const PUBLIC_DATAVIEW_SERVICE =
+  "development-public-dataview-optinist-cloud-service"
 
 type Service = {
   desiredCount: number
@@ -115,7 +118,8 @@ type PublicRecord = {
 }
 
 // A published record, read the way an anonymous visitor reads it. Only the
-// public tier serves this route (ALB p300), so it is also the tier under test.
+// public DataView tier serves this route (ALB p300), so it is also the tier
+// under test.
 async function publishedRecord(): Promise<PublicRecord | undefined> {
   const anon = await request.newContext({ baseURL: apiUrl() })
   try {
@@ -128,9 +132,9 @@ async function publishedRecord(): Promise<PublicRecord | undefined> {
   }
 }
 
-// 200 = served from the EFS cache. 202 = published but not synced, which is the
-// route's own way of saying it had to go back to S3 - the failure this row is
-// about.
+// 200 = readable: from the EFS cache, or downloaded from S3 within the same
+// request. 202 = published but still not displayable after that. So a 200 does
+// not show the cache was there; s3DownloadsOf does.
 async function reproduceStatus(record: PublicRecord): Promise<number> {
   const anon = await request.newContext({ baseURL: apiUrl() })
   try {
@@ -142,6 +146,60 @@ async function reproduceStatus(record: PublicRecord): Promise<number> {
   } finally {
     await anon.dispose()
   }
+}
+
+// The public DataView task's container; awslogs names each task's stream
+// ecs/<container>/<task id>
+const PUBLIC_DATAVIEW_CONTAINER = "development-optinist-cloud-container"
+
+function runningTaskStreams(service: string): string[] {
+  const arns = awsJson<string[]>(
+    `ecs list-tasks --cluster ${CLUSTER} --service-name ${service} ` +
+      `--desired-status RUNNING --query taskArns`,
+  )
+  expect(arns.length, `${service} has no running task`).toBeGreaterThan(0)
+  return arns.map(
+    (arn) => `ecs/${PUBLIC_DATAVIEW_CONTAINER}/${arn.split("/").pop()}`,
+  )
+}
+
+// Logs reach CloudWatch with a lag. Wait until each stream holds an event
+// ingested after `since`: events arrive in order, so everything logged before
+// it is in too. Each poll sends a list request, which the tier logs.
+async function waitForIngestionPast(
+  streams: string[],
+  since: number,
+): Promise<void> {
+  const deadline = Date.now() + 300_000
+  for (const stream of streams) {
+    for (;;) {
+      await publishedRecord()
+      const times = awsJson<number[]>(
+        `logs get-log-events --log-group-name ${PUBLIC_DATAVIEW_LOG_GROUP} ` +
+          `--log-stream-name ${stream} --limit 50 ` +
+          `--query 'events[].ingestionTime'`,
+      )
+      if (times.some((t) => t > since)) break
+      expect(
+        Date.now() < deadline,
+        `${stream} had no event ingested after the read within 5 min`,
+      ).toBe(true)
+      await new Promise((r) => setTimeout(r, 10_000))
+    }
+  }
+}
+
+// Every S3 download of a record, by the startup sync or by a read, logs
+// S3StorageController.download_experiment's line with the record's local path.
+// None in the streams means the tasks found the record in the cache.
+function s3DownloadsOf(record: PublicRecord, streams: string[]): string[] {
+  return awsJson<string[]>(
+    `logs filter-log-events --log-group-name ${PUBLIC_DATAVIEW_LOG_GROUP} ` +
+      `--log-stream-names ${streams.join(" ")} ` +
+      `--filter-pattern '"Download data from remote storage" ` +
+      `"/output/${record.workspace!.id}/${record.uid}"' ` +
+      `--query 'events[].message'`,
+  )
 }
 
 async function pollService(
@@ -311,8 +369,9 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
     expect(after.status, "the free service is ACTIVE again").toBe("ACTIVE")
   })
 
-  // Row 819: a rolling deployment of the public tier must not interrupt what it
-  // serves. force-new-deployment is the same action a release performs.
+  // A rolling deployment of the public tier must not interrupt what it serves.
+  // force-new-deployment is the same action a release performs. Published data
+  // is served by the public DataView tier, so row 819 is OUT-06's.
   test("OUT-02 - A rolling public-tier deployment keeps serving throughout", async () => {
     // Each replaced task can spend its target group's full deregistration
     // delay draining (600 s on production, 60 s on development), and the tier
@@ -326,20 +385,6 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       before.desiredCount,
       "the public service must be up",
     ).toBeGreaterThan(0)
-
-    // Row 819: the published data has to be readable across the replacement,
-    // so it is read before the deployment as well - an after-only 200 could
-    // just mean the record was never there to lose.
-    const record = await publishedRecord()
-    test.skip(
-      !record,
-      "row 819 needs a published record on this environment; none is published",
-    )
-    expect(
-      await reproduceStatus(record!),
-      `published ${record!.uid} did not load before the deployment`,
-    ).toBe(200)
-    p.step(`published ${record!.uid} readable before the deployment`)
 
     const anon = await request.newContext()
     const statuses: number[] = []
@@ -403,16 +448,6 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
       expect(settled, "the public deployment never settled").toBe(true)
       p.step(`rollout settled after ${statuses.length} probes`)
 
-      // The new task mounted the same EFS filesystem, so the record is still
-      // there: 202 here would mean the replacement lost the cache and the
-      // route fell back to S3.
-      expect(
-        await reproduceStatus(record!),
-        `published ${record!.uid} after the task replacement (202 = re-syncing ` +
-          `from S3, so EFS did not preserve it)`,
-      ).toBe(200)
-      p.step("EFS preserved the published cache across the replacement")
-
       // Row 823: the replacement task really runs the startup sync through
       // the leader path, warming the published-data cache on the new task.
       //
@@ -454,6 +489,127 @@ test.describe("Disruptive: the free tier goes away @disruptive", () => {
     expect(
       statuses.filter((s) => s !== 200),
       `non-200 responses during the rolling deployment (${statuses.length} probes)`,
+    ).toEqual([])
+  })
+
+  // Row 819: published data is served from the EFS cache by the public DataView
+  // tier, so it must outlive that tier's task. With one task the deployment is
+  // stop-first and public DataView answers 503 meanwhile; the sign-in routes
+  // stay on the public tier and must keep answering throughout.
+  test("OUT-06 - A public DataView deployment keeps the published cache, and sign-in answers throughout", async () => {
+    // One task replaced stop-first: the deregistration delay (600 s on
+    // production, 60 s here), then the new task's start and two passing
+    // health checks; the log check after it waits up to 5 min
+    test.setTimeout(2_700_000)
+    skipIfTooCloseToScheduledStop(45)
+    const p = progressLog("22-disruptive", "OUT-06")
+    const before = describeService(PUBLIC_DATAVIEW_SERVICE)
+    expect(
+      before.desiredCount,
+      "the public DataView service must be up",
+    ).toBeGreaterThan(0)
+
+    // Read before the deployment as well: an after-only 200 could just mean the
+    // record was never there to lose.
+    const record = await publishedRecord()
+    test.skip(
+      !record,
+      "row 819 needs a published record on this environment; none is published",
+    )
+    expect(
+      await reproduceStatus(record!),
+      `published ${record!.uid} did not load before the deployment`,
+    ).toBe(200)
+    p.step(`published ${record!.uid} readable before the deployment`)
+
+    const anon = await request.newContext()
+    const signIn: number[] = []
+    const dataview: number[] = []
+    try {
+      const priorDeployment = describeService(
+        PUBLIC_DATAVIEW_SERVICE,
+      ).deployments.find((d) => d.status === "PRIMARY")?.id
+      awsJson(
+        `ecs update-service --cluster ${CLUSTER} ` +
+          `--service ${PUBLIC_DATAVIEW_SERVICE} --force-new-deployment ` +
+          `--region ${AWS_REGION}`,
+      )
+      p.step(`forced a new deployment over ${priorDeployment}`)
+      const deadline = Date.now() + 2_100_000
+      let settled = false
+      while (Date.now() < deadline) {
+        // /users/me is a public-tier rule (p306). Anonymous, it is answered
+        // 401 by the app, without a sign-in attempt per probe; a 5xx is the
+        // DataView tier's outage reaching the sign-in tier.
+        const me = await anon.get(`${process.env.BASE_URL}/users/me`, {
+          failOnStatusCode: false,
+        })
+        signIn.push(me.status())
+        const list = await anon.get(
+          `${process.env.BASE_URL}/api/public/dataview?limit=1&offset=0`,
+          { failOnStatusCode: false },
+        )
+        dataview.push(list.status())
+        const s = describeService(PUBLIC_DATAVIEW_SERVICE)
+        const primary = s.deployments.find((d) => d.status === "PRIMARY")
+        expect(
+          primary,
+          "the service reported no PRIMARY deployment",
+        ).toBeTruthy()
+        expect(
+          primary!.rolloutState,
+          "the public DataView deployment failed to roll out",
+        ).not.toBe("FAILED")
+        p.tick(
+          `rollout ${primary!.rolloutState}, running ${s.runningCount}/` +
+            `${before.desiredCount}, ${signIn.length} probes`,
+        )
+        if (
+          primary!.id !== priorDeployment &&
+          primary!.rolloutState === "COMPLETED" &&
+          s.runningCount === before.desiredCount
+        ) {
+          settled = true
+          break
+        }
+        await new Promise((r) => setTimeout(r, 10_000))
+      }
+      expect(settled, "the public DataView deployment never settled").toBe(true)
+      p.step(
+        `rollout settled after ${signIn.length} probes; public DataView ` +
+          `answered non-200 to ${dataview.filter((s) => s !== 200).length}`,
+      )
+
+      // The new task mounted the same EFS filesystem, so the record is still
+      // there. A lost cache would be refilled from S3 and still answer 200,
+      // so the new task's log is what tells the two apart.
+      const readAt = Date.now()
+      expect(
+        await reproduceStatus(record!),
+        `published ${record!.uid} unreadable after the task replacement`,
+      ).toBe(200)
+      const streams = runningTaskStreams(PUBLIC_DATAVIEW_SERVICE)
+      await waitForIngestionPast(streams, readAt)
+      const downloads = s3DownloadsOf(record!, streams)
+      expect(
+        downloads.length,
+        `the new task downloaded ${record!.uid} from S3, so EFS did not ` +
+          `preserve it (or its row's sync status is pending / error, which ` +
+          `downloads on every read): ${(downloads[0] ?? "").slice(0, 300)}`,
+      ).toBe(0)
+      p.step("EFS preserved the published cache across the replacement")
+    } finally {
+      await anon.dispose()
+    }
+
+    expect(
+      signIn.length,
+      "too few probes to claim the sign-in tier kept answering throughout",
+    ).toBeGreaterThan(5)
+    expect(
+      signIn.filter((s) => s !== 401),
+      `/users/me answered other than 401 while the public DataView tier was ` +
+        `replaced (${signIn.length} probes)`,
     ).toEqual([])
   })
 

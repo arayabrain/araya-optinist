@@ -155,8 +155,9 @@ resource "aws_cloudwatch_metric_alarm" "ebs_queue_length_high" {
 # The agent collects only "/", so the ASG roll-up is the root filesystem.
 resource "aws_cloudwatch_metric_alarm" "root_disk_used_high" {
   for_each = {
-    free   = aws_autoscaling_group.main.name
-    public = aws_autoscaling_group.public.name
+    free              = aws_autoscaling_group.main.name
+    public            = aws_autoscaling_group.public.name
+    "public-dataview" = aws_autoscaling_group.public_dataview.name
   }
 
   alarm_name          = "${local.env_prefix}-${each.key}-root-disk-used-high"
@@ -305,7 +306,12 @@ resource "aws_cloudwatch_metric_alarm" "alb_response_time_high" {
     public = {
       tg_arn_suffix = aws_lb_target_group.public.arn_suffix
       threshold     = "5"
-      description   = "Public TG p95 response time exceeded 5s for 25 of 30 min — sustained SPA shell or public-dataview latency degradation."
+      description   = "Public TG p95 response time exceeded 5s for 25 of 30 min — sustained SPA shell or sign-in latency degradation."
+    }
+    "public-dataview" = {
+      tg_arn_suffix = aws_lb_target_group.public_dataview.arn_suffix
+      threshold     = "5"
+      description   = "Public DataView TG p95 response time exceeded 5s for 25 of 30 min — sustained public-dataview latency degradation."
     }
   }
 
@@ -338,7 +344,11 @@ resource "aws_cloudwatch_metric_alarm" "tg_unhealthy_hosts" {
     }
     public = {
       tg_arn_suffix = aws_lb_target_group.public.arn_suffix
-      description   = "Public TG has unhealthy targets — SPA delivery or public-dataview API at risk."
+      description   = "Public TG has unhealthy targets — SPA delivery or sign-in at risk."
+    }
+    "public-dataview" = {
+      tg_arn_suffix = aws_lb_target_group.public_dataview.arn_suffix
+      description   = "Public DataView TG has unhealthy targets — public-dataview reads at risk."
     }
   }
 
@@ -376,6 +386,14 @@ resource "aws_cloudwatch_metric_alarm" "tg_serving_below_desired" {
       asg_name      = aws_autoscaling_group.public.name
       # A host replacement waits out two 600 s drains on production, about
       # 25 min short; development's 60 s drains only widen the margin
+      periods    = 40
+      datapoints = 35
+    }
+    "public-dataview" = {
+      tg_arn_suffix = aws_lb_target_group.public_dataview.arn_suffix
+      service_name  = aws_ecs_service.public_dataview.name
+      asg_name      = aws_autoscaling_group.public_dataview.name
+      # The public tier's host shape and production drain
       periods    = 40
       datapoints = 35
     }
@@ -841,11 +859,65 @@ resource "aws_cloudwatch_dashboard" "main" {
           }
         }
       },
-      # Row 7: Alarm Status - All Alarms at a Glance
+      # Row 7: Public tiers - sign-in / SPA and public DataView side by side
+      {
+        type   = "metric"
+        x      = 0
+        y      = 36
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.public.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Public ECS CPU", "stat" : "Average" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.public.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Public ECS Memory", "stat" : "Average" }],
+            ["AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.public_dataview.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Public DataView ECS CPU", "stat" : "Average" }],
+            ["AWS/ECS", "MemoryUtilization", "ServiceName", aws_ecs_service.public_dataview.name, "ClusterName", aws_ecs_cluster.main.name, { "label" : "Public DataView ECS Memory", "stat" : "Average" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Public Tiers: ECS CPU & Memory"
+          period  = 300
+          yAxis = {
+            left = {
+              min = 0
+              max = 100
+            }
+          }
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 36
+        width  = 12
+        height = 6
+        properties = {
+          # The ASGs publish only GroupDesiredCapacity; healthy targets stand for
+          # the hosts serving, as in the serving-below-desired alarm
+          metrics = [
+            ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.public.name, { "label" : "Public Desired" }],
+            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", aws_lb_target_group.public.arn_suffix, "LoadBalancer", aws_lb.autoscaling.arn_suffix, { "label" : "Public Healthy Targets", "stat" : "Minimum" }],
+            ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", aws_autoscaling_group.public_dataview.name, { "label" : "Public DataView Desired" }],
+            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", aws_lb_target_group.public_dataview.arn_suffix, "LoadBalancer", aws_lb.autoscaling.arn_suffix, { "label" : "Public DataView Healthy Targets", "stat" : "Minimum" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Public Tiers: Hosts"
+          period  = 300
+          yAxis = {
+            left = {
+              min = 0
+            }
+          }
+        }
+      },
+      # Row 8: Alarm Status - All Alarms at a Glance
       {
         type   = "alarm"
         x      = 0
-        y      = 36
+        y      = 42
         width  = 24
         height = 4
         properties = {

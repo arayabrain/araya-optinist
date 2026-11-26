@@ -10,7 +10,7 @@
 #                            replace a host while its task restarts (repeatable)
 #   --hygiene-association  : SSM association run once the services are stable
 #
-# Free and public run one task per host, so a rollout stops each old task,
+# Free, public and public DataView run one task per host, so a rollout stops each old task,
 # waits out its target group's deregistration delay, then starts the new one.
 # Three things keep that from taking much longer:
 # - a rollout already in progress (terraform apply rolls a service whose task

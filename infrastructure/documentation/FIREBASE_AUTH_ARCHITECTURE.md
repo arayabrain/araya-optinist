@@ -359,7 +359,7 @@ grep '^environment' infrastructure/terraform/environments/<file>.tfvars
 2. Paste the JSON into `firebase_private_json` in the relevant `.tfvars`.
 3. `terraform init -backend-config=backends/<env>.hcl -reconfigure`
 4. `terraform apply -var-file=environments/<env>.tfvars` to publish a new Secrets Manager version.
-5. Restart **every** service in the cluster so `cloud-startup.sh` re-fetches. Cycling only the main service leaves premium, public, and background tasks holding the old key on disk. Discover the list rather than typing it, so a newly added service is covered automatically:
+5. Restart **every** service in the cluster so `cloud-startup.sh` re-fetches. Cycling only the main service leaves premium, public, public DataView and background tasks holding the old key on disk. Discover the list rather than typing it, so a newly added service is covered automatically:
 
 ```bash
 CLUSTER=<env>-optinist-cloud-cluster
@@ -387,7 +387,7 @@ aws ecs describe-services --cluster "$CLUSTER" --region "$REGION" \
 8. Redistribute to developers' local `studio/config/auth/firebase_private.json`.
 9. Only once step 6 shows a single deployment per service, delete the old key in the console. Rotation is not complete until the old key is gone, because old keys stay valid until explicitly deleted.
 
-Deleting the old key before every service has cycled breaks Admin SDK calls on the services still holding it, including the `firebase_auth.get_user()` call on the login path. That is a login outage for the affected tiers, not a delayed background failure. At the time of writing the cluster runs four services (main, premium, public, background), but trust `list-services` over that count. See [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
+Deleting the old key before every service has cycled breaks Admin SDK calls on the services still holding it, including the `firebase_auth.get_user()` call on the login path. That is a login outage for the affected tiers, not a delayed background failure. At the time of writing the cluster runs five services (main, premium, public, public DataView, background), but trust `list-services` over that count. See [INFRA_DEPLOYMENT_PROCEDURE.md](INFRA_DEPLOYMENT_PROCEDURE.md).
 
 ### Disable A User Immediately
 

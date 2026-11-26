@@ -416,7 +416,7 @@ re-applying the same commit with none of them changed does not rebuild.
 
 **Pushing `:latest` does not deploy anything, and cycling one service does not deploy everywhere.** ECS resolves the image tag to a digest when a deployment is *created*, so existing tasks keep running the digest they started with. A `:latest` retag followed by a single `update-service` updates only that service and leaves every other service on the old image.
 
-The cluster runs several services (currently main, premium, public, and background). Discover them rather than typing the list, so a newly added service is never missed:
+The cluster runs several services (currently main, premium, public, public DataView and background). Discover them rather than typing the list, so a newly added service is never missed:
 
 ```bash
 CLUSTER=development-optinist-cloud-cluster
@@ -448,13 +448,15 @@ initialised):
 ```bash
 bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
   --asg <env>-optinist-asg --asg <env>-optinist-public-asg \
+  --asg <env>-optinist-public-dataview-asg \
   --hygiene-association "$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)"
 ```
 
-Free and public run one task per host, so each host stops its old task, waits out the target
-group's deregistration delay, then starts the new one. A rollout therefore pays that delay plus the
-image pull and start once for free (all its tasks at once) and once per half of the public hosts
-(public keeps at least half of them serving). The script keeps it from growing further:
+Free, public and public DataView run one task per host, so each host stops its old task, waits out
+the target group's deregistration delay, then starts the new one. A rollout therefore pays that
+delay plus the image pull and start once for free (all its tasks at once), once per half of the
+public hosts (public keeps at least half of them serving), and once for public DataView (on its
+default single host, its reads are down meanwhile). The script keeps it from growing further:
 
 - **A rollout already in progress finishes first** (up to 30 minutes, then the force goes ahead
   with a warning). A service counts as rolling while it has more than one deployment or its
@@ -484,11 +486,11 @@ image pull and start once for free (all its tasks at once) and once per half of 
 
 Ctrl-C, `kill` and closing the terminal still resume the health checks. A run killed with
 `kill -9`, or one whose credentials expired (the laptop sleeping), cannot; the next deploy takes
-its suspension over after 30 minutes. To clear it at once, check both groups and resume any it left
-suspended:
+its suspension over after 30 minutes. To clear it at once, check the three groups and resume any it
+left suspended:
 
 ```bash
-for ASG in <env>-optinist-asg <env>-optinist-public-asg; do
+for ASG in <env>-optinist-asg <env>-optinist-public-asg <env>-optinist-public-dataview-asg; do
   aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG" \
     --region "$REGION" --query 'AutoScalingGroups[0].SuspendedProcesses[].ProcessName'
 done
@@ -545,6 +547,7 @@ REGION=ap-northeast-1
 
 bash infrastructure/scripts/ecs_rollout.sh --cluster "$CLUSTER" --region "$REGION" \
   --asg development-optinist-asg --asg development-optinist-public-asg \
+  --asg development-optinist-public-dataview-asg \
   --hygiene-association "$(terraform -chdir=infrastructure/terraform output -raw docker_hygiene_association_id)"
 ```
 
@@ -581,8 +584,8 @@ unused images every 6 hours and after each deploy (`null_resource.deploy_to_ecs`
 
 Root volume sizes are `root_volume_gib` in `local.free_tier_sizing_defaults` (88 GiB) and
 `local.premium_tier_sizing_defaults` (64 GiB) in `main.tf`, overridable per environment through
-`free_tier_sizing` / `premium_tier_sizing` in the tfvars. Background and public hosts keep the
-AMI's 30 GiB. The ECS agent's cleanup knobs (`ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION` and the
+`free_tier_sizing` / `premium_tier_sizing` in the tfvars. Background, public and public DataView
+hosts keep the AMI's 30 GiB. The ECS agent's cleanup knobs (`ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION` and the
 `ECS_IMAGE_*` settings in `scripts/ecs-user-data.sh`) ship with the user data.
 
 A change to either reaches a host only when it is launched from the new launch template version:
@@ -590,8 +593,8 @@ A change to either reaches a host only when it is launched from the new launch t
 - `aws_instance.premium` and `aws_instance.background` pin their template's `latest_version`, so the
   plan that changes a template shows `-/+` on its instance and the same apply replaces it. Apply at a
   time with no premium run active: users on the old premium instance lose their task.
-- The free and public ASGs do not instance-refresh under `$Latest`; their hosts pick the change up
-  at the next launch, or after a manual `aws autoscaling start-instance-refresh`.
+- The free, public and public DataView ASGs do not instance-refresh under `$Latest`; their hosts
+  pick the change up at the next launch, or after a manual `aws autoscaling start-instance-refresh`.
 - Premium hosts created by the Lambda (`premium_manager.py`) keep their size until terminated.
 
 The hygiene association needs none of this: it targets hosts by the

@@ -5,8 +5,9 @@
 - **Public tier** is a dedicated always-on ECS service that runs the same image as the free/premium tiers with `INSTANCE_MODE=public`, serving the static SPA shell and a minimal API subset.
 - **Router gating** drops the heavy workflow/optinist routers in public mode, keeping only the routers needed to load the app and authenticate.
 - **Outage survival** means the SPA can boot and a user can log in even when the free tier is scaled to zero or unhealthy, instead of seeing a raw ALB 503.
-- **Published-dataview reads** and the startup cache warm are served from public, decoupling unauthenticated visualization traffic from the authenticated tiers.
-- **Shared task-definition values** are duplicated across `compute.tf`, `public_service.tf`, and `background_service.tf`; a shared value must be changed in all three.
+- **Published-dataview API reads** are served from the **public DataView tier**: the same public-mode task on its own ASG and target group, so the API calls of anonymous visitors to a public result neither reach the authenticated tiers nor share a process with sign-in on public. The page shell and static files they load stay on public.
+- **Startup cache warm** runs on the public-mode tiers, leader-elected across both, into the published-data EFS they share.
+- **Shared task-definition values** are duplicated across `compute.tf`, `public_service.tf`, and `background_service.tf`; a shared value must be changed in all three. The public DataView task reads the public task's environment (`local.public_task_environment`), replacing only its log group.
 
 ---
 
@@ -37,20 +38,24 @@
 graph TB
     subgraph "ALB Listener"
         REQ[Incoming request] --> RULES{Matches a<br/>listener rule?}
-        RULES -->|"/auth, /users/me,<br/>/log-report, /static,<br/>public dataview"| PUB[Public TG]
+        RULES -->|"/auth, /users/me,<br/>/log-report, /static"| PUB[Public TG]
+        RULES -->|"public dataview<br/>(p280, p300)"| PDV[Public DataView TG]
         RULES -->|"Authorization: Bearer<br/>(authenticated API)"| OWN[Free / Premium TG]
         RULES -->|"no rule match<br/>(SPA document request)"| DEF[Default action -> Public TG]
     end
 
-    subgraph "Public Task (INSTANCE_MODE=public)"
+    subgraph "Public and Public DataView Tasks (INSTANCE_MODE=public)"
         PUB --> APP[FastAPI app]
         DEF --> APP
+        PDV --> APP2[FastAPI app,<br/>own instances]
         APP --> PR[_register_public_routers]
+        APP2 --> PR
         APP --> SPA[SPARoutingMiddleware<br/>serves index.html]
         APP -.gated out.-> AR[_register_authenticated_routers]
     end
 
     style PUB fill:#90EE90
+    style PDV fill:#90EE90
     style DEF fill:#FFB6C1
     style AR fill:#FFB6C1
     style SPA fill:#87CEEB
@@ -58,17 +63,17 @@ graph TB
 
 ### Responsibility Matrix
 
-| Responsibility | Public Tier | Free / Premium Tier | Background Tier |
-|---|---|---|---|
-| Serve SPA shell (`index.html`) | Yes - via default action | Yes - if request lands there | No |
-| `auth` / `users_me` bootstrap | Yes - Primary (outage-safe) | Yes | No |
-| `log-report` write | Yes - Exclusive (routed here) | No | No |
-| Public dataview reads | Yes - Exclusive | No | No |
-| Authenticated workflow/optinist API | No - Gated out | Yes - Exclusive | No |
-| `/logs` viewer read | No | Yes - Owning tier only | No |
-| Startup published-experiment cache warm | Yes - Exclusive (leader-elected) | No | No |
-| Published input-cache cleanup (daily wipe) | Yes - via scheduled Lambda | No | No |
-| Background scheduler jobs | No - Disabled | No | Yes - Exclusive |
+| Responsibility | Public Tier | Public DataView Tier | Free / Premium Tier | Background Tier |
+|---|---|---|---|---|
+| Serve SPA shell (`index.html`) | Yes - via default action | No | Yes - if request lands there | No |
+| `auth` / `users_me` bootstrap | Yes - Primary (outage-safe) | No | Yes | No |
+| `log-report` write | Yes - Exclusive (routed here) | No | No | No |
+| Public dataview reads | No | Yes - Exclusive | No (premium users: their own instance) | No |
+| Authenticated workflow/optinist API | No - Gated out | No - Gated out | Yes - Exclusive | No |
+| `/logs` viewer read | No | No | Yes - Owning tier only | No |
+| Startup published-experiment cache warm | Yes (leader-elected across both) | Yes (leader-elected across both) | No | No |
+| Published input-cache cleanup (daily wipe) | Yes - via scheduled Lambda (shared EFS) | Yes - via scheduled Lambda (shared EFS) | No | No |
+| Background scheduler jobs | No - Disabled | No - Disabled | No | Yes - Exclusive |
 
 ---
 
@@ -112,15 +117,15 @@ Defines the `INSTANCE_MODE` env var name and its values. `INSTANCE_MODE_PUBLIC` 
 ### _should_run_startup_sync()
 
 **File:** `studio/__main_unit__.py`
-**Purpose:** Restrict the published-experiment cache warm to the public tier
+**Purpose:** Restrict the published-experiment cache warm to the public-mode tiers (public and public DataView)
 **Input:** `instance_mode`, `is_standalone`
-**Output:** `True` only when mode is public and not standalone; the warm itself is leader-elected across the ASG via `startup_sync_leader_lock()`
+**Output:** `True` only when mode is public and not standalone; the warm itself is leader-elected across both tiers' tasks via `startup_sync_leader_lock()` (a MySQL named lock), into the EFS cache they share
 
 ---
 
 ## Published Input Cache and Daily Cleanup
 
-Published experiments are served from a cache on the shared **published-data EFS** filesystem rather than the lean root EBS, so both public tasks share one copy and it survives task replacement. Outputs and raw inputs sit under two separate EFS access points so they can be managed independently:
+Published experiments are served from a cache on the shared **published-data EFS** filesystem rather than the lean root EBS, so every public and public DataView task shares one copy and it survives task replacement. An experiment synced through the public tier (`/system-internal/sync-experiment/*`, ALB priority 200) is what the public DataView tier serves. Outputs and raw inputs sit under two separate EFS access points so they can be managed independently:
 
 | Cache | Access point root | Container mount | Lifecycle |
 |---|---|---|---|
@@ -182,7 +187,7 @@ The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_im
 **Problem:** `/outputs/*` is used both for public visualization reads and authenticated own-data reads.
 
 **Solution:** Header-based carve-out:
-- The frontend sets `DATAVIEW_PUBLIC_REQUEST: true` on reads originating from public pages; those route to public (ALB priority 280).
+- The frontend sets `DATAVIEW_PUBLIC_REQUEST: true` on reads originating from public pages; those route to the public DataView tier (ALB priority 280).
 - Own-data reads fall through to the authenticated free rule (ALB priority 315).
 
 ### 5. Static Assets Served by Compute
@@ -199,6 +204,20 @@ The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_im
 - `get_structured_data()` and the `get_csv()` / `get_image()` input branches call `RemoteStorageDownloadUtils.ensure_input_file_synced()`, which downloads the input file by name regardless of sync status.
 - A genuinely-absent input still returns 404; a remote-storage error returns 503.
 
+### 7. Public DataView Visitors vs Sign-in
+
+**Problem:** The public DataView page needs no sign-in, so nothing bounds how many visitors open it. Its record list, thumbnails and output items, served from the process that answers `/auth/*` and `/users/me`, would slow every user's sign-in, and a large enough burst would fail the public target group's health check.
+
+**Solution:** A tier of its own for the API:
+- ALB priorities 280 and 300 forward to the public DataView target group; sign-in (305, 306), the shell and static assets stay on public.
+- The tier runs the public task (`INSTANCE_MODE=public`, same environment and EFS caches) on its own ASG, so a visitor burst's API calls use only its instances.
+- A visitor's first page load still fetches the shell and the static bundle from public. Those requests cannot be told apart from a signed-in user's page load, so they stay there. They are files, not encoded output items; their cost is for compression and caching of the bundle to bound, not for this tier.
+- It defaults to one instance (`public_dataview_asg_*`); sign-in is unaffected by any of the following. Two or more instances keep one serving.
+  - A replaced instance leaves public DataView answering 503 for the replacement's cold boot.
+  - A deployment is stop-first with one task: 503 while the old target drains (the target group's deregistration delay: 600 s on production, 60 s on development), then while the new task starts and passes two health checks 30 s apart. That is at least 11 minutes on production and 2 on development, plus the task's start. The tier serves only short API reads, so development's drain is short; production keeps the public tier's drain until its response times have been read.
+  - On the tier's first apply, the listener rules move to the new target group before its first task is healthy (the ECS service is created after the rules: a target group no rule forwards to is refused), so public DataView answers 503 for that first cold boot.
+- A premium user's requests that carry routing headers match their premium rule (100-199) first and never reach this tier.
+
 ---
 
 ## Monitoring and Metrics
@@ -206,7 +225,8 @@ The re-fetch in `get_structured_data()` -- and the sibling `get_csv()` / `get_im
 | Signal | Source | Notes |
 |---|---|---|
 | Public access logs | `uvicorn.access` in `/ecs/<env>-public-optinist-cloud-taskdef` | Includes SPA shell document fetches, which resemble API hits |
-| Target health | `aws_lb_target_group.public` health check on `/health` | ASG uses ELB health checks with a 900s grace period |
+| Public DataView access logs | `uvicorn.access` in `/ecs/<env>-public-dataview-optinist-cloud-taskdef` | Public dataview list, thumbnails and output items |
+| Target health | `aws_lb_target_group.public` and `aws_lb_target_group.public_dataview` health checks on `/health` | ASGs use ELB health checks with a 900s grace period; each target group has its own unhealthy-hosts and response-time alarms |
 | Startup sync | application logs on the elected leader task | Non-leader tasks log "Startup sync deferred to leader task" |
 | Input-cache cleanup failures | `<env>-public-cleanup-errors` alarm on the Lambda `Errors` metric | Fires on a crash/timeout or a non-zero delete-error count; daily `Sum`, `notBreaching` between runs |
 
@@ -223,7 +243,7 @@ aws elbv2 describe-target-health \
 
 ### Health Checks
 
-The public and free ASGs both use `health_check_type = "ELB"`. Two layers judge health from the same target group:
+The public, public DataView and free ASGs all use `health_check_type = "ELB"`. Two layers judge health from the same target group:
 
 | Layer | Judges | Grace counts from | Remedy |
 |---|---|---|---|
@@ -234,14 +254,14 @@ The ASG acts only on the target state `unhealthy`; `initial`, `draining` and `un
 
 **Why `ELB`, not `EC2`:** the target group is the only signal that replaces a host ECS cannot fix. A new instance that never gets a task, and a wedged host ECS keeps re-placing tasks onto (the only eligible one under the static port 8000 and the tier constraint), both stay forever under `EC2`.
 
-**The cost:** past the ASG's 900 s grace, a task that restarts and does not serve within the target group window (public about 90 s, free about 300 s) gets its whole instance replaced, whatever the ECS grace says. On public the other host serves meanwhile; on free a task restart already loses every running workflow.
+**The cost:** past the ASG's 900 s grace, a task that restarts and does not serve within the target group window (public about 90 s, free about 300 s) gets its whole instance replaced, whatever the ECS grace says. On public the other host serves meanwhile; on the public DataView tier's default single host, public DataView is down meanwhile; on free a task restart already loses every running workflow.
 
 **Rejected:**
 - `EC2`, with or without automated `set-instance-health`: an earlier attempt fought ASG scaling and was rolled back.
 - `EC2` on public only: one host for an unbounded time, to save a half-capacity window of about 25 min per host replacement.
 - A target group window wider than 900 s: the ALB would route users to a dead target for 15 min.
 
-**What neither catches:** an agent lost after ECS deregistered the target leaves the host `unused`, not `unhealthy`. `<env>-optinist-{free,public}-serving-below-desired` covers it:
+**What neither catches:** an agent lost after ECS deregistered the target leaves the host `unused`, not `unhealthy`. `<env>-optinist-{free,public,public-dataview}-serving-below-desired` covers it:
 
 | Input | Metric | Why |
 |---|---|---|
@@ -249,7 +269,7 @@ The ASG acts only on the target state `unhealthy`; `initial`, `draining` and `un
 | healthy | `AWS/ApplicationELB` `HealthyHostCount` (`Minimum`, `FILL` 0) | A wedged host keeps `RunningTaskCount` at desired; a deregistered target leaves a data gap, read as 0 |
 | deploys | `ECS/ContainerInsights` `DeploymentCount` (`Maximum`) | A public rollout replaces its two tasks one at a time and is short a target for about 28 of 30 min with production's drains, so the alarm is off while it exceeds 1 |
 
-It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 35 of 40 on public, which outlasts each tier's longest normal gap outside a deployment. On free that is a single-instance refresh or a slow morning start, about 17 min. On public it is a host replacement, about 25 min with production's drains (measured on dev before its drain was shortened): the task waits out its 600 s drain, then the terminating instance's own 600 s drain, before it runs on the new host. Development drains for 60 s, which only widens the margin. A deployment that never finishes silences it; `tg-unhealthy-hosts` still fires if that deployment's target is unhealthy. Runbook: `MAINTENANCE_PROCEDURES.md`, *ALB Alarms*.
+It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 35 of 40 on public and public DataView (the same host shape and production drain), which outlasts each tier's longest normal gap outside a deployment. On free that is a single-instance refresh or a slow morning start, about 17 min. On public it is a host replacement, about 25 min with production's drains (measured on dev before its drain was shortened): the task waits out its 600 s drain, then the terminating instance's own 600 s drain, before it runs on the new host. Development drains for 60 s, which only widens the margin. A deployment that never finishes silences it; `tg-unhealthy-hosts` still fires if that deployment's target is unhealthy. Runbook: `MAINTENANCE_PROCEDURES.md`, *ALB Alarms*.
 
 **Revisit the decision for a tier** if warm-host task restart to first healthy target has a p95 above about 60 s on public or about 240 s on free, or a prod instance replacement is traced to a slow restart. Options then: widen that tier's target group window (for example public `unhealthy_threshold` 3 to 5), make the restart faster, or build `EC2` with automated recovery as its own change.
 
@@ -266,7 +286,12 @@ It fires on `desired - healthy > 0` for 25 of 30 one-minute periods on free and 
 | `UVICORN_WORKERS` | Worker processes | `1` |
 | `DB_HOST` | Database endpoint (via RDS Proxy) | `aws_db_proxy.main.endpoint` |
 
-Stripe variables are intentionally omitted because the subscriptions router is gated out on public. The duplicated environment block is also present in `compute.tf` and `background_service.tf`; a shared value must be changed in all three task definitions.
+Stripe variables are intentionally omitted because the subscriptions router is gated out on public. The duplicated environment block is also present in `compute.tf` and `background_service.tf`; a shared value must be changed in all three task definitions. The public DataView task reads the same list (`local.public_task_environment` in `public_service.tf`) with its own `CLOUDWATCH_LOG_GROUP`.
+
+| Variable (Terraform) | Purpose | Default |
+|---|---|---|
+| `public_dataview_instance_type` | Public DataView instance type | `t3.small` |
+| `public_dataview_asg_min_size` / `_max_size` / `_desired_capacity` | Public DataView ASG size; desired is also the ECS service's `desired_count` | `1` / `2` / `1` |
 
 ---
 
@@ -292,6 +317,7 @@ Stripe variables are intentionally omitted because the subscriptions router is g
 | Task definition | `aws_ecs_task_definition.public` | EC2/bridge, EFS published-data mounts (output + input cache) |
 | ECS service | `aws_ecs_service.public` | EC2 launch type, `tier == public` placement constraint |
 | Log group | `aws_cloudwatch_log_group.public_optinist` | `/ecs/<env>-public-optinist-cloud-taskdef`, 30-day retention |
+| Public DataView tier | `public_dataview_service.tf`: `aws_lb_target_group.public_dataview` (`<env>-optinist-pubdv-tg`; names cap at 32 characters), `aws_launch_template.public_dataview`, `aws_autoscaling_group.public_dataview`, `aws_ecs_task_definition.public_dataview`, `aws_ecs_service.public_dataview` (`tier == public-dataview`), `aws_cloudwatch_log_group.public_dataview_optinist` | Mirrors the public tier's resources; started and stopped with it by the dev scheduler |
 | Input-cache access point | `aws_efs_access_point.published_data_input` | `/input-cache` subtree, uid/gid 1000; mounted at `/app/studio_data/input` |
 | Cleanup Lambda | `aws_lambda_function.public_cleanup` | Daily input-cache wipe; VPC + EFS-mounted, 900s timeout |
 | Cleanup schedule | `aws_cloudwatch_event_rule.public_cleanup_schedule` | `cron(0 19 * * ? *)` (04:00 JST) |

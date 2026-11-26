@@ -15,7 +15,8 @@
   their sizes from that tier's sizing in main.tf; its defaults, partial
   overrides and validation rules, unknown fields included.
 - Uvicorn workers: every task definition that starts cloud-startup.sh sets
-  its own count (the public and background ones live in their own files).
+  its own count (the public, public DataView and background ones live in
+  their own files; the two public ones read one environment local).
 - Startup command: every such task definition execs the script, so it runs
   as PID 1 and receives the stop signal.
 - Health check grace: every service that starts cloud-startup.sh outlasts
@@ -35,6 +36,7 @@ from terraform_source import (
     resource_block,
     resource_blocks,
     string_list,
+    task_environment,
     variable_block,
 )
 
@@ -475,10 +477,17 @@ STARTUP_TASK_DEFINITIONS = [
     ("compute.tf", "autoscaling"),
     ("compute.tf", "premium"),
     ("public_service.tf", "public"),
+    ("public_dataview_service.tf", "public_dataview"),
     ("background_service.tf", "background"),
 ]
 
-UVICORN_WORKERS = {"autoscaling": "3", "premium": "2", "public": "1", "background": "1"}
+UVICORN_WORKERS = {
+    "autoscaling": "3",
+    "premium": "2",
+    "public": "1",
+    "public_dataview": "1",
+    "background": "1",
+}
 
 
 class TestUvicornWorkers:
@@ -488,11 +497,9 @@ class TestUvicornWorkers:
     def test_worker_count_is_explicit(self, tf_file, task_definition):
         """Unset, cloud-startup.sh's default would apply; each worker holds a
         full app process out of the memory the instance shares."""
-        block = resource_block(
-            read(TERRAFORM_DIR / tf_file), "aws_ecs_task_definition", task_definition
-        )
         values = re.findall(
-            r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"', block
+            r'name\s*=\s*"UVICORN_WORKERS"\s*,?\s*value\s*=\s*"([^"]*)"',
+            task_environment(tf_file, task_definition),
         )
         assert values == [UVICORN_WORKERS[task_definition]]
 
@@ -551,6 +558,7 @@ class TestServiceHealthCheckGrace:
             ("compute.tf", "autoscaling"),
             ("compute.tf", "premium"),
             ("public_service.tf", "public"),
+            ("public_dataview_service.tf", "public_dataview"),
             ("background_service.tf", "background"),
         ],
     )
